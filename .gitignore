@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+
+# IDEs and editors
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# SQLite
+*.sqlite3
+
+# Caches
+.mypy_cache/
+.cache/
+
+# Packaging
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+
+# OS generated files
+Thumbs.db
+
+# Keep local config file tracked (don't ignore horusmapper.cfg)
