@@ -1,0 +1,1027 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+    <title>Project Horus Chase Mapper</title>
+
+    <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/leaflet.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/leaflet-sidebar.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/leaflet-control-topcenter.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/Leaflet.PolylineMeasure.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/leaflet-routing-machine.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/easy-button.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/tabulator_simple.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/font-awesome.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/jquery-ui.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/chasemapper.css') }}" rel="stylesheet">
+
+
+    <!-- I should probably feel bad for using so many libraries, but apparently this is the way thing are done :-/ -->
+    <script src="{{ url_for('static', filename='js/jquery-3.3.1.min.js')}}"></script>
+    <script src="{{ url_for('static', filename='js/jquery-ui.min.js')}}"></script>
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/leaflet.js') }}"></script>
+    <!-- Leaflet plugins... -->
+    <script src="{{ url_for('static', filename='js/leaflet.rotatedMarker.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/leaflet-control-topcenter.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/leaflet-sidebar.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/Leaflet.Control.Custom.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/Leaflet.PolylineMeasure.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/easy-button.js') }}"></script>
+
+    <script src="{{ url_for('static', filename='js/tabulator.min.js') }}"></script>
+
+    <script src="{{ url_for('static', filename='js/d3.v3.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/micropolar-v0.2.2.js') }}"></script>
+
+    <!-- Custom scripts -->
+    <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/sondehub.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/balloon.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/car.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/bearings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/paho-mqtt.js') }}"></script>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+    <script type="text/javascript" charset="utf-8">
+
+        // Object which will contain balloon markers and traces.
+        // properties for each key in this object (key = callsign)
+        //  latest_data - latest sonde telemetry object from SondeDecoded
+        //  marker: Leaflet marker object.
+        //  path: Leaflet polyline object.
+        //  pred_marker: Leaflet marker for predicted landing position.
+        //  pred_path: Leaflet polyline object for predicted path.
+        //  burst_marker: Leaflet marker for burst prediction.
+        //  abort_marker: Leaflet marker for abort landing prediction.
+        //  abort_path: Leaflet marker for abort prediction track.
+        var balloon_positions = {};
+        var initial_load_complete = false;
+
+        // The sonde we are currently following on the map
+        var balloon_currently_following = "none";
+
+        // Other chase vehicles
+        var chase_vehicles = {};
+        // Only add chase cars which are (initially) within this range limit (km).
+        var vehicle_max_range = 200.0;
+
+        // Chase car position.
+        // properties will contain:
+        //   latest_data: [lat,lon, alt] (latest car position)
+        //   heading: Car heading (to point icon appropriately.)
+        //   marker: Leaflet marker
+        var chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
+
+        // Home position marker
+        var home_marker = 'NONE';
+
+        // Data Age variables - these are updated regularly to indicate
+        // if we haven't received data in a while.
+        var payload_data_age = 0.0;
+        var car_data_age = 0.0;
+        var pred_data_age = 0.0;
+
+        // Other markers which may be added. (TBD, probably other chase car positions via the LoRa payload?)
+        var misc_markers = {};
+
+        // Habitat chase cars
+        var habitat_chase_cars = {};
+
+        // Functions defined later.
+        var setChaseCarTrack;
+
+        // Global dark mode setting
+        var dark_mode = false;
+        var dark_mode_layers = ["Alidade Smooth Dark", "Dark Matter"];
+
+        // Leaflet map instance.
+        var map;
+        // Routing Engine
+        var router;
+
+
+        // Socket.IO Settings
+        var namespace = '/chasemapper';
+        // Socket.IO instance.
+        var socket;
+
+        $(document).ready(function() {
+
+            // Connect to the Socket.IO server.
+            // The connection URL has the following format:
+            //     http[s]://<domain>:<port>[/<namespace>]
+            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace);
+
+
+            // Grab the System config on startup.
+            // Refer to config.py for the contents of the configuration blob.
+            $.ajax({
+                  url: "/get_config",
+                  dataType: 'json',
+                  async: false, // Yes, this is deprecated...
+                  success: function(data) {
+                    serverSettingsUpdate(data);
+                  }
+            });
+
+            // Handler for further settings updates supplied by the server
+            // (i.e. when another client makes a change)
+            socket.on('server_settings_update', function(data){
+                serverSettingsUpdate(data);
+                // Re-Connect to websockets if necessary.
+                startSondeHubWebsockets();
+            });
+
+            // Add handlers for various text fields.
+            // Use the jquery on-changed call for text entry fields,
+            // so they only fire after they lose focus.
+            $("#burstAlt").change(function(){
+                clientSettingsUpdate();
+            });
+            $("#descentRate").change(function(){
+                clientSettingsUpdate();
+            });
+            $("#predUpdateRate").change(function(){
+                clientSettingsUpdate();
+            });
+            $("#habitatUpdateRate").change(function(){
+                clientSettingsUpdate();
+            });
+            $("#habitatCall").change(function(){
+                clientSettingsUpdate();
+            });
+
+            // Handlers for range ring settings.
+            $("#ringQuantity").change(function(){
+                updateRangeRings();
+            });
+            $("#ringSpacing").change(function(){
+                updateRangeRings();
+            });
+            $("#ringWeight").change(function(){
+                updateRangeRings();
+            });
+            $("#ringColorSelect").change(function(){
+                updateRangeRings();
+            });
+            $("#ringCustomColor").change(function(){
+                updateRangeRings();
+            });
+
+            // Handlers for bearing settings
+            $("#bearingWeight").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingLength").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingConfidenceThreshold").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingMaximumAge").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingMinOpacity").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingMaxOpacity").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingColorSelect").change(function(){
+                updateBearingSettings();
+            });
+            $("#bearingCustomColor").change(function(){
+                updateBearingSettings();
+            });
+
+            // Changes to the telemetry source profile selection works a bit differently, as we 
+            // need to do a fair bit of work on the server when these occur. These have a dedicated
+            // socketio message.
+            $("#profileSelect").change(function(){
+                // On a profile selection change, emit a message to the client.
+                socket.emit('profile_change', this.value);
+
+                // Remove chase car if switching to a profile which does not have live position updates.
+                _profile = this.value;
+                reconfigureCarMarker(this.value);
+            });
+
+            // Handle arrival of new log data — write into floating log panel.
+            socket.on('log_event', function(msg) {
+                var level = msg.level || 'INFO';
+                var cls = 'log-level-info';
+                if (level.toUpperCase().indexOf('ERR') !== -1) cls = 'log-level-error';
+                else if (level.toUpperCase().indexOf('WARN') !== -1) cls = 'log-level-warn';
+                else if (level.toUpperCase().indexOf('DEBUG') !== -1) cls = 'log-level-debug';
+                var text = msg.timestamp + " [" + level + "]: " + msg.msg;
+                var $line = $('<div>').addClass('log-line').addClass(cls).text(text);
+                $('#logPanelBody').prepend($line);
+                // Keep newest at top; keep panel scrolled to top
+                $('#logPanelBody').scrollTop(0);
+            });
+
+            // Update APRS callsign last-beacon timestamps when telemetry arrives
+            socket.on('telemetry_event', function(telem) {
+                try {
+                    var cs = (telem.callsign || telem.callsign || '').toString().toUpperCase();
+                    if (!cs) return;
+                    var el = $('#aprsList').find('li[data-callsign="' + cs + '"]');
+                    if (el.length > 0) {
+                        var timeText = telem.short_time || '';
+                        if (!timeText && telem.server_time) {
+                            var d = new Date(Math.floor(telem.server_time) * 1000);
+                            timeText = d.toISOString().replace('T',' ').split('.')[0];
+                        }
+                        if (!timeText) timeText = '\u2014';
+                        el.find('.aprs-last-time').removeClass('collecting').text(timeText);
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            });
+
+            //
+            // LEAFLET MAP SETUP
+            //
+            // Setup a basic Leaflet map
+            // Default fallback: Ann Arbor, MI
+            var annArbor = [42.2808, -83.7430];
+            var initialCenter = annArbor;
+            if (typeof chase_config !== 'undefined' && chase_config.default_lat && chase_config.default_lon){
+                initialCenter = [chase_config.default_lat, chase_config.default_lon];
+            }
+            map = L.map('map').setView(initialCenter, 10);
+
+            // Attempt to center on user's current location if available
+            if (navigator && navigator.geolocation){
+                navigator.geolocation.getCurrentPosition(function(pos){
+                    try{
+                        var ucoords = [pos.coords.latitude, pos.coords.longitude];
+                        map.setView(ucoords, 13);
+                        // add or update a car icon for the user's location
+                        if (typeof window.user_location_marker === 'undefined'){
+                            try{
+                                if (typeof carIcon !== 'undefined'){
+                                    window.user_location_marker = L.marker(ucoords, {icon: carIcon}).addTo(map);
+                                } else {
+                                    window.user_location_marker = L.marker(ucoords).addTo(map);
+                                }
+                            }catch(e){
+                                window.user_location_marker = L.marker(ucoords).addTo(map);
+                            }
+                        } else {
+                            window.user_location_marker.setLatLng(ucoords);
+                        }
+                    }catch(e){ console.warn('Failed to center on user location', e); }
+                }, function(err){
+                    console.log('Geolocation unavailable or denied:', err && err.message ? err.message : err);
+                    // keep the initial center (Ann Arbor or configured default)
+                }, {enableHighAccuracy:true, timeout:10000});
+            }
+
+            // Add OSM Map Layer
+            var osm_map = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            // Add OSM Topo Map Layer
+            var osm_topo_map = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://wiki.openstreetmap.org/wiki/OpenTopoMap">OpenTopoMap</a> contributors'
+            });
+
+            // Add ESRI Satellite Map layers.
+            var esrimapLink = 
+            '<a href="http://www.esri.com/">Esri</a>';
+            var esriwholink = 
+            'i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community';
+            var esri_sat_map = L.tileLayer(
+            'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+            {
+                attribution: '&copy; '+esrimapLink+', '+esriwholink,
+                maxZoom: 18,
+            });
+            // Dark Matter map layer, one of the maps suitable for 'dark mode'
+            var dark_matter_map = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://carto.com/help/building-maps/basemap-list/">Carto</a>'
+            });
+
+            
+
+            var map_layers = {'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map, 'Dark Matter':dark_matter_map};
+
+            // Add ThunderForest layers, if we have a key provided.
+            if (chase_config.thunderforest_api_key !== 'none'){
+                // Thunderforest Outdoors layer.
+                var thunderforest_outdoors = L.tileLayer('https://tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey='+chase_config.thunderforest_api_key, 
+                {
+                    attribution: '&copy; <a href="http://www.thunderforest.com">Thunderforest</a>, Data &copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+                });
+                map_layers['Outdoors (Terrain)'] = thunderforest_outdoors;
+
+            }
+
+            if (chase_config.stadia_api_key !== 'none'){
+                // Stadia Alidade Smooth Dark Layer.
+                var alidade_smooth_dark = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png?apikey='+chase_config.stadia_api_key, 
+                {
+                    attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="http://openstreetmap.org">OpenStreetMap</a> contributors'
+                });
+                map_layers['Alidade Smooth Dark'] = alidade_smooth_dark;
+
+            }
+
+            // Add Offline map layers, if we have any.
+            for (var i = 0, len = chase_config.offline_tile_layers.length; i < len; i++) {
+                var _layer_name = chase_config.offline_tile_layers[i];
+                map_layers['Offline - ' + _layer_name] = L.tileLayer(location.protocol + '//' + document.domain + ':' + location.port + '/tiles/'+_layer_name+'/{z}/{x}/{y}.png');
+            }
+
+            // Add measurement control.
+
+            if (chase_config['unitselection'] == "imperial") {
+                L.control.polylineMeasure({
+                    position: 'topleft',
+                    unit: 'landmiles',
+                    showClearControl: true,
+                }).addTo(map);
+            }
+
+
+            if (chase_config['unitselection'] == "metric") { 
+                L.control.polylineMeasure({
+                    position: 'topleft',
+                    unit: 'metres',
+                    showClearControl: true,
+                }).addTo(map);
+            }
+
+
+            
+            // Add layer selection control (top right).
+            // Replace default Leaflet layers control with a modern animated selector
+            function createMapProviderControl(map, layersObj, initialName){
+                var ctl = L.control({position:'topright'});
+                ctl.onAdd = function(mapLocal){
+                    var div = L.DomUtil.create('div', 'map-provider-control');
+                    div.innerHTML = '<button id="mapProviderBtn" class="mp-btn"><span id="mp-current">'+initialName+'</span> <i class="fa fa-layer-group"></i></button><div id="mp-dropdown" class="mp-dropdown"><ul></ul></div>';
+                    L.DomEvent.disableClickPropagation(div);
+                    return div;
+                };
+                ctl.addTo(map);
+
+                // populate list
+                var ul = document.querySelector('.map-provider-control .mp-dropdown ul');
+                for (var name in layersObj){
+                    if (!layersObj.hasOwnProperty(name)) continue;
+                    var li = document.createElement('li');
+                    li.className = 'mp-item';
+                    li.dataset.layerName = name;
+                    li.textContent = name;
+                    ul.appendChild(li);
+                }
+
+                var btn = document.getElementById('mapProviderBtn');
+                var dropdown = document.getElementById('mp-dropdown');
+                btn.addEventListener('click', function(e){
+                    dropdown.classList.toggle('open');
+                });
+
+                ul.addEventListener('click', function(e){
+                    var li = e.target;
+                    if (!li || !li.dataset || !li.dataset.layerName) return;
+                    var chosen = li.dataset.layerName;
+                    // remove other base layers
+                    for (var n in layersObj){ if (!layersObj.hasOwnProperty(n)) continue; if (map.hasLayer(layersObj[n])) map.removeLayer(layersObj[n]); }
+                    layersObj[chosen].addTo(map);
+                    document.getElementById('mp-current').textContent = chosen;
+                    dropdown.classList.remove('open');
+                });
+
+                // close dropdown when clicking outside
+                document.addEventListener('click', function(e){
+                    var container = document.querySelector('.map-provider-control');
+                    if (!container) return;
+                    if (!container.contains(e.target)){
+                        dropdown.classList.remove('open');
+                    }
+                });
+            }
+
+            // create control with currently active layer name
+            var defaultLayerName = 'OSM';
+            if (map_layers && map_layers['OSM']) defaultLayerName = 'OSM';
+            createMapProviderControl(map, map_layers, defaultLayerName);
+
+            // Add map scale.
+            if (chase_config['unitselection'] == "imperial") { L.control.scale({imperial: true, metric: false}).addTo(map) ;}
+            if (chase_config['unitselection'] == "metric") { L.control.scale({imperial: false, metric: true}).addTo(map) ;}
+
+
+
+            // Units for rings
+            if (chase_config['unitselection'] == "imperial") { document.getElementById("ring_spacing").innerHTML = "Ring Spacing (ft)";}
+            if (chase_config['unitselection'] == "metric")   { document.getElementById("ring_spacing").innerHTML = "Ring Spacing (m)";}
+
+            // Sidebar removed — using floating panels and bottom menubar instead.
+
+            // Add custom controls, which show various sets of data.
+
+            // Telemetry table - shows all payload telemetry.
+            L.control.custom({
+                position: 'bottomright',
+                content : "<div class='centerWrapper'><div id='telem_table_btn' class='center_btn'><i class='fa fa-angle-right fa-4x text-center'></i></div><div id='telem_table' style='float:right;'></div></div>",
+                classes : 'btn-group-horizonal btn-group-sm',
+                id: 'telem_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Allow hiding of the telemetry table. This function is in tables.js
+            $("#telem_table_btn").click(toggleTelemTableHide);
+
+
+            // Summary display - a 'quick-look' of where the currently tracked payload is and what it's doing.
+            L.control.custom({
+                position: 'topcenter',
+                content : "<div id='summary_table'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'summary_display',
+                style   :
+                {
+                    margin: '5px',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Data age display - shows how old the various datasets are.
+            L.control.custom({
+                position: 'topleft',
+                content : "<div class='dataAgeHeader'>Data Age</div><div id='payload_age' class='dataAgeOK'></div><div id='car_age' class='dataAgeOK'></div><div id='car_warning' class='dataAgeOK'></div><div id='pred_age' class='dataAgeOK'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'age_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Chase Car Speed Display
+            L.control.custom({
+                position: 'bottomleft',
+                content : "<div class='dataAgeHeader' id='chase_car_speed_header'></div><div id='chase_car_speed' class='chaseCarSpeed'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'speed_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+            // Chase Car Heading Display
+            L.control.custom({
+                position: 'bottomleft',
+                content : "<div class='dataAgeHeader' id='chase_car_heading_header'></div><div id='chase_car_heading' class='chaseCarSpeed'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'heading_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Time-to-landing display - shows the time until landing for the currently tracked payload.
+            L.control.custom({
+                position: 'bottomleft',
+                content : "<div id='time_to_landing' class='timeToLanding'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'ttl_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Time-to-landing display - shows the time until landing for the currently tracked payload.
+            L.control.custom({
+                position: 'bottomcenter',
+                content : "<div id='timeseq_notice' class='timeToLanding'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'ttl_display',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            L.control.custom({
+                position: 'bottomright',
+                content : "<div id='bearing_table'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'bearing_data',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            L.control.custom({
+                position: 'bottomright',
+                content : "<div id='bearing_plot'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'bearing_plot_control',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+            // Used to show log replay time information, if received.
+            L.control.custom({
+                position: 'bottomcenter',
+                content : "<div id='log_time' class='chaseCarSpeed'></div>",
+                classes : 'btn-group-vertical btn-group-sm',
+                id: 'log_time_control',
+                style   :
+                {
+                    margin: '5px',
+                    padding: '0px 0 0 0',
+                    cursor: 'pointer',
+                }
+            })
+            .addTo(map);
+
+
+
+            // Follow buttons - these just set the radio buttons on the settings pane.
+            // TODO: Figure out how to centre the icons under iOS's Safari browser.
+            // Also TODO: Find a decent balloon icon!
+            L.easyButton('fa-paper-plane', function(btn, map){
+                $('input:radio[name=autoFollow]').val(['payload']);
+            }, 'Follow Payload', 'followPayloadButton', {
+                position: 'topright'
+            }
+            ).addTo(map);
+
+            L.easyButton('fa-car', function(btn, map){
+                $('input:radio[name=autoFollow]').val(['car']);
+            }, 'Follow Chase Car', 'followCarButton', {
+                position: 'topright'
+            }
+            ).addTo(map);
+
+            map.zoomControl.setPosition('topright');
+
+            // Experimental routing control
+            // Currently disabled, as there is currently not enough control around how the map is re-panned
+            // after a route is calculated.
+            // router = L.Routing.control({
+            //     waypoints: [null],
+            //     show: false,
+            //     showAlternatives: false
+            // }).addTo(map);
+
+            // Handler for when the user manually moves the map. This turns off
+            // the auto-follow options.
+            // Note we have to use 'dragend' else map movements from auto-follow would trigger this.
+            function mapMovedEvent(e){
+                // The user has panned the map, stop following things.
+                $('input:radio[name=autoFollow]').val(['none']);
+            }
+            map.on('dragend',mapMovedEvent);
+
+
+            map.on('baselayerchange', function (e) {
+                if(dark_mode_layers.includes(e.name)){
+                    dark_mode = true;
+                }else {
+                    dark_mode = false;
+                }
+            });
+
+            initTables();
+
+            
+            // Grab the recent archive of telemetry data
+            // This should only ever be run once - on page load.
+            $.ajax({
+                  url: "/get_telemetry_archive",
+                  dataType: 'json',
+                  async: true,
+                  success: function(data) {
+
+                    for (callsign in data){
+                        add_new_balloon(data[callsign]);
+                    }
+                    // Update telemetry table
+                    updateTelemetryTable();
+                    initial_load_complete = true;
+                  }
+            });
+
+            // Initialise bearings
+            initialiseBearings();
+
+            // Initial setup of station marker, if using a profile which uses it.
+            reconfigureCarMarker(chase_config.selected_profile);
+
+
+            // Telemetry event handler.
+            // We will get one of these mesages with every new balloon position
+            socket.on('telemetry_event', function(data) {
+                handleTelemetry(data);
+            });
+
+            socket.on('modem_stats_event', function(data) {
+                handleModemStats(data);
+            });
+
+            // Predictor Functions
+            socket.on('predictor_model_update', function(data){
+                var _model_data = data.model;
+                $("#predictorModelValue").text(_model_data);
+            });
+        
+            socket.on('predictor_update', function(data){
+                handlePrediction(data);
+            });
+
+            socket.on('bearing_change', function(data){
+                bearingUpdate(data);
+            });
+
+            socket.on('server_bearings_cleared', function(data){
+                destroyAllBearings();
+            });
+
+
+            $("#downloadModel").click(function(){
+                socket.emit('download_model', {data: 'plzkthx'});
+            });
+
+            $("#clearPayloadData").click(function(){
+                var _confirm = confirm("Really clear all Payload data?");
+                if (_confirm == true){
+                    socket.emit('payload_data_clear', {data: 'plzkthx'});
+
+                    // Clear all payload markers and tracks from the map/
+                    for (_callsign in balloon_positions){
+                        balloon_positions[_callsign].marker.remove();
+                        balloon_positions[_callsign].path.remove();
+                        balloon_positions[_callsign].pred_path.remove();
+                        balloon_positions[_callsign].abort_path.remove();
+                        // Clear out the markers if they exist.
+                        if (balloon_positions[_callsign].abort_marker != null){
+                            balloon_positions[_callsign].abort_marker.remove();
+                        }
+                        if (balloon_positions[_callsign].burst_marker != null){
+                            balloon_positions[_callsign].burst_marker.remove();
+                        }
+                        if (balloon_positions[_callsign].pred_marker != null){
+                            balloon_positions[_callsign].pred_marker.remove();
+                        }
+                    }
+                    // Reset the balloon positions object to nothing.
+                    balloon_positions = {};
+                    balloon_currently_following = "none";
+                    // Update tables.
+                    updateTelemetryTable();
+                    updateSummaryDisplay();
+                    // Clear the time-to-landing display.
+                    $('#time_to_landing').text("");
+                }
+            });
+
+            $("#clearCarData").click(function(){
+                var _confirm = confirm("Really clear all Chase Car data?");
+                if (_confirm == true){
+                    socket.emit('car_data_clear', {data: 'plzkthx'});
+                    if (chase_car_position.marker !== "NONE"){
+                        chase_car_position.marker.remove();
+                    }
+                    if (chase_car_position.path !== "NONE"){
+                        chase_car_position.path.remove();
+                    }
+
+                    chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
+
+                }
+            });
+
+            // Function to show/hide chase car track tail.
+            setChaseCarTrack = function(){
+                // Read state of checkbox
+                var _car_track_enabled = document.getElementById("chaseCarTrack").checked;
+                // Only continue if we have chase car data to show/hide.
+                if (chase_car_position !== "NONE"){
+                    if (_car_track_enabled == false){
+                        chase_car_position.path.remove();
+                    }else{
+                        chase_car_position.path.addTo(map);
+                    }
+                }
+            };
+
+            // Tell the server we are connected and ready for data.
+            socket.on('connect', function() {
+                socket.emit('client_connected', {data: 'I\'m connected!'});
+                // This will cause the server to emit a few messages telling us to fetch data.
+            });
+
+
+            // Data age update.
+            var age_update_rate = 500;
+            window.setInterval(function () {
+                // Update the data age displays.
+                payload_data_age += age_update_rate/1000.0;
+                car_data_age += age_update_rate/1000.0;
+                pred_data_age += age_update_rate/1000.0;
+
+                if (balloon_currently_following === 'none'){
+                    $("#payload_age").text("Payload: No Data.");
+                }else{
+                    $("#payload_age").text("Payload: " + payload_data_age.toFixed(1)+"s");
+                    if (payload_data_age > payload_bad_age){
+                        $("#payload_age").removeClass();
+                        $("#payload_age").addClass('dataAgeBad');
+                    }else{
+                        $("#payload_age").removeClass();
+                        $("#payload_age").addClass('dataAgeOK');
+                    }
+                }
+
+                if(chase_car_position.latest_data.length == 0){
+                    $("#car_age").text("Car GPS: No Data.");
+                }else{
+                    $("#car_age").text("Car GPS: " + car_data_age.toFixed(1)+"s");
+                    if (car_data_age > car_bad_age){
+                        $("#car_age").removeClass();
+                        $("#car_age").addClass('dataAgeBad');
+                    }else{
+                        $("#car_age").removeClass();
+                        $("#car_age").addClass('dataAgeOK');
+                    }
+                }
+
+                if (chase_config['pred_enabled']==false){
+                    $("#pred_age").text("Predictions: No Data.");
+                }else{
+                    $("#pred_age").text("Predictions: " + pred_data_age.toFixed(1)+"s");
+                }
+
+                updateTimeSeqClock();
+            }, age_update_rate);
+
+            // Start connection to Sondehub Websockets.
+            startSondeHubWebsockets();
+
+            // Sadly we can't request location information unless chasemapper is served up via HTTPS
+            // which is a bit difficult to make happen.
+            // window.setInterval(function(){
+            //     if(document.getElementById('useDevicePosition').checked){
+            //         if(navigator.geolocation){
+            //             car_bad_age = 20.0;
+            //             navigator.geolocation.getCurrentPosition(devicePositionCallback,devicePositionError,{enableHighAccuracy:true});
+            //         }
+            //     }
+            // }, 5000);
+
+
+            window.setInterval(function(){
+                if(Object.keys(bearing_store).length > 0){
+                    $.ajax({
+                          url: "/server_time",
+                          dataType: 'json',
+                          async: true,
+                          success: function(data) {
+                              latest_server_timestamp = data;
+                              restyleBearings();
+                          }
+                    });
+                }
+            },10000); 
+
+            // Enable bearings only mode if it's set.
+            toggleBearingsOnlyMode();
+        });
+    </script>
+</head>
+
+<body>
+
+<div id="map" class="map"></div>
+
+<!-- Menubar: compact floating bar (bottom) with app title, quick buttons and APRS status -->
+<div id="topbar" class="d-flex align-items-center p-2" style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:9999;max-width:820px;width:calc(100% - 48px);background:rgba(15,23,36,0.75);color:#fff;border-radius:10px;padding:10px 14px;backdrop-filter:blur(6px);box-shadow:0 6px 18px rgba(0,0,0,0.35);">
+    <div class="d-flex align-items-center">
+        <div style="width:36px;height:36px;background:#06b6d4;border-radius:8px;margin-right:12px;"></div>
+        <div>
+            <div style="font-weight:600;font-size:1rem;line-height:1;">ChaseMapper</div>
+            <div style="font-size:0.82rem;opacity:0.8;line-height:1;">Live flight operations</div>
+        </div>
+    </div>
+    <div class="ms-auto d-flex align-items-center">
+            <div class="btn-group me-3" role="group" aria-label="Topbar actions">
+            <button class="btn btn-sm btn-outline-light" id="topbarLogBtn">Log</button>
+            <button class="btn btn-sm btn-outline-light" id="topbarAprsBtn">APRS-IS</button>
+            <button class="btn btn-sm btn-outline-light" id="topbarSettingsBtn">Settings</button>
+        </div>
+        <div class="d-flex align-items-center" style="gap:8px;">
+            <span class="badge bg-success rounded-circle" style="width:12px;height:12px;display:inline-block;"></span>
+            <span style="opacity:0.95;font-weight:600;">APRS-IS</span>
+        </div>
+    </div>
+</div>
+
+<script>
+// Menubar buttons: toggle panels
+$(document).on('click', '#topbarLogBtn', function(){
+    $('#settingsPanel').removeClass('panel-open');
+    $('#logPanel').toggleClass('panel-open');
+});
+// Open the full settings (the "Other" settings used to live here)
+$(document).on('click', '#topbarSettingsBtn', function(){
+    $('#logPanel').removeClass('panel-open');
+    $('#settingsPanel').addClass('panel-open');
+    // Show the full settings section
+    $('#otherSection').show();
+    $('#aprsSection').hide();
+    $('#settingsPanel .settings-header span').text('Settings');
+    // update theme select from localStorage
+    var t = localStorage.getItem('chasemapper_theme') || 'light';
+    $('#themeSelect').val(t);
+    // populate current location if available
+    if (navigator && navigator.geolocation){
+        navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
+    }
+});
+// Open APRS quick panel
+$(document).on('click', '#topbarAprsBtn', function(){
+    $('#logPanel').removeClass('panel-open');
+    $('#settingsPanel').addClass('panel-open');
+    // show APRS quick view
+    $('#aprsSection').show();
+    $('#otherSection').hide();
+    $('#settingsPanel .settings-header span').text('APRS');
+    setTimeout(function(){ $('#aprsCallInput').focus(); }, 300);
+});
+
+// Close buttons
+$(document).on('click', '#logPanelClose', function(){ $('#logPanel').removeClass('panel-open'); });
+$(document).on('click', '#settingsPanelClose', function(){ $('#settingsPanel').removeClass('panel-open'); });
+
+// Theme toggle: persist and apply
+function applyTheme(isDark){
+    if(isDark){
+        $('body').addClass('dark-theme');
+    } else {
+        $('body').removeClass('dark-theme');
+    }
+}
+
+$(document).ready(function(){
+    // Initialize theme from localStorage
+    var t = localStorage.getItem('chasemapper_theme') || 'light';
+    applyTheme(t === 'dark');
+
+    // Theme toggle removed from settings panel; theme is read from localStorage on load.
+
+    // APRS add button is handled in `static/js/settings.js` — no extra handler here.
+});
+
+</script>
+
+		<!-- Dialog boxes. These are activated from the telemetry table - see tables.js -->
+        <div id="telemetry-select-dialog" title="Payload Selection" style='display:none;'>
+            <div class="paramRow">
+                <b>Current Position:</b> <div style='float:right;' id='telemDialogPosition'></div><br/>
+            </div>
+            <div class="paramRow">
+                <b>Predicted Landing:</b> <div style='float:right;' id='telemDialogPredPosition'></div><br/>
+            </div>
+            <div class="paramRow">
+                <b>Select Action:</b><br/>
+            </div>
+        </div>
+
+        <div id="mark-recovered-dialog" title="Mark Payload Recovered" style='display:none;'>
+            <div class="paramRow">
+                <b>Last Position:</b> <div style='float:right;' id='recoveryPosition'></div><br/>
+            </div>
+            <div class="paramRow">
+                <b>Recovery Successful:</b> <input type="checkbox" class="paramSelector" id="recoverySuccessful" checked><br/>
+            </div>
+            <div class="paramRow">
+                <b>Use Car Position:</b> <input type="checkbox" class="paramSelector" id="recoveryCarPosition" onclick='setRecoveryCarPosition();'><br/>
+            </div>
+            <div class="paramRow">
+                <b>Title:</b><input type="text" class="paramEntry" size="40" id="customRecoveryTitle"><br/>
+            </div>
+            <div class="paramRow">
+                <b>Message:</b><input type="text" class="paramEntry" size="40" id="customRecoveryMessage"><br/>
+            </div>
+        </div>
+
+        <!-- Floating log panel -->
+        <div id="logPanel" class="log-panel">
+            <div class="log-panel-header">
+                <span>Log Messages</span>
+                <button id="logPanelClose" class="btn-close">×</button>
+            </div>
+            <div id="logPanelBody" class="log-panel-body"></div>
+        </div>
+
+        <!-- Settings modal/panel -->
+        <div id="settingsPanel" class="settings-panel">
+            <div class="settings-panel-content">
+                <div class="settings-header">
+                    <span>Settings</span>
+                    <button id="settingsPanelClose" class="btn-close">×</button>
+                </div>
+                <div class="settings-body">
+                    <!-- APRS quick view (shown when APRS button selected) -->
+                    <div id="aprsSection" style="display:none;">
+                        <div class="form-group input-group">
+                            <input id="aprsCallInput" class="form-control" placeholder="CALLSIGN or CALL-SSID" aria-label="APRS callsign">
+                            <button id="aprsAddBtn" type="button" class="btn btn-primary" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
+                        </div>
+                        <ul id="aprsList" class="list-group"></ul>
+                        <div class="form-group">
+                            <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
+                            <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
+                        </div>
+                    </div>
+
+                    <!-- Full Settings (opened from Settings button) -->
+                    <div id="otherSection" style="display:none;">
+                        <h4>Settings</h4>
+                        <div class="form-group">
+                            <label for="themeSelect">Theme</label>
+                            <select id="themeSelect" class="form-control">
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Current Location</label>
+                            <div class="d-flex align-items-center" style="gap:8px;">
+                                <div id="currentLocationDisplay">Unknown</div>
+                                <button id="useCurrentLocation" type="button" class="btn btn-sm btn-outline-light">Use current location</button>
+                            </div>
+                            <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;">
+                                <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
+                                <input id="currentLon" class="form-control" placeholder="Longitude" style="width:120px;" />
+                                <button id="applyLocation" type="button" class="btn btn-sm btn-primary">Apply</button>
+                            </div>
+                        </div>
+                        <h4>Other</h4>
+                        <div class="paramRow">
+                            <button type="button" class="btn btn-secondary" id="clearPayloadData" style="margin-right:8px;">Clear Payload Data</button>
+                            <button type="button" class="btn btn-secondary" id="clearCarData">Clear Chase-Car Track</button>
+                        </div>
+                    </div>
+                    
+                    <!-- When panel first opens default to otherSection (settings) -->
+                    <script>
+                        // Ensure the sections are hidden by default; JS will show the right one when opened.
+                        $('#aprsSection').hide();
+                        $('#otherSection').hide();
+                    </script>
+                </div>
+            </div>
+        </div>
+
+    
+</body>
+</html>

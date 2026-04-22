@@ -1,0 +1,12 @@
+eccodes
+cusfpredict
+flask
+flask-socketio
+lxml
+numpy
+python-dateutil
+pytz
+requests
+pyserial
+simple-websocket
+aprslib

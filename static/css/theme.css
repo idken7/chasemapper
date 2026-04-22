@@ -1,0 +1,178 @@
+/* Modern theme variables and component styles */
+:root{
+    --bg: #ffffff;
+    --text: #111827;
+    --panel-bg: #f8fafc;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-contrast: #ffffff;
+    --card-radius: 8px;
+}
+
+.theme-dark{
+    --bg: #0b1220;
+    --text: #e6eef8;
+    --panel-bg: #0f1724;
+    --muted: #9ca3af;
+    --accent: #6366f1;
+    --accent-contrast: #fff;
+}
+
+body{
+    background: var(--bg) !important;
+    color: var(--text) !important;
+}
+
+/* Modernize form controls and buttons */
+input[type="text"], select, textarea {
+    border: 1px solid rgba(0,0,0,0.12);
+    background: var(--panel-bg);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: var(--card-radius);
+    box-shadow: 0 1px 2px rgba(16,24,40,0.03) inset;
+}
+
+button, .btn, .easy-button-button {
+    background: var(--accent);
+    color: var(--accent-contrast) !important;
+    border: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    box-shadow: 0 4px 8px rgba(16,24,40,0.06);
+}
+
+/* Log area styling */
+.logText{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    background: rgba(0,0,0,0.04);
+    padding: 8px;
+    max-height: 36vh;
+    overflow-y: auto;
+    border-radius: 6px;
+}
+
+.log-entry{
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+}
+.log-entry.level-INFO{ color: var(--text); background: rgba(16,185,129,0.06); }
+.log-entry.level-WARNING{ color: #b45309; background: rgba(245,158,11,0.06); }
+.log-entry.level-ERROR{ color: #dc2626; background: rgba(239,68,68,0.06); }
+.log-entry.level-DEBUG{ color: var(--muted); background: rgba(100,116,139,0.03); }
+
+/* Small responsive tweaks for sidebar elements */
+.sidebar .paramRow .paramEntry, .sidebar .paramRow .paramSelector{
+    margin-top: 4px;
+}
+
+/* Sidebar header & small control buttons */
+.sidebar-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+}
+.sidebar-header .header-actions{
+    display:flex;
+    gap:6px;
+}
+.header-btn{
+    background: transparent;
+    border: 1px solid rgba(0,0,0,0.08);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+.header-btn:hover{ box-shadow: 0 4px 12px rgba(16,24,40,0.06); }
+
+/* Make selects and inputs full width in sidebar */
+#sidebar select, #sidebar input[type="text"], #sidebar textarea {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Tweak map control appearance to match theme */
+.leaflet-control-layers-toggle, .leaflet-bar a {
+    background: var(--panel-bg) !important;
+    color: var(--text) !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(0,0,0,0.06) !important;
+}
+
+/* Modern table / tabulator styling */
+.tabulator{
+    background: transparent;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(0,0,0,0.06);
+}
+.tabulator-header{
+    background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.02));
+    backdrop-filter: blur(2px);
+    padding: 10px 12px;
+    font-weight: 600;
+    color: var(--text);
+}
+.tabulator-row .tabulator-cell{
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+    color: var(--text);
+    background: transparent;
+}
+.tabulator-row:nth-child(even) .tabulator-cell{
+    background: rgba(0,0,0,0.02);
+}
+.tabulator-empty{
+    text-align:center;
+    color: var(--muted);
+    padding: 18px;
+}
+
+/* Basic table fallback styles */
+table{ border-collapse: collapse; width: 100%; }
+table th{ text-align: left; padding: 10px 12px; background: var(--panel-bg); color: var(--text); font-weight: 700; }
+table td{ padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); color: var(--text); }
+table tr:nth-child(even) td{ background: rgba(0,0,0,0.02); }
+
+/* jQuery UI dialog modern look */
+.ui-widget-overlay{
+    background: rgba(6,10,20,0.55) !important;
+    backdrop-filter: blur(6px);
+}
+.ui-dialog, .ui-widget-content{
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));
+    border-radius: 12px !important;
+    border: 1px solid rgba(0,0,0,0.08) !important;
+    box-shadow: 0 10px 30px rgba(2,6,23,0.45) !important;
+    color: var(--text) !important;
+}
+.ui-dialog .ui-dialog-titlebar{
+    background: transparent !important;
+    border: none !important;
+    padding: 14px 18px !important;
+    font-weight: 700;
+}
+.ui-dialog .ui-dialog-content{
+    padding: 18px !important;
+}
+
+/* Make paramEntry and textareas in dialogs look nicer */
+.paramEntry, textarea.paramEntry, #telemetry-select-dialog textarea, .ui-dialog textarea{
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    padding: 10px 12px;
+    border-radius: 10px;
+    color: var(--text);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+}
+.paramEntry:focus, textarea.paramEntry:focus{ outline: none; box-shadow: 0 6px 18px rgba(37,99,235,0.12); border-color: rgba(37,99,235,0.5); }
+
+/* Small utility: compact header badges */
+.badge-soft{ background: rgba(99,102,241,0.12); color: var(--accent); padding:4px 8px; border-radius:999px; font-weight:600; }
+
+

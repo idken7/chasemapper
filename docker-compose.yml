@@ -1,0 +1,19 @@
+services:
+  chasemapper:
+    container_name: chasemapper
+    build: .
+    restart: always
+    tty: true
+    ports:
+      - "5001:5001"
+    volumes:
+      # NOTE: The application expects a single config file at /opt/chasemapper/horusmapper.cfg
+      # mounting a host directory at that path (./horusmapper.cfg) will cause the app to fail
+      # to read the config. Place your config file at ./horusmapper.cfg/horusmapper.cfg
+      # and the compose mapping below will mount the file into the container.
+      - chasemapper_logs:/opt/chasemapper/log_files/
+      # Mount local source into container for development so template/js edits are live
+      - ./:/opt/chasemapper/:rw
+
+volumes:
+  chasemapper_logs:
