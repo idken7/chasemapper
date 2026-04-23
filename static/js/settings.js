@@ -33,6 +33,256 @@ var chase_config = {
     habitat_call: 'N0CALL'
 };
 
+// APRS UI state cache keyed by uppercased callsign.
+var aprs_telemetry_cache = {};
+var aprs_last_rx_ms = {};
+
+function getAprsStatusTimeoutMs() {
+    var poll = parseInt(chase_config.aprs_poll_interval || 30, 10);
+    if (isNaN(poll) || poll < 5) {
+        poll = 30;
+    }
+    return Math.max(20000, ((poll * 3) + 10) * 1000);
+}
+
+function setAprsStatusDot(state, titleText) {
+    var dot = $('#aprsStatusDot');
+    if (dot.length === 0) {
+        return;
+    }
+    dot.removeClass('aprs-status-good aprs-status-broken aprs-status-connecting');
+    if (state === 'good') {
+        dot.addClass('aprs-status-good');
+    } else if (state === 'broken') {
+        dot.addClass('aprs-status-broken');
+    } else {
+        dot.addClass('aprs-status-connecting');
+    }
+    dot.attr('title', titleText || 'APRS status');
+}
+
+function updateAprsStatusIndicator() {
+    var calls = chase_config.aprs_callsigns || [];
+    if (calls.length === 0) {
+        setAprsStatusDot('broken', 'APRS status: broken (no callsigns configured)');
+        return;
+    }
+
+    var now = Date.now();
+    var timeoutMs = getAprsStatusTimeoutMs();
+    var anySeen = false;
+    var anyFresh = false;
+
+    calls.forEach(function(cs) {
+        var key = (cs || '').toString().toUpperCase();
+        if (!key) {
+            return;
+        }
+        if (aprs_last_rx_ms.hasOwnProperty(key)) {
+            anySeen = true;
+            if ((now - aprs_last_rx_ms[key]) <= timeoutMs) {
+                anyFresh = true;
+            }
+        }
+    });
+
+    if (anyFresh) {
+        setAprsStatusDot('good', 'APRS status: good (receiving data)');
+    } else if (anySeen) {
+        setAprsStatusDot('broken', 'APRS status: broken (no recent APRS data)');
+    } else {
+        setAprsStatusDot('connecting', 'APRS status: connecting');
+    }
+}
+
+function getAprsReferencePosition() {
+    if (typeof chase_car_position !== 'undefined' && chase_car_position.latest_data && chase_car_position.latest_data.length === 3) {
+        return {
+            lat: chase_car_position.latest_data[0],
+            lon: chase_car_position.latest_data[1],
+            alt: chase_car_position.latest_data[2]
+        };
+    }
+
+    if (typeof chase_config !== 'undefined' && chase_config.default_lat !== undefined && chase_config.default_lon !== undefined) {
+        return {
+            lat: parseFloat(chase_config.default_lat),
+            lon: parseFloat(chase_config.default_lon),
+            alt: parseFloat(chase_config.default_alt || 0)
+        };
+    }
+
+    return null;
+}
+
+function createAprsDetailRow(label, valueClass) {
+    var row = $('<div>').addClass('aprs-detail-row');
+    row.append($('<span>').addClass('aprs-detail-label').text(label));
+    row.append($('<span>').addClass('aprs-detail-value ' + valueClass).text('\u2014'));
+    return row;
+}
+
+function createAprsListItem(cs, collecting) {
+    var csKey = (cs || '').toString().toUpperCase();
+    var li = $('<li>').addClass('list-group-item aprs-item');
+    li.attr('data-callsign', csKey);
+
+    var row = $('<div>').addClass('d-flex justify-content-between align-items-start');
+    var left = $('<div>').addClass('d-flex flex-column');
+    var titleRow = $('<div>').addClass('d-flex align-items-center');
+    var name = $('<strong>').text(csKey);
+    var timeSpan = $('<span>').addClass('aprs-last-time ms-2 text-muted').text('\u2014');
+    if (collecting) {
+        timeSpan.addClass('collecting').text('Collecting...');
+    }
+    titleRow.append(name).append(timeSpan);
+
+    var detailGrid = $('<div>').addClass('aprs-detail-grid mt-1');
+    detailGrid.append(createAprsDetailRow('Alt', 'aprs-val-alt'));
+    detailGrid.append(createAprsDetailRow('Speed', 'aprs-val-speed'));
+    detailGrid.append(createAprsDetailRow('Ascent', 'aprs-val-ascent'));
+    detailGrid.append(createAprsDetailRow('Az', 'aprs-val-az'));
+    detailGrid.append(createAprsDetailRow('El', 'aprs-val-el'));
+    detailGrid.append(createAprsDetailRow('Range', 'aprs-val-range'));
+
+    left.append(titleRow).append(detailGrid);
+
+    var right = $('<div>');
+    var btn = $('<button type="button">')
+        .html('<i class="fa fa-trash-o" aria-hidden="true"></i><span class="aprs-remove-fallback">Del</span>')
+        .addClass('btn btn-danger btn-sm aprs-remove-btn')
+        .data('callsign', csKey)
+        .attr('title', 'Remove callsign')
+        .attr('aria-label', 'Remove callsign ' + csKey);
+    right.append(btn);
+
+    row.append(left).append(right);
+    li.append(row);
+
+    return li;
+}
+
+function formatAprsTelemetryValue(telem) {
+    var units = chase_config.unitselection || 'metric';
+    var out = {
+        alt: '\u2014',
+        speed: '\u2014',
+        ascent: '\u2014',
+        az: '\u2014',
+        el: '\u2014',
+        range: '\u2014'
+    };
+
+    if (!telem || !telem.position || telem.position.length < 3) {
+        return out;
+    }
+
+    var altM = parseFloat(telem.position[2]);
+    if (!isNaN(altM)) {
+        out.alt = (units === 'imperial') ? ((altM * 3.28084).toFixed(0) + ' ft') : (altM.toFixed(0) + ' m');
+    }
+
+    var speedMs = parseFloat(telem.speed);
+    if (!isNaN(speedMs)) {
+        out.speed = (units === 'imperial') ? ((speedMs * 2.236936).toFixed(0) + ' mph') : ((speedMs * 3.6).toFixed(0) + ' kph');
+    }
+
+    var ascentMs = parseFloat(telem.vel_v);
+    if (!isNaN(ascentMs)) {
+        out.ascent = (units === 'imperial') ? ((ascentMs * 196.850394).toFixed(0) + ' ft/min') : (ascentMs.toFixed(1) + ' m/s');
+    }
+
+    var origin = getAprsReferencePosition();
+    if (origin !== null && !isNaN(origin.lat) && !isNaN(origin.lon)) {
+        var target = {lat: parseFloat(telem.position[0]), lon: parseFloat(telem.position[1]), alt: altM};
+        if (!isNaN(target.lat) && !isNaN(target.lon) && typeof calculate_lookangles === 'function') {
+            var look = calculate_lookangles({lat: origin.lat, lon: origin.lon, alt: origin.alt || 0}, target);
+            out.az = look.azimuth.toFixed(0) + '\u00b0';
+            out.el = look.elevation.toFixed(0) + '\u00b0';
+            if (units === 'imperial') {
+                if (look.range > (chase_config.switch_miles_feet || 1609.34)) {
+                    out.range = (look.range * 0.000621371).toFixed(1) + ' mi';
+                } else {
+                    out.range = (look.range * 3.28084).toFixed(0) + ' ft';
+                }
+            } else {
+                out.range = (look.range / 1000.0).toFixed(1) + ' km';
+            }
+        }
+    }
+
+    return out;
+}
+
+function renderAprsTelemetryRow(cs) {
+    var csKey = (cs || '').toString().toUpperCase();
+    var item = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
+    if (item.length === 0) {
+        return;
+    }
+
+    var telem = aprs_telemetry_cache[csKey];
+    if (!telem) {
+        return;
+    }
+
+    var timeText = telem.short_time || '';
+    if (!timeText && telem.server_time) {
+        var d = new Date(Math.floor(telem.server_time) * 1000);
+        timeText = d.toISOString().replace('T', ' ').split('.')[0];
+    }
+    if (!timeText) {
+        timeText = '\u2014';
+    }
+    item.find('.aprs-last-time').removeClass('collecting').text(timeText);
+
+    var values = formatAprsTelemetryValue(telem);
+    item.find('.aprs-val-alt').text(values.alt);
+    item.find('.aprs-val-speed').text(values.speed);
+    item.find('.aprs-val-ascent').text(values.ascent);
+    item.find('.aprs-val-az').text(values.az);
+    item.find('.aprs-val-el').text(values.el);
+    item.find('.aprs-val-range').text(values.range);
+}
+
+function refreshAprsTelemetryRows() {
+    var calls = chase_config.aprs_callsigns || [];
+    calls.forEach(function(cs) {
+        renderAprsTelemetryRow(cs);
+    });
+}
+
+function updateAprsTelemetryRow(telem) {
+    if (!telem || !telem.callsign) {
+        return;
+    }
+
+    var csKey = (telem.callsign || '').toString().toUpperCase();
+    if (!csKey) {
+        return;
+    }
+
+    aprs_telemetry_cache[csKey] = telem;
+    if (telem.server_time) {
+        aprs_last_rx_ms[csKey] = Math.floor(telem.server_time * 1000);
+    } else {
+        aprs_last_rx_ms[csKey] = Date.now();
+    }
+
+    if (csKey === 'CAR') {
+        refreshAprsTelemetryRows();
+        return;
+    }
+
+    var hasRow = $('#aprsList').find('li[data-callsign="' + csKey + '"]').length > 0;
+    if (!hasRow) {
+        return;
+    }
+
+    renderAprsTelemetryRow(csKey);
+    updateAprsStatusIndicator();
+}
+
 
 function serverSettingsUpdate(data){
     // Accept a json blob of settings data from the client, and update our local store.
@@ -66,20 +316,20 @@ function serverSettingsUpdate(data){
         $('#aprsList').empty();
         if (chase_config.aprs_callsigns && chase_config.aprs_callsigns.length > 0){
             chase_config.aprs_callsigns.forEach(function(cs){
-                    var li = $('<li>').addClass('list-group-item d-flex justify-content-between align-items-center aprs-item');
-                    li.attr('data-callsign', cs.toUpperCase());
-                    var left = $('<div>').addClass('d-flex align-items-center');
-                    var name = $('<strong>').text(cs);
-                    var timeSpan = $('<span>').addClass('aprs-last-time ms-2 text-muted').text('\u2014');
-                    left.append(name).append(timeSpan);
-                    var right = $('<div>');
-                    var btn = $('<button type="button">').html('<i class="fa fa-trash" aria-hidden="true"></i>').addClass('btn btn-danger btn-sm aprs-remove-btn').data('callsign', cs).attr('title','Remove callsign');
-                    right.append(btn);
-                    li.append(left).append(right);
-                    $('#aprsList').append(li);
-                });
+                var key = (cs || '').toString().toUpperCase();
+                if (!key) {
+                    return;
+                }
+                $('#aprsList').append(createAprsListItem(key, false));
+                if (!aprs_telemetry_cache[key] && typeof balloon_positions !== 'undefined' && balloon_positions[key] && balloon_positions[key].latest_data) {
+                    aprs_telemetry_cache[key] = balloon_positions[key].latest_data;
+                    aprs_last_rx_ms[key] = Date.now();
+                }
+                renderAprsTelemetryRow(key);
+            });
         }
         $('#aprsPollInterval').val(chase_config.aprs_poll_interval || 30);
+        updateAprsStatusIndicator();
     } catch (e){
         // ignore if not present
     }
@@ -121,28 +371,42 @@ function serverSettingsUpdate(data){
 }
 
 function clientSettingsUpdate(){
-	// Read in changs to various user-modifyable settings, and send updates to the server.
-	chase_config.pred_enabled = document.getElementById("predictorEnabled").checked;
-    chase_config.show_abort = document.getElementById("abortPredictionEnabled").checked;
-    chase_config.habitat_upload_enabled = document.getElementById("habitatUploadEnabled").checked;
-    chase_config.habitat_call = $('#habitatCall').val()
+	// Read in changes to user-modifiable settings that are currently present in the UI.
+	var _predictorEnabled = document.getElementById("predictorEnabled");
+    if (_predictorEnabled) {
+        chase_config.pred_enabled = _predictorEnabled.checked;
+    }
+
+    var _abortPredictionEnabled = document.getElementById("abortPredictionEnabled");
+    if (_abortPredictionEnabled) {
+        chase_config.show_abort = _abortPredictionEnabled.checked;
+    }
+
+    var _habitatUploadEnabled = document.getElementById("habitatUploadEnabled");
+    if (_habitatUploadEnabled) {
+        chase_config.habitat_upload_enabled = _habitatUploadEnabled.checked;
+    }
+
+    if ($('#habitatCall').length > 0) {
+        chase_config.habitat_call = $('#habitatCall').val();
+    }
 
     // Attempt to parse the text field values.
     var _burst_alt = parseFloat($('#burstAlt').val());
-    if (isNaN(_burst_alt) == false){
+    if ($('#burstAlt').length > 0 && isNaN(_burst_alt) == false){
         chase_config.pred_burst = _burst_alt;
     }
     var _desc_rate = parseFloat($('#descentRate').val());
-    if (isNaN(_desc_rate) == false){
+    if ($('#descentRate').length > 0 && isNaN(_desc_rate) == false){
         chase_config.pred_desc_rate = _desc_rate
     }
     var _update_rate = parseInt($('#predUpdateRate').val());
-    if (isNaN(_update_rate) == false){
+    if ($('#predUpdateRate').length > 0 && isNaN(_update_rate) == false){
         chase_config.pred_update_rate = _update_rate
     }
 
     var _habitat_update_rate = parseInt($('#habitatUpdateRate').val());
-    if (isNaN(_habitat_update_rate) == false){
+    if ($('#habitatUpdateRate').length > 0 && isNaN(_habitat_update_rate) == false){
         chase_config.habitat_update_rate = _habitat_update_rate
     }
 
@@ -151,46 +415,53 @@ function clientSettingsUpdate(){
 
     // Add in a selection of the bearing settings here.
     // These don't change anything on the backend, but need to be propagated to other clients.
-    chase_config.time_seq_times = timeSeqTimes;
-    chase_config.time_seq_enabled = timeSeqEnabled;
-    chase_config.time_seq_active = timeSeqActive;
-    chase_config.time_seq_cycle = timeSeqCycle;
+    if (typeof timeSeqTimes !== 'undefined') chase_config.time_seq_times = timeSeqTimes;
+    if (typeof timeSeqEnabled !== 'undefined') chase_config.time_seq_enabled = timeSeqEnabled;
+    if (typeof timeSeqActive !== 'undefined') chase_config.time_seq_active = timeSeqActive;
+    if (typeof timeSeqCycle !== 'undefined') chase_config.time_seq_cycle = timeSeqCycle;
 
-    socket.emit('client_settings_update', chase_config);
+    if (typeof socket !== 'undefined' && socket) {
+        socket.emit('client_settings_update', chase_config);
+    } else {
+        console.warn('Socket is not ready; unable to send settings update.');
+    }
 };
 
 // APRS UI helpers
 $(document).on('click', '#aprsAddBtn', function(){
     var cs = $('#aprsCallInput').val().trim();
     if (cs === '') return;
+    cs = cs.toUpperCase();
     if (!chase_config.aprs_callsigns) chase_config.aprs_callsigns = [];
-        if (chase_config.aprs_callsigns.indexOf(cs) === -1){
+    if (chase_config.aprs_callsigns.indexOf(cs) === -1){
         chase_config.aprs_callsigns.push(cs);
-        // update UI
-        var li = $('<li>').addClass('list-group-item d-flex justify-content-between align-items-center');
-        li.attr('data-callsign', cs.toUpperCase());
-        var left = $('<div>').addClass('d-flex align-items-center');
-        var name = $('<strong>').text(cs);
-        var timeSpan = $('<span>').addClass('aprs-last-time ms-2 text-muted collecting').text('Collecting…');
-        left.append(name).append(timeSpan);
-        var right = $('<div>');
-        var btn = $('<button type="button">').html('<i class="fa fa-trash" aria-hidden="true"></i>').addClass('btn btn-danger btn-sm aprs-remove-btn').data('callsign', cs).attr('title','Remove callsign');
-        right.append(btn);
-        li.append(left).append(right);
-        $('#aprsList').append(li);
+        $('#aprsList').append(createAprsListItem(cs, true));
     }
     $('#aprsCallInput').val('');
     clientSettingsUpdate();
+    updateAprsStatusIndicator();
+});
+
+$(document).on('keydown', '#aprsCallInput', function(e){
+    if (e.key === 'Enter' || e.which === 13) {
+        e.preventDefault();
+        $('#aprsAddBtn').trigger('click');
+    }
 });
 
 $(document).on('click', '.aprs-remove-btn', function(e){
     e = e || window.event;
     if (e.stopPropagation) e.stopPropagation();
     if (e.preventDefault) e.preventDefault();
-    var cs = $(this).data('callsign');
-    chase_config.aprs_callsigns = chase_config.aprs_callsigns.filter(function(x){return x !== cs});
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    chase_config.aprs_callsigns = chase_config.aprs_callsigns.filter(function(x){
+        return (x || '').toString().toUpperCase() !== cs;
+    });
+    delete aprs_telemetry_cache[cs];
+    delete aprs_last_rx_ms[cs];
     $(this).closest('li').remove();
     clientSettingsUpdate();
+    updateAprsStatusIndicator();
 });
 
 // Theme selector and use-current-location handler
@@ -234,5 +505,10 @@ $(document).on('change', '#aprsPollInterval', function(){
     if (!isNaN(v)){
         chase_config.aprs_poll_interval = v;
         clientSettingsUpdate();
+        updateAprsStatusIndicator();
     }
 });
+
+window.setInterval(function(){
+    updateAprsStatusIndicator();
+}, 2000);

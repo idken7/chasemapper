@@ -161,10 +161,69 @@ def flask_emit_event(event_name="none", data={}):
     socketio.emit(event_name, data, namespace="/chasemapper")
 
 
+@socketio.on("client_connected", namespace="/chasemapper")
+def client_connected(_data):
+    """Replay current telemetry state to a newly connected client."""
+    try:
+        for payload in list(current_payloads.values()):
+            telem = payload.get("telem")
+            if telem:
+                socketio.emit(
+                    "telemetry_event",
+                    telem,
+                    namespace="/chasemapper",
+                    room=flask.request.sid,
+                )
+
+            _callsign = telem.get("callsign") if telem else None
+            if _callsign:
+                pred_payload = {
+                    "callsign": _callsign,
+                    "pred_path": payload.get("pred_path", []),
+                    "pred_landing": payload.get("pred_landing", []),
+                    "burst": payload.get("burst", []),
+                    "abort_path": payload.get("abort_path", []),
+                    "abort_landing": payload.get("abort_landing", []),
+                }
+
+                if pred_payload["pred_path"] or pred_payload["pred_landing"]:
+                    socketio.emit(
+                        "predictor_update",
+                        pred_payload,
+                        namespace="/chasemapper",
+                        room=flask.request.sid,
+                    )
+
+        _aprs_calls = [c for c in chasemapper_config.get("aprs_callsigns", []) if c]
+        if chasemapper_config.get("aprs_enabled", False) and _aprs_calls:
+            logging.info(
+                "Client connect refreshing APRS data for callsigns: %s",
+                ", ".join(_aprs_calls),
+            )
+
+            # Run refresh in a background thread so connect handling returns quickly.
+            t = Thread(target=process_new_aprs_callsigns, args=(_aprs_calls,), kwargs={"restart_tracker": False})
+            t.daemon = True
+            t.start()
+    except Exception as e:
+        logging.debug("Error replaying telemetry to client: %s", str(e))
+
+
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
     global chasemapper_config, online_uploader
     global aprs_tracker
+
+    try:
+        logging.info(
+            "client_settings_update received: aprs_enabled=%s aprs_callsigns=%s"
+            % (
+                data.get("aprs_enabled", False),
+                ", ".join(data.get("aprs_callsigns", [])) if data.get("aprs_callsigns", []) else "none",
+            )
+        )
+    except Exception:
+        pass
 
     _predictor_change = "none"
     if (chasemapper_config["pred_enabled"] == False) and (data["pred_enabled"] == True):
@@ -186,13 +245,17 @@ def client_settings_update(data):
 
     # APRS changes detection
     _aprs_change = "none"
+    old_calls = set()
+    new_calls = set()
     added_calls = []
+    removed_calls = []
     try:
         old_aprs_enabled = chasemapper_config.get("aprs_enabled", False)
         new_aprs_enabled = data.get("aprs_enabled", False)
-        old_calls = set([c.upper() for c in chasemapper_config.get("aprs_callsigns", [])])
-        new_calls = set([c.upper() for c in data.get("aprs_callsigns", [])])
+        old_calls = set([c.upper() for c in chasemapper_config.get("aprs_callsigns", []) if c])
+        new_calls = set([c.upper() for c in data.get("aprs_callsigns", []) if c])
         added_calls = list(new_calls - old_calls)
+        removed_calls = list(old_calls - new_calls)
 
         if (old_aprs_enabled == False) and (new_aprs_enabled == True):
             _aprs_change = "start"
@@ -255,36 +318,47 @@ def client_settings_update(data):
             if _aprs_change == "start":
                 # start tracker with provided callsigns
                 _calls = chasemapper_config.get("aprs_callsigns", [])
+                logging.info("APRS start requested. Callsigns=%s", ", ".join(_calls) if _calls else "none")
                 if _calls:
-                    if aprs_tracker is None:
-                        aprs_tracker = APRSTracker(
-                            callsigns=_calls,
-                            poll_interval=chasemapper_config.get("aprs_poll_interval", 30),
-                            callback=aprs_listener_callback,
-                            api_key=chasemapper_config.get("aprs_api_key", "none"),
-                        )
-                        aprs_tracker.daemon = True
-                        aprs_tracker.start()
-                    else:
-                        aprs_tracker.set_callsigns(_calls)
+                    # Pull latest known points now so new callsigns immediately appear and can predict.
+                    process_new_aprs_callsigns(_calls)
+                else:
+                    logging.warning("APRS enabled but no callsigns are configured yet.")
+
+            elif _aprs_change == "stop":
+                logging.info("APRS stop requested. Stopping tracker.")
+                if aprs_tracker is not None:
+                    try:
+                        aprs_tracker.stop()
+                        aprs_tracker.join(timeout=2)
+                    except Exception as e:
+                        logging.error("Error stopping APRS tracker: %s", str(e))
+                    aprs_tracker = None
 
             elif _aprs_change == "update":
                 _calls = chasemapper_config.get("aprs_callsigns", [])
-                if _calls:
+                logging.info(
+                    "APRS settings updated. Callsigns=%s Added=%s Removed=%s",
+                    ", ".join(_calls) if _calls else "none",
+                    ", ".join(added_calls) if added_calls else "none",
+                    ", ".join(removed_calls) if removed_calls else "none",
+                )
+                if not _calls:
+                    logging.info("No APRS callsigns remain; stopping APRS tracker.")
+                    if aprs_tracker is not None:
+                        try:
+                            aprs_tracker.stop()
+                            aprs_tracker.join(timeout=2)
+                        except Exception as e:
+                            logging.error("Error stopping APRS tracker: %s", str(e))
+                        aprs_tracker = None
+                else:
                     if added_calls:
                         process_new_aprs_callsigns(added_calls)
                     else:
                         start_or_restart_aprs_tracker(_calls)
-                added_calls = new_calls - old_calls
-                for _cs in added_calls:
-                    try:
-                        t = Thread(target=ensure_aprs_initial_data, args=(_cs, 60))
-                        t.daemon = True
-                        t.start()
-                    except Exception as e:
-                        logging.error('Failed to start ensure_aprs_initial_data thread for %s: %s', _cs, str(e))
         except Exception as e:
-            logging.error('Error spawning APRS initial data fetch threads: %s', str(e))
+            logging.error("Error processing APRS settings update: %s", str(e))
 
     # Update the habitat uploader with a new update rate, if one has changed.
     if online_uploader != None:
@@ -459,18 +533,24 @@ def run_prediction():
             continue
 
         _current_pos = current_payload_tracks[_payload].get_latest_state()
+        if _current_pos is None:
+            logging.warning("No current state available for %s, skipping prediction.", _payload)
+            continue
+
         _current_pos_list = [
             0,
             _current_pos["lat"],
             _current_pos["lon"],
             _current_pos["alt"],
         ]
-        if current_payload_tracks[_payload].length() <= 1:
-            logging.info(
-                "Only %i point in this payload's track, skipping prediction.",
-                current_payload_tracks[_payload].length(),
-            )
-            continue
+        _track_len = current_payload_tracks[_payload].length()
+        if _track_len <= 1:
+            _aprs_calls = set([c.upper() for c in chasemapper_config.get("aprs_callsigns", []) if c])
+            if _payload.upper() in _aprs_calls:
+                logging.info("APRS bootstrap prediction for %s with a single telemetry point.", _payload)
+            else:
+                logging.info("Only %i point in payload %s's track, skipping prediction.", _track_len, _payload)
+                continue
 
         _pred_ok = False
         _abort_pred_ok = False
@@ -861,9 +941,46 @@ def aprs_listener_callback(data):
     try:
         if "time_dt" not in data:
             data["time_dt"] = pytz.utc.localize(datetime.utcnow())
+
+        logging.info(
+            "APRS position update: %s lat=%.5f lon=%.5f alt=%.1f"
+            % (
+                data.get("callsign", "UNKNOWN"),
+                float(data.get("lat", 0.0)),
+                float(data.get("lon", 0.0)),
+                float(data.get("alt", 0.0)),
+            )
+        )
+
         handle_new_payload_position(data)
+
+        _callsign = data.get("callsign", "")
+        if _callsign in current_payload_tracks:
+            # For new APRS callsigns we often only have one point; run a bootstrap prediction now.
+            if data.get("aprs_bootstrap", False):
+                return
+            if current_payload_tracks[_callsign].length() <= 2:
+                trigger_prediction_async("APRS bootstrap for %s" % _callsign)
     except Exception as e:
         logging.error("Error Handling APRS Position - %s" % str(e))
+
+
+def trigger_prediction_async(reason="manual trigger"):
+    """Run one prediction cycle in a background thread."""
+
+    def _run_once():
+        try:
+            if predictor_semaphore:
+                logging.info("Skipping immediate prediction (%s): predictor is busy.", reason)
+                return
+            logging.info("Running immediate prediction (%s).", reason)
+            run_prediction()
+        except Exception as e:
+            logging.error("Immediate prediction failed (%s): %s", reason, str(e))
+
+    _t = Thread(target=_run_once)
+    _t.daemon = True
+    _t.start()
 
 def start_or_restart_aprs_tracker(callsigns):
     """Start the APRS tracker, or restart it so live filters include new callsigns."""
@@ -871,7 +988,10 @@ def start_or_restart_aprs_tracker(callsigns):
 
     _calls = list(callsigns or [])
     if not _calls:
+        logging.warning("APRS tracker start requested with no callsigns.")
         return
+
+    logging.info("(Re)starting APRS tracker for callsigns: %s" % (", ".join(_calls)))
 
     if aprs_tracker is not None:
         try:
@@ -885,13 +1005,13 @@ def start_or_restart_aprs_tracker(callsigns):
         callsigns=_calls,
         poll_interval=chasemapper_config.get("aprs_poll_interval", 30),
         callback=aprs_listener_callback,
-        api_key=chasemapper_config.get("aprs_api_key", "none"),
+                            api_key=get_effective_aprs_api_key(),
     )
     aprs_tracker.daemon = True
     aprs_tracker.start()
 
 
-def process_new_aprs_callsigns(callsigns):
+def process_new_aprs_callsigns(callsigns, restart_tracker=True):
     """Fetch the latest beacon for newly added callsigns, then ensure live tracking."""
     _calls = []
     for _cs in callsigns or []:
@@ -899,18 +1019,34 @@ def process_new_aprs_callsigns(callsigns):
             _calls.append(_cs)
 
     if not _calls:
+        logging.warning("No APRS callsigns provided for initial data fetch.")
         return
 
+    _have_initial_data = False
+    _api_key = get_effective_aprs_api_key()
     for _cs in _calls:
         try:
-            _data = fetch_aprs_recent(_cs, api_key=chasemapper_config.get("aprs_api_key", None))
-            if _data:
-                logging.info("APRS: using most recent beacon for %s", _cs)
-                aprs_listener_callback(_data)
+            logging.info("APRS initial fetch requested for %s" % _cs)
+            _data_points = fetch_aprs_recent_points(_cs, api_key=_api_key, limit=2)
+            if _data_points:
+                if len(_data_points) == 1:
+                    logging.info("APRS: using most recent beacon for %s" % _cs)
+                else:
+                    logging.info("APRS: using %d most recent beacons for %s" % (len(_data_points), _cs))
+                for _data in _data_points:
+                    _data["aprs_bootstrap"] = True
+                    aprs_listener_callback(_data)
+                _have_initial_data = True
+            else:
+                logging.warning("APRS initial fetch returned no data for %s" % _cs)
         except Exception as e:
-            logging.error("Error fetching initial APRS beacon for %s: %s", _cs, str(e))
+            logging.error("Error fetching initial APRS beacon for %s: %s" % (_cs, str(e)))
 
-    start_or_restart_aprs_tracker(chasemapper_config.get("aprs_callsigns", _calls))
+    if restart_tracker:
+        start_or_restart_aprs_tracker(chasemapper_config.get("aprs_callsigns", _calls))
+
+    if _have_initial_data:
+        trigger_prediction_async("APRS initial fetch")
 
 
 def fetch_aprs_recent(callsign, api_key=None):
@@ -919,47 +1055,109 @@ def fetch_aprs_recent(callsign, api_key=None):
     Returns a dict with keys lat, lon, alt, callsign and optionally time_dt,
     or None on failure.
     """
+    _points = fetch_aprs_recent_points(callsign, api_key=api_key, limit=1)
+    if not _points:
+        return None
+    return _points[0]
+
+
+def fetch_aprs_recent_points(callsign, api_key=None, limit=2):
+    """Fetch the most recent APRS positions for `callsign` from aprs.fi.
+
+    Returns a list of dicts ordered oldest-to-newest, each with keys lat, lon,
+    alt, callsign and optionally time_dt.
+    """
     try:
+        logging.info("APRS request: latest position for %s" % callsign)
         params = {"name": callsign, "what": "loc", "format": "json"}
+        if not api_key:
+            logging.warning(
+                "APRS initial fetch for %s skipped: aprs.fi API key is not configured." % callsign
+            )
+            return None
         if api_key:
             params["apikey"] = api_key
         resp = requests.get("https://api.aprs.fi/api/get", params=params, timeout=10)
         if resp.status_code != 200:
-            logging.debug("APRS fetch non-200 for %s: %s", callsign, resp.status_code)
-            return None
-        j = resp.json()
-        entries = j.get("entries") or j.get("result") or []
-        if not entries:
-            return None
-        entry = entries[0]
-        lat = entry.get("lat") or entry.get("latitude") or None
-        lon = entry.get("lng") or entry.get("lon") or entry.get("longitude") or None
-        alt = entry.get("alt") or entry.get("altitude") or 0
-        time_str = entry.get("time") or entry.get("timestamp") or entry.get("time_iso")
-        if lat is None or lon is None:
+            logging.warning("APRS request failed for %s: HTTP %s" % (callsign, resp.status_code))
             return None
         try:
-            lat = float(lat)
-            lon = float(lon)
-        except Exception:
+            j = resp.json()
+        except Exception as e:
+            logging.warning(
+                "APRS request returned non-JSON for %s: %s body=%s"
+                % (callsign, str(e), resp.text[:180])
+            )
             return None
-        try:
-            alt = float(alt)
-        except Exception:
-            alt = 0.0
 
-        out = {"lat": lat, "lon": lon, "alt": alt, "callsign": callsign}
-        if time_str is not None:
+        entries = []
+        if isinstance(j, dict):
+            _entries = j.get("entries", [])
+            if isinstance(_entries, list):
+                entries = _entries
+
+            if not entries:
+                _result = j.get("result")
+                if isinstance(_result, list):
+                    entries = _result
+                elif isinstance(_result, str) and _result.lower() != "ok":
+                    _desc = j.get("description") or j.get("error") or "no description"
+                    logging.warning(
+                        "APRS request not OK for %s: result=%s description=%s"
+                        % (callsign, _result, _desc)
+                    )
+        elif isinstance(j, list):
+            entries = j
+        else:
+            logging.warning(
+                "APRS request returned unexpected payload for %s: type=%s body=%s"
+                % (callsign, type(j).__name__, str(j)[:180])
+            )
+            return None
+
+        if not entries:
+            logging.warning("APRS request returned no entries for %s" % callsign)
+            return None
+        _selected_entries = entries[:max(1, int(limit))]
+        _selected_entries.reverse()
+
+        _points = []
+        for entry in _selected_entries:
+            lat = entry.get("lat") or entry.get("latitude") or None
+            lon = entry.get("lng") or entry.get("lon") or entry.get("longitude") or None
+            alt = entry.get("alt") or entry.get("altitude") or 0
+            time_str = entry.get("time") or entry.get("timestamp") or entry.get("time_iso")
+            if lat is None or lon is None:
+                continue
             try:
-                if isinstance(time_str, (int, float)) or (isinstance(time_str, str) and time_str.isdigit()):
-                    out["time_dt"] = parse_dt(time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(int(time_str))))
-                else:
-                    out["time_dt"] = parse_dt(time_str)
+                lat = float(lat)
+                lon = float(lon)
             except Exception:
-                pass
-        return out
+                continue
+            try:
+                alt = float(alt)
+            except Exception:
+                alt = 0.0
+
+            out = {"lat": lat, "lon": lon, "alt": alt, "callsign": callsign}
+            if time_str is not None:
+                try:
+                    if isinstance(time_str, (int, float)) or (isinstance(time_str, str) and time_str.isdigit()):
+                        out["time_dt"] = parse_dt(time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(int(time_str))))
+                    else:
+                        out["time_dt"] = parse_dt(time_str)
+                except Exception:
+                    pass
+            _points.append(out)
+
+        if not _points:
+            logging.warning("APRS request returned no usable points for %s" % callsign)
+            return None
+
+        logging.info("APRS request succeeded for %s" % callsign)
+        return _points
     except Exception as e:
-        logging.debug("Error fetching APRS recent for %s: %s", callsign, str(e))
+        logging.error("APRS request exception for %s: %s" % (callsign, str(e)))
         return None
 
 
@@ -971,22 +1169,47 @@ def ensure_aprs_initial_data(callsign, timeout=60):
     """
     start = time.time()
     key_upper = callsign.upper()
+    logging.info("Waiting up to %ss for first APRS telemetry for %s" % (timeout, callsign))
     while time.time() - start < timeout:
         # Check for existing payload (case-insensitive)
         for existing in list(current_payloads.keys()):
             if existing.upper() == key_upper:
+                logging.info("APRS initial telemetry already present for %s" % callsign)
                 return
         time.sleep(5)
 
     # Not found within timeout — attempt to fetch from aprs.fi
     try:
-        api_key = chasemapper_config.get("aprs_api_key", None) if isinstance(chasemapper_config, dict) else None
-        data = fetch_aprs_recent(callsign, api_key=api_key)
-        if data:
-            logging.info("APRS: injecting fetched recent beacon for %s", callsign)
-            aprs_listener_callback(data)
+        api_key = get_effective_aprs_api_key()
+        data_points = fetch_aprs_recent_points(callsign, api_key=api_key, limit=2)
+        if data_points:
+            if len(data_points) == 1:
+                logging.info("APRS: injecting fetched recent beacon for %s" % callsign)
+            else:
+                logging.info("APRS: injecting %d fetched recent beacons for %s" % (len(data_points), callsign))
+            for data in data_points:
+                data["aprs_bootstrap"] = True
+                aprs_listener_callback(data)
+        else:
+            logging.warning("APRS initial telemetry fetch timed out with no data for %s" % callsign)
     except Exception as e:
-        logging.error("Error ensuring APRS initial data for %s: %s", callsign, str(e))
+        logging.error("Error ensuring APRS initial data for %s: %s" % (callsign, str(e)))
+
+
+def get_effective_aprs_api_key():
+    """Return APRS API key or None if unset/placeholder."""
+    if not isinstance(chasemapper_config, dict):
+        return None
+
+    _key = chasemapper_config.get("aprs_api_key", None)
+    if _key is None:
+        return None
+
+    _key = str(_key).strip()
+    if _key == "" or _key.lower() in ["none", "null", "unset"]:
+        return None
+
+    return _key
     
 def udp_listener_summary_callback(data):
     """ Handle a Payload Summary Message from UDPListener """
@@ -1349,13 +1572,14 @@ class WebHandler(logging.Handler):
     def emit(self, record):
         """ Emit a log message via SocketIO """
         # Deal with log records with no content.
-        if record.msg:
-            if "socket.io" not in record.msg:
+        message = record.getMessage() if record else ""
+        if message:
+            if "socket.io" not in message:
                 # Convert log record into a dictionary
                 log_data = {
                     "level": record.levelname,
                     "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "msg": record.msg,
+                    "msg": message,
                 }
                 # Emit to all socket.io clients
                 socketio.emit("log_event", log_data, namespace="/chasemapper")
@@ -1364,12 +1588,18 @@ class WebHandler(logging.Handler):
 if __name__ == "__main__":
     import argparse
 
+    _default_cfg = "horusmapper.cfg"
+    if os.path.isdir(_default_cfg):
+        _candidate = os.path.join(_default_cfg, "horusmapper.cfg")
+        if os.path.isfile(_candidate):
+            _default_cfg = _candidate
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-c",
         "--config",
         type=str,
-        default="horusmapper.cfg",
+        default=_default_cfg,
         help="Configuration file.",
     )
     parser.add_argument(
@@ -1462,19 +1692,11 @@ if __name__ == "__main__":
         try:
             _calls = chasemapper_config.get("aprs_callsigns", [])
             if len(_calls) > 0:
-                aprs_tracker = APRSTracker(
-                    callsigns=_calls,
-                    poll_interval=chasemapper_config.get("aprs_poll_interval", 30),
-                    callback=aprs_listener_callback,
-                    api_key=chasemapper_config.get("aprs_api_key", "none"),
-                )
-                aprs_tracker.daemon = True
-                aprs_tracker.start()
-                logging.info("APRS tracker started for: %s", ",".join(_calls))
+                process_new_aprs_callsigns(_calls)
             else:
                 logging.info("APRS enabled but no callsigns configured")
         except Exception as e:
-            logging.error("Failed to start APRS tracker: %s", str(e))
+            logging.error("Failed to start APRS tracker: %s" % str(e))
 
     # Run the Flask app, which will block until CTRL-C'd.
     logging.info(
@@ -1507,7 +1729,7 @@ if __name__ == "__main__":
             aprs_tracker.stop()
             aprs_tracker.join(timeout=5)
     except Exception as e:
-        logging.error("Error stopping APRS tracker - %s", str(e))
+        logging.error("Error stopping APRS tracker - %s" % str(e))
 
     # Close the chase logger
     if chase_logger:

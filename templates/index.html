@@ -39,7 +39,7 @@
     <script src="{{ url_for('static', filename='js/sondehub.js') }}"></script>
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260422-aprs-fix"></script>
     <script src="{{ url_for('static', filename='js/balloon.js') }}"></script>
     <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
     <script src="{{ url_for('static', filename='js/car.js') }}"></script>
@@ -212,34 +212,64 @@
                 reconfigureCarMarker(this.value);
             });
 
+            var logEntries = [];
+            var logLevelFilter = 'all';
+
+            function normalizeLogLevel(level) {
+                var normalized = (level || 'INFO').toString().toUpperCase();
+                if (normalized.indexOf('ERR') !== -1) return 'error';
+                if (normalized.indexOf('WARN') !== -1) return 'warn';
+                if (normalized.indexOf('DEBUG') !== -1) return 'debug';
+                return 'info';
+            }
+
+            function buildLogLine(entry) {
+                var level = entry.level || 'INFO';
+                var cls = 'log-level-info';
+                var normalized = normalizeLogLevel(level);
+                if (normalized === 'error') cls = 'log-level-error';
+                else if (normalized === 'warn') cls = 'log-level-warn';
+                else if (normalized === 'debug') cls = 'log-level-debug';
+                var text = (entry.timestamp || '') + ' [' + level + ']: ' + (entry.msg || '');
+                return $('<div>').addClass('log-line').addClass(cls).attr('data-log-level', normalized).text(text);
+            }
+
+            function renderLogEntries() {
+                var $body = $('#logPanelBody');
+                $body.empty();
+                for (var i = logEntries.length - 1; i >= 0; i--) {
+                    var entry = logEntries[i];
+                    if (logLevelFilter !== 'all' && normalizeLogLevel(entry.level) !== logLevelFilter) {
+                        continue;
+                    }
+                    $body.append(buildLogLine(entry));
+                }
+                $body.scrollTop(0);
+            }
+
+            $(document).on('change', '#logLevelFilter', function(){
+                logLevelFilter = $(this).val() || 'all';
+                renderLogEntries();
+            });
+
             // Handle arrival of new log data — write into floating log panel.
             socket.on('log_event', function(msg) {
-                var level = msg.level || 'INFO';
-                var cls = 'log-level-info';
-                if (level.toUpperCase().indexOf('ERR') !== -1) cls = 'log-level-error';
-                else if (level.toUpperCase().indexOf('WARN') !== -1) cls = 'log-level-warn';
-                else if (level.toUpperCase().indexOf('DEBUG') !== -1) cls = 'log-level-debug';
-                var text = msg.timestamp + " [" + level + "]: " + msg.msg;
-                var $line = $('<div>').addClass('log-line').addClass(cls).text(text);
-                $('#logPanelBody').prepend($line);
-                // Keep newest at top; keep panel scrolled to top
-                $('#logPanelBody').scrollTop(0);
+                var entry = {
+                    level: msg.level || 'INFO',
+                    timestamp: msg.timestamp || '',
+                    msg: msg.msg || ''
+                };
+                logEntries.push(entry);
+                if (logLevelFilter === 'all' || normalizeLogLevel(entry.level) === logLevelFilter) {
+                    $('#logPanelBody').prepend(buildLogLine(entry));
+                }
             });
 
             // Update APRS callsign last-beacon timestamps when telemetry arrives
             socket.on('telemetry_event', function(telem) {
                 try {
-                    var cs = (telem.callsign || telem.callsign || '').toString().toUpperCase();
-                    if (!cs) return;
-                    var el = $('#aprsList').find('li[data-callsign="' + cs + '"]');
-                    if (el.length > 0) {
-                        var timeText = telem.short_time || '';
-                        if (!timeText && telem.server_time) {
-                            var d = new Date(Math.floor(telem.server_time) * 1000);
-                            timeText = d.toISOString().replace('T',' ').split('.')[0];
-                        }
-                        if (!timeText) timeText = '\u2014';
-                        el.find('.aprs-last-time').removeClass('collecting').text(timeText);
+                    if (typeof updateAprsTelemetryRow === 'function') {
+                        updateAprsTelemetryRow(telem);
                     }
                 } catch (e) {
                     // ignore
@@ -842,64 +872,214 @@
 
 <div id="map" class="map"></div>
 
-<!-- Menubar: compact floating bar (bottom) with app title, quick buttons and APRS status -->
-<div id="topbar" class="d-flex align-items-center p-2" style="position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:9999;max-width:820px;width:calc(100% - 48px);background:rgba(15,23,36,0.75);color:#fff;border-radius:10px;padding:10px 14px;backdrop-filter:blur(6px);box-shadow:0 6px 18px rgba(0,0,0,0.35);">
-    <div class="d-flex align-items-center">
-        <div style="width:36px;height:36px;background:#06b6d4;border-radius:8px;margin-right:12px;"></div>
-        <div>
-            <div style="font-weight:600;font-size:1rem;line-height:1;">ChaseMapper</div>
-            <div style="font-size:0.82rem;opacity:0.8;line-height:1;">Live flight operations</div>
+<div id="menuDock" class="menu-dock">
+    <!-- Floating log panel -->
+    <div id="logPanel" class="log-panel">
+        <div class="log-panel-header">
+            <span>Log Messages</span>
+            <select id="logLevelFilter" class="form-control form-control-sm log-filter-select" aria-label="Filter log messages by level">
+                <option value="all">All</option>
+                <option value="debug">Debug</option>
+                <option value="info">Info</option>
+                <option value="warn">Warnings</option>
+                <option value="error">Errors</option>
+            </select>
+            <button id="logPanelClose" class="btn-close">×</button>
+        </div>
+        <div id="logPanelBody" class="log-panel-body"></div>
+    </div>
+
+    <!-- Settings modal/panel -->
+    <div id="settingsPanel" class="settings-panel">
+        <div class="settings-panel-content">
+            <div class="settings-header">
+                <span>Settings</span>
+                <button id="settingsPanelClose" class="btn-close">×</button>
+            </div>
+            <div class="settings-body">
+                <!-- APRS quick view (shown when APRS button selected) -->
+                <div id="aprsSection" style="display:none;">
+                    <div class="form-group input-group">
+                        <input id="aprsCallInput" class="form-control" placeholder="CALLSIGN or CALL-SSID" aria-label="APRS callsign">
+                        <button id="aprsAddBtn" type="button" class="btn btn-primary" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
+                    </div>
+                    <ul id="aprsList" class="list-group"></ul>
+                    <div class="form-group">
+                        <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
+                        <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
+                    </div>
+                </div>
+
+                <!-- Full Settings (opened from Settings button) -->
+                <div id="otherSection" style="display:none;">
+                    <h4>Settings</h4>
+                    <div class="form-group">
+                        <label for="themeSelect">Theme</label>
+                        <select id="themeSelect" class="form-control">
+                            <option value="light">Light</option>
+                            <option value="dark">Dark</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Current Location</label>
+                        <div class="d-flex align-items-center" style="gap:8px;">
+                            <div id="currentLocationDisplay">Unknown</div>
+                            <button id="useCurrentLocation" type="button" class="btn btn-sm btn-outline-light">Use current location</button>
+                        </div>
+                        <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;">
+                            <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
+                            <input id="currentLon" class="form-control" placeholder="Longitude" style="width:120px;" />
+                            <button id="applyLocation" type="button" class="btn btn-sm btn-primary">Apply</button>
+                        </div>
+                    </div>
+                    <h4>Other</h4>
+                    <div class="paramRow">
+                        <button type="button" class="btn btn-secondary" id="clearPayloadData" style="margin-right:8px;">Clear Payload Data</button>
+                        <button type="button" class="btn btn-secondary" id="clearCarData">Clear Chase-Car Track</button>
+                    </div>
+                </div>
+
+                <!-- When panel first opens default to otherSection (settings) -->
+                <script>
+                    // Ensure the sections are hidden by default; JS will show the right one when opened.
+                    $('#aprsSection').hide();
+                    $('#otherSection').hide();
+                </script>
+            </div>
         </div>
     </div>
-    <div class="ms-auto d-flex align-items-center">
-            <div class="btn-group me-3" role="group" aria-label="Topbar actions">
-            <button class="btn btn-sm btn-outline-light" id="topbarLogBtn">Log</button>
-            <button class="btn btn-sm btn-outline-light" id="topbarAprsBtn">APRS-IS</button>
-            <button class="btn btn-sm btn-outline-light" id="topbarSettingsBtn">Settings</button>
+
+    <!-- Menubar: compact floating bar (bottom) with app title, quick buttons and APRS status -->
+    <div id="topbar" class="d-flex align-items-center p-2 topbar-shell">
+        <div class="d-flex align-items-center topbar-brand">
+            <div class="topbar-brand-mark"></div>
+            <div>
+                <div class="topbar-title">ChaseMapper</div>
+                <div class="topbar-subtitle">Live flight operations</div>
+            </div>
         </div>
-        <div class="d-flex align-items-center" style="gap:8px;">
-            <span class="badge bg-success rounded-circle" style="width:12px;height:12px;display:inline-block;"></span>
-            <span style="opacity:0.95;font-weight:600;">APRS-IS</span>
+        <div class="ms-auto d-flex align-items-center topbar-actions">
+                <div class="btn-group me-3 topbar-action-group" role="group" aria-label="Topbar actions">
+                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarLogBtn">Log</button>
+                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarAprsBtn">APRS-IS</button>
+                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarSettingsBtn">Settings</button>
+            </div>
+            <div class="d-flex align-items-center topbar-status">
+                <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
+                <span class="topbar-status-label">APRS-IS</span>
+            </div>
         </div>
     </div>
 </div>
 
 <script>
+function setTopbarSelection(mode){
+    $('#topbarLogBtn, #topbarAprsBtn, #topbarSettingsBtn').removeClass('is-selected');
+    if (mode === 'log') $('#topbarLogBtn').addClass('is-selected');
+    if (mode === 'aprs') $('#topbarAprsBtn').addClass('is-selected');
+    if (mode === 'settings') $('#topbarSettingsBtn').addClass('is-selected');
+}
+
+function openPanelWithAnimation($panel) {
+    if (!$panel || $panel.length === 0) {
+        return;
+    }
+    if ($panel.hasClass('panel-open')) {
+        return;
+    }
+    $panel.removeClass('panel-open');
+    if ($panel[0]) {
+        $panel[0].offsetHeight;
+    }
+    window.requestAnimationFrame(function() {
+        window.requestAnimationFrame(function() {
+            $panel.addClass('panel-open');
+        });
+    });
+}
+
+function closePanel($panel) {
+    if ($panel && $panel.length > 0) {
+        $panel.removeClass('panel-open');
+    }
+}
+
+function showSettingsPanel(mode) {
+    closePanel($('#logPanel'));
+
+    var $settingsPanel = $('#settingsPanel');
+    var isAlreadyOpen = $settingsPanel.hasClass('panel-open');
+    var isSameMode = $settingsPanel.attr('data-panel-mode') === mode;
+
+    if (mode === 'aprs') {
+        $settingsPanel.attr('data-panel-mode', 'aprs');
+        $('#aprsSection').show();
+        $('#otherSection').hide();
+        $('#settingsPanel .settings-header span').text('APRS');
+        if (!isAlreadyOpen || !isSameMode) {
+            openPanelWithAnimation($settingsPanel);
+        }
+        window.setTimeout(function(){ $('#aprsCallInput').focus(); }, 300);
+    } else {
+        $settingsPanel.attr('data-panel-mode', 'settings');
+        $('#otherSection').show();
+        $('#aprsSection').hide();
+        $('#settingsPanel .settings-header span').text('Settings');
+        var t = localStorage.getItem('chasemapper_theme') || 'light';
+        $('#themeSelect').val(t);
+        if (navigator && navigator.geolocation){
+            navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
+        }
+        if (!isAlreadyOpen || !isSameMode) {
+            openPanelWithAnimation($settingsPanel);
+        }
+    }
+}
+
+function toggleSettingsPanel(mode) {
+    var $settingsPanel = $('#settingsPanel');
+    var isAlreadyOpen = $settingsPanel.hasClass('panel-open');
+    var isSameMode = $settingsPanel.attr('data-panel-mode') === mode;
+
+    if (isAlreadyOpen && isSameMode) {
+        closePanel($settingsPanel);
+        setTopbarSelection('none');
+        return;
+    }
+
+    showSettingsPanel(mode);
+    setTopbarSelection(mode);
+}
+
 // Menubar buttons: toggle panels
 $(document).on('click', '#topbarLogBtn', function(){
-    $('#settingsPanel').removeClass('panel-open');
-    $('#logPanel').toggleClass('panel-open');
+    closePanel($('#settingsPanel'));
+    if ($('#logPanel').hasClass('panel-open')) {
+        closePanel($('#logPanel'));
+        setTopbarSelection('none');
+    } else {
+        openPanelWithAnimation($('#logPanel'));
+        setTopbarSelection('log');
+    }
 });
 // Open the full settings (the "Other" settings used to live here)
 $(document).on('click', '#topbarSettingsBtn', function(){
-    $('#logPanel').removeClass('panel-open');
-    $('#settingsPanel').addClass('panel-open');
-    // Show the full settings section
-    $('#otherSection').show();
-    $('#aprsSection').hide();
-    $('#settingsPanel .settings-header span').text('Settings');
-    // update theme select from localStorage
-    var t = localStorage.getItem('chasemapper_theme') || 'light';
-    $('#themeSelect').val(t);
-    // populate current location if available
-    if (navigator && navigator.geolocation){
-        navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
-    }
+    toggleSettingsPanel('settings');
 });
 // Open APRS quick panel
 $(document).on('click', '#topbarAprsBtn', function(){
-    $('#logPanel').removeClass('panel-open');
-    $('#settingsPanel').addClass('panel-open');
-    // show APRS quick view
-    $('#aprsSection').show();
-    $('#otherSection').hide();
-    $('#settingsPanel .settings-header span').text('APRS');
-    setTimeout(function(){ $('#aprsCallInput').focus(); }, 300);
+    toggleSettingsPanel('aprs');
 });
 
 // Close buttons
-$(document).on('click', '#logPanelClose', function(){ $('#logPanel').removeClass('panel-open'); });
-$(document).on('click', '#settingsPanelClose', function(){ $('#settingsPanel').removeClass('panel-open'); });
+$(document).on('click', '#logPanelClose', function(){
+    closePanel($('#logPanel'));
+    setTopbarSelection('none');
+});
+$(document).on('click', '#settingsPanelClose', function(){
+    closePanel($('#settingsPanel'));
+    setTopbarSelection('none');
+});
 
 // Theme toggle: persist and apply
 function applyTheme(isDark){
@@ -922,7 +1102,7 @@ $(document).ready(function(){
 
 </script>
 
-		<!-- Dialog boxes. These are activated from the telemetry table - see tables.js -->
+        <!-- Dialog boxes. These are activated from the telemetry table - see tables.js -->
         <div id="telemetry-select-dialog" title="Payload Selection" style='display:none;'>
             <div class="paramRow">
                 <b>Current Position:</b> <div style='float:right;' id='telemDialogPosition'></div><br/>
@@ -952,76 +1132,6 @@ $(document).ready(function(){
                 <b>Message:</b><input type="text" class="paramEntry" size="40" id="customRecoveryMessage"><br/>
             </div>
         </div>
-
-        <!-- Floating log panel -->
-        <div id="logPanel" class="log-panel">
-            <div class="log-panel-header">
-                <span>Log Messages</span>
-                <button id="logPanelClose" class="btn-close">×</button>
-            </div>
-            <div id="logPanelBody" class="log-panel-body"></div>
-        </div>
-
-        <!-- Settings modal/panel -->
-        <div id="settingsPanel" class="settings-panel">
-            <div class="settings-panel-content">
-                <div class="settings-header">
-                    <span>Settings</span>
-                    <button id="settingsPanelClose" class="btn-close">×</button>
-                </div>
-                <div class="settings-body">
-                    <!-- APRS quick view (shown when APRS button selected) -->
-                    <div id="aprsSection" style="display:none;">
-                        <div class="form-group input-group">
-                            <input id="aprsCallInput" class="form-control" placeholder="CALLSIGN or CALL-SSID" aria-label="APRS callsign">
-                            <button id="aprsAddBtn" type="button" class="btn btn-primary" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
-                        </div>
-                        <ul id="aprsList" class="list-group"></ul>
-                        <div class="form-group">
-                            <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
-                            <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
-                        </div>
-                    </div>
-
-                    <!-- Full Settings (opened from Settings button) -->
-                    <div id="otherSection" style="display:none;">
-                        <h4>Settings</h4>
-                        <div class="form-group">
-                            <label for="themeSelect">Theme</label>
-                            <select id="themeSelect" class="form-control">
-                                <option value="light">Light</option>
-                                <option value="dark">Dark</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Current Location</label>
-                            <div class="d-flex align-items-center" style="gap:8px;">
-                                <div id="currentLocationDisplay">Unknown</div>
-                                <button id="useCurrentLocation" type="button" class="btn btn-sm btn-outline-light">Use current location</button>
-                            </div>
-                            <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;">
-                                <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
-                                <input id="currentLon" class="form-control" placeholder="Longitude" style="width:120px;" />
-                                <button id="applyLocation" type="button" class="btn btn-sm btn-primary">Apply</button>
-                            </div>
-                        </div>
-                        <h4>Other</h4>
-                        <div class="paramRow">
-                            <button type="button" class="btn btn-secondary" id="clearPayloadData" style="margin-right:8px;">Clear Payload Data</button>
-                            <button type="button" class="btn btn-secondary" id="clearCarData">Clear Chase-Car Track</button>
-                        </div>
-                    </div>
-                    
-                    <!-- When panel first opens default to otherSection (settings) -->
-                    <script>
-                        // Ensure the sections are hidden by default; JS will show the right one when opened.
-                        $('#aprsSection').hide();
-                        $('#otherSection').hide();
-                    </script>
-                </div>
-            </div>
-        </div>
-
     
 </body>
 </html>

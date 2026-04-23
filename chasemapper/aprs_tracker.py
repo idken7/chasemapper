@@ -39,7 +39,7 @@ class APRSTracker(Thread):
         self._running = False
 
     def run(self):
-        logging.info("APRS tracker started for: %s", ",".join(self.callsigns))
+        logging.info("APRS tracker started for: %s" % ",".join(self.callsigns))
         self._running = True
 
         # Prefer APRS-IS streaming via aprslib when available. Fall back to
@@ -56,6 +56,8 @@ class APRSTracker(Thread):
                 host = 'rotate.aprs.net'
                 port = 14580
                 s = socket.create_connection((host, port), timeout=15)
+                # Keep the APRS-IS stream open during idle periods instead of timing out.
+                s.settimeout(None)
                 f = s.makefile('rw', encoding='utf-8', newline='\r\n')
                 # Anonymous login
                 login = 'user NOCALL pass -1 vers chasemapper 1.0\r\n'
@@ -73,13 +75,14 @@ class APRSTracker(Thread):
                     if not cs:
                         continue
                     try:
+                        logging.info("APRS-IS applying filter for %s" % cs)
                         f.write('filter p/{}\r\n'.format(cs))
                     except Exception:
                         pass
                 f.flush()
 
-                logging.info("APRS-IS connected to %s:%d (anonymous), listening for %d callsigns", host, port, len(filters))
-                logging.debug("APRS-IS filters: %s", filters)
+                logging.info("APRS-IS connected to %s:%d (anonymous), listening for %d callsigns" % (host, port, len(filters)))
+                logging.debug("APRS-IS filters: %s" % filters)
 
                 # Read lines and parse via aprslib.parse
                 while self._running:
@@ -89,13 +92,16 @@ class APRSTracker(Thread):
                     line = line.strip()
                     if line == '':
                         continue
-                    logging.debug('APRS-IS raw line: %s', line)
+                    # APRS-IS sends server status/comment lines that are not packets.
+                    if line.startswith('#'):
+                        continue
+                    logging.debug('APRS-IS raw line: %s' % line)
                     try:
                         pkt = aprslib.parse(line)
                         lat = pkt.get('latitude') or pkt.get('lat')
                         lon = pkt.get('longitude') or pkt.get('lon') or pkt.get('lng')
                         if lat is None or lon is None:
-                            logging.debug('APRS-IS packet without lat/lon: %s', pkt)
+                            logging.debug('APRS-IS packet without lat/lon: %s' % pkt)
                             continue
                         callsign = pkt.get('from') or pkt.get('source') or pkt.get('sender')
                         alt = pkt.get('altitude') or pkt.get('alt') or 0
@@ -106,12 +112,16 @@ class APRSTracker(Thread):
                             except Exception:
                                 pass
                         try:
-                            logging.info('APRS-IS packet for %s: lat=%s lon=%s alt=%s', callsign, output['lat'], output['lon'], output['alt'])
+                            logging.info('APRS-IS packet for %s: lat=%s lon=%s alt=%s' % (callsign, output['lat'], output['lon'], output['alt']))
                             self.callback(output)
                         except Exception as e:
-                            logging.error('Error in APRS-IS callback: %s', str(e))
+                            logging.error('Error in APRS-IS callback: %s' % str(e))
                     except Exception as e:
-                        logging.debug('APRS-IS parse error: %s -- raw: %s', str(e), line)
+                        err = str(e).lower()
+                        if 'invalid packet header' in err:
+                            logging.debug('APRS-IS ignored non-packet line: %s' % line)
+                        else:
+                            logging.warning('APRS-IS parse error: %s' % str(e))
                         # Ignore parse errors and continue
                         continue
 
@@ -125,7 +135,7 @@ class APRSTracker(Thread):
                     pass
 
             except Exception as e:
-                logging.error('APRS-IS connection failed: %s, falling back to aprs.fi polling', str(e))
+                logging.error('APRS-IS connection failed: %s, falling back to aprs.fi polling' % str(e))
                 use_is = False
 
         # If APRS-IS isn't available or failed, do HTTP polling
@@ -143,7 +153,7 @@ class APRSTracker(Thread):
                     if not self._running:
                         break
                     try:
-                        logging.debug('APRS polling request for %s', cs)
+                        logging.info('APRS polling request for %s' % cs)
                         params = {
                             'name': cs,
                             'what': 'loc',
@@ -153,15 +163,38 @@ class APRSTracker(Thread):
                             params['apikey'] = self.api_key
 
                         resp = requests.get('https://api.aprs.fi/api/get', params=params, timeout=10)
-                        logging.debug('APRS response for %s: status=%s', cs, resp.status_code)
+                        logging.info('APRS polling response for %s: HTTP %s' % (cs, resp.status_code))
                         if resp.status_code != 200:
-                            logging.warning('APRS non-200 response for %s: %s', cs, resp.status_code)
+                            logging.warning('APRS non-200 response for %s: %s' % (cs, resp.status_code))
                             continue
 
-                        j = resp.json()
-                        entries = j.get('entries') or j.get('result') or []
+                        try:
+                            j = resp.json()
+                        except Exception as e:
+                            logging.warning('APRS polling non-JSON response for %s: %s body=%s' % (cs, str(e), resp.text[:180]))
+                            continue
+
+                        entries = []
+                        if isinstance(j, dict):
+                            _entries = j.get('entries', [])
+                            if isinstance(_entries, list):
+                                entries = _entries
+
+                            if not entries:
+                                _result = j.get('result')
+                                if isinstance(_result, list):
+                                    entries = _result
+                                elif isinstance(_result, str) and _result.lower() != 'ok':
+                                    _desc = j.get('description') or j.get('error') or 'no description'
+                                    logging.warning('APRS polling not OK for %s: result=%s description=%s' % (cs, _result, _desc))
+                        elif isinstance(j, list):
+                            entries = j
+                        else:
+                            logging.warning('APRS polling unexpected payload for %s: type=%s body=%s' % (cs, type(j).__name__, str(j)[:180]))
+                            continue
+
                         if not entries:
-                            logging.debug('APRS: no entries for %s', cs)
+                            logging.warning('APRS: no entries for %s' % cs)
                             continue
 
                         entry = entries[0]
@@ -204,12 +237,12 @@ class APRSTracker(Thread):
                             output['time_dt'] = time_dt
 
                         try:
-                            logging.info('APRS packet for %s: lat=%s lon=%s alt=%s time=%s', cs, lat, lon, alt, time_dt)
+                            logging.info('APRS packet for %s: lat=%s lon=%s alt=%s time=%s' % (cs, lat, lon, alt, time_dt))
                             self.callback(output)
                             if time_dt:
                                 self._last_time[key] = time_dt
                         except Exception as e:
-                            logging.error('Error in APRS callback: %s', str(e))
+                            logging.error('Error in APRS callback: %s' % str(e))
 
                     except Exception as e:
                         # Pre-format the message so formatting placeholders are not left in the
@@ -234,11 +267,11 @@ class APRSTracker(Thread):
             with self._lock:
                 if c not in self.callsigns:
                     self.callsigns.append(c)
-                    logging.info('APRS added callsign: %s', c)
+                    logging.info('APRS added callsign: %s' % c)
         else:
             if c not in self.callsigns:
                 self.callsigns.append(c)
-                logging.info('APRS added callsign: %s', c)
+                logging.info('APRS added callsign: %s' % c)
 
     def remove_callsign(self, callsign):
         c = callsign.strip()
@@ -246,13 +279,13 @@ class APRSTracker(Thread):
             with self._lock:
                 try:
                     self.callsigns.remove(c)
-                    logging.info('APRS removed callsign: %s', c)
+                    logging.info('APRS removed callsign: %s' % c)
                 except ValueError:
                     pass
         else:
             try:
                 self.callsigns.remove(c)
-                logging.info('APRS removed callsign: %s', c)
+                logging.info('APRS removed callsign: %s' % c)
             except ValueError:
                 pass
 
@@ -260,7 +293,7 @@ class APRSTracker(Thread):
         if self._lock:
             with self._lock:
                 self.callsigns = list(callsigns)
-                logging.info('APRS set callsigns: %s', ','.join(self.callsigns))
+                logging.info('APRS set callsigns: %s' % ','.join(self.callsigns))
         else:
             self.callsigns = list(callsigns)
-            logging.info('APRS set callsigns: %s', ','.join(self.callsigns))
+            logging.info('APRS set callsigns: %s' % ','.join(self.callsigns))
