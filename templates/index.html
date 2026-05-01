@@ -61,7 +61,52 @@
         //  abort_marker: Leaflet marker for abort landing prediction.
         //  abort_path: Leaflet marker for abort prediction track.
         var balloon_positions = {};
+        var pending_prediction_updates = {};
+        var pending_telemetry_updates = [];
         var initial_load_complete = false;
+
+        function queuePendingTelemetry(item) {
+            if (!item) {
+                return;
+            }
+            pending_telemetry_updates.push(item);
+        }
+
+        function replayArchiveEntry(callsign, entry) {
+            try {
+                var added = add_new_balloon(entry);
+                if (!added && entry && entry.telem) {
+                    queuePendingTelemetry(entry.telem);
+                }
+            } catch (e) {
+                console.warn('Archive replay failed for', callsign, e);
+                if (entry && entry.telem) {
+                    queuePendingTelemetry(entry.telem);
+                }
+            }
+        }
+
+        function flushPendingTelemetryQueue() {
+            if (pending_telemetry_updates.length === 0) {
+                return;
+            }
+
+            var queuedTelemetry = pending_telemetry_updates.slice();
+            pending_telemetry_updates = [];
+            queuedTelemetry.forEach(function(item) {
+                handleTelemetry(item);
+            });
+        }
+
+        function finalizeInitialHydration() {
+            if (initial_load_complete === true) {
+                return;
+            }
+
+            initial_load_complete = true;
+            flushPendingTelemetryQueue();
+            updateTelemetryTable();
+        }
 
         // The sonde we are currently following on the map
         var balloon_currently_following = "none";
@@ -117,6 +162,9 @@
             // The connection URL has the following format:
             //     http[s]://<domain>:<port>[/<namespace>]
             socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace);
+            if (typeof registerAprsSocketHandlers === 'function') {
+                registerAprsSocketHandlers();
+            }
 
 
             // Grab the System config on startup.
@@ -213,7 +261,7 @@
             });
 
             var logEntries = [];
-            var logLevelFilter = 'all';
+            var logLevelFilter = ['debug', 'info', 'warn', 'error'];
 
             function normalizeLogLevel(level) {
                 var normalized = (level || 'INFO').toString().toUpperCase();
@@ -239,7 +287,7 @@
                 $body.empty();
                 for (var i = logEntries.length - 1; i >= 0; i--) {
                     var entry = logEntries[i];
-                    if (logLevelFilter !== 'all' && normalizeLogLevel(entry.level) !== logLevelFilter) {
+                    if (logLevelFilter.indexOf(normalizeLogLevel(entry.level)) === -1) {
                         continue;
                     }
                     $body.append(buildLogLine(entry));
@@ -247,8 +295,21 @@
                 $body.scrollTop(0);
             }
 
-            $(document).on('change', '#logLevelFilter', function(){
-                logLevelFilter = $(this).val() || 'all';
+            window.renderLogEntries = renderLogEntries;
+
+            $(document).on('click', '#logLevelFilter .log-filter-btn', function(){
+                $(this).toggleClass('is-active');
+
+                var selected = [];
+                $('#logLevelFilter .log-filter-btn.is-active').each(function(){
+                    selected.push($(this).data('log-level'));
+                });
+
+                $('#logLevelFilter .log-filter-btn').each(function(){
+                    $(this).attr('aria-pressed', $(this).hasClass('is-active') ? 'true' : 'false');
+                });
+
+                logLevelFilter = selected;
                 renderLogEntries();
             });
 
@@ -260,7 +321,7 @@
                     msg: msg.msg || ''
                 };
                 logEntries.push(entry);
-                if (logLevelFilter === 'all' || normalizeLogLevel(entry.level) === logLevelFilter) {
+                if (logLevelFilter.indexOf(normalizeLogLevel(entry.level)) !== -1) {
                     $('#logPanelBody').prepend(buildLogLine(entry));
                 }
             });
@@ -341,9 +402,16 @@
                 attribution: '&copy; <a href="https://carto.com/help/building-maps/basemap-list/">Carto</a>'
             });
 
-            
+            // Always-available aviation layer.
+            var aviation_world_nav_map = L.tileLayer(
+                'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
+                {
+                    attribution: '&copy; <a href="https://www.esri.com/">Esri</a> World Navigation Charts',
+                    maxZoom: 18,
+                }
+            );
 
-            var map_layers = {'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map, 'Dark Matter':dark_matter_map};
+            var map_layers = {'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map, 'Dark Matter':dark_matter_map, 'Aviation (World Navigation)':aviation_world_nav_map};
 
             // Add ThunderForest layers, if we have a key provided.
             if (chase_config.thunderforest_api_key !== 'none'){
@@ -366,6 +434,17 @@
 
             }
 
+            if (chase_config.openaip_api_key && chase_config.openaip_api_key !== 'none') {
+                var openaip_map = L.tileLayer(
+                    'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=' + encodeURIComponent(chase_config.openaip_api_key),
+                    {
+                        attribution: '&copy; <a href="https://www.openaip.net/">openAIP</a>',
+                        maxZoom: 14,
+                    }
+                );
+                map_layers['Aviation (openAIP)'] = openaip_map;
+            }
+
             // Add Offline map layers, if we have any.
             for (var i = 0, len = chase_config.offline_tile_layers.length; i < len; i++) {
                 var _layer_name = chase_config.offline_tile_layers[i];
@@ -376,7 +455,7 @@
 
             if (chase_config['unitselection'] == "imperial") {
                 L.control.polylineMeasure({
-                    position: 'topleft',
+                    position: 'topright',
                     unit: 'landmiles',
                     showClearControl: true,
                 }).addTo(map);
@@ -385,7 +464,7 @@
 
             if (chase_config['unitselection'] == "metric") { 
                 L.control.polylineMeasure({
-                    position: 'topleft',
+                    position: 'topright',
                     unit: 'metres',
                     showClearControl: true,
                 }).addTo(map);
@@ -393,60 +472,68 @@
 
 
             
-            // Add layer selection control (top right).
-            // Replace default Leaflet layers control with a modern animated selector
-            function createMapProviderControl(map, layersObj, initialName){
-                var ctl = L.control({position:'topright'});
-                ctl.onAdd = function(mapLocal){
-                    var div = L.DomUtil.create('div', 'map-provider-control');
-                    div.innerHTML = '<button id="mapProviderBtn" class="mp-btn"><span id="mp-current">'+initialName+'</span> <i class="fa fa-layer-group"></i></button><div id="mp-dropdown" class="mp-dropdown"><ul></ul></div>';
-                    L.DomEvent.disableClickPropagation(div);
-                    return div;
-                };
-                ctl.addTo(map);
-
-                // populate list
-                var ul = document.querySelector('.map-provider-control .mp-dropdown ul');
-                for (var name in layersObj){
-                    if (!layersObj.hasOwnProperty(name)) continue;
-                    var li = document.createElement('li');
-                    li.className = 'mp-item';
-                    li.dataset.layerName = name;
-                    li.textContent = name;
-                    ul.appendChild(li);
+            function getActiveMapProviderName(layersObj) {
+                if (!layersObj) {
+                    return 'OSM';
                 }
 
-                var btn = document.getElementById('mapProviderBtn');
-                var dropdown = document.getElementById('mp-dropdown');
-                btn.addEventListener('click', function(e){
-                    dropdown.classList.toggle('open');
-                });
-
-                ul.addEventListener('click', function(e){
-                    var li = e.target;
-                    if (!li || !li.dataset || !li.dataset.layerName) return;
-                    var chosen = li.dataset.layerName;
-                    // remove other base layers
-                    for (var n in layersObj){ if (!layersObj.hasOwnProperty(n)) continue; if (map.hasLayer(layersObj[n])) map.removeLayer(layersObj[n]); }
-                    layersObj[chosen].addTo(map);
-                    document.getElementById('mp-current').textContent = chosen;
-                    dropdown.classList.remove('open');
-                });
-
-                // close dropdown when clicking outside
-                document.addEventListener('click', function(e){
-                    var container = document.querySelector('.map-provider-control');
-                    if (!container) return;
-                    if (!container.contains(e.target)){
-                        dropdown.classList.remove('open');
+                for (var layerName in layersObj) {
+                    if (!layersObj.hasOwnProperty(layerName)) {
+                        continue;
                     }
+                    if (map.hasLayer(layersObj[layerName])) {
+                        return layerName;
+                    }
+                }
+
+                return layersObj['OSM'] ? 'OSM' : Object.keys(layersObj)[0] || 'OSM';
+            }
+
+            function setActiveMapProvider(layerName) {
+                if (!map_layers || !map_layers[layerName]) {
+                    return;
+                }
+
+                for (var name in map_layers) {
+                    if (!map_layers.hasOwnProperty(name)) {
+                        continue;
+                    }
+                    if (map.hasLayer(map_layers[name])) {
+                        map.removeLayer(map_layers[name]);
+                    }
+                }
+
+                map_layers[layerName].addTo(map);
+            }
+
+            function populateMapProviderSelect() {
+                var select = document.getElementById('mapProviderSelect');
+                if (!select || !map_layers) {
+                    return;
+                }
+
+                if (select.options.length === 0) {
+                    for (var name in map_layers) {
+                        if (!map_layers.hasOwnProperty(name)) {
+                            continue;
+                        }
+                        var option = document.createElement('option');
+                        option.value = name;
+                        option.textContent = name;
+                        select.appendChild(option);
+                    }
+                }
+
+                var currentLayerName = getActiveMapProviderName(map_layers);
+                select.value = currentLayerName;
+                select.addEventListener('change', function() {
+                    setActiveMapProvider(select.value);
                 });
             }
 
-            // create control with currently active layer name
-            var defaultLayerName = 'OSM';
-            if (map_layers && map_layers['OSM']) defaultLayerName = 'OSM';
-            createMapProviderControl(map, map_layers, defaultLayerName);
+            if (typeof populateMapProviderSelect === 'function') {
+                populateMapProviderSelect();
+            }
 
             // Add map scale.
             if (chase_config['unitselection'] == "imperial") { L.control.scale({imperial: true, metric: false}).addTo(map) ;}
@@ -454,46 +541,19 @@
 
 
 
-            // Units for rings
-            if (chase_config['unitselection'] == "imperial") { document.getElementById("ring_spacing").innerHTML = "Ring Spacing (ft)";}
-            if (chase_config['unitselection'] == "metric")   { document.getElementById("ring_spacing").innerHTML = "Ring Spacing (m)";}
+	            // Units for rings
+	            var ringSpacingLabel = document.getElementById("ring_spacing");
+	            if (ringSpacingLabel != null) {
+	                if (chase_config['unitselection'] == "imperial") { ringSpacingLabel.innerHTML = "Ring Spacing (ft)";}
+	                if (chase_config['unitselection'] == "metric")   { ringSpacingLabel.innerHTML = "Ring Spacing (m)";}
+	            }
 
             // Sidebar removed — using floating panels and bottom menubar instead.
 
             // Add custom controls, which show various sets of data.
 
-            // Telemetry table - shows all payload telemetry.
-            L.control.custom({
-                position: 'bottomright',
-                content : "<div class='centerWrapper'><div id='telem_table_btn' class='center_btn'><i class='fa fa-angle-right fa-4x text-center'></i></div><div id='telem_table' style='float:right;'></div></div>",
-                classes : 'btn-group-horizonal btn-group-sm',
-                id: 'telem_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
+            // Telemetry table removed (moved out of UI)
 
-            // Allow hiding of the telemetry table. This function is in tables.js
-            $("#telem_table_btn").click(toggleTelemTableHide);
-
-
-            // Summary display - a 'quick-look' of where the currently tracked payload is and what it's doing.
-            L.control.custom({
-                position: 'topcenter',
-                content : "<div id='summary_table'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'summary_display',
-                style   :
-                {
-                    margin: '5px',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
 
             // Data age display - shows how old the various datasets are.
             L.control.custom({
@@ -617,19 +677,33 @@
             // Follow buttons - these just set the radio buttons on the settings pane.
             // TODO: Figure out how to centre the icons under iOS's Safari browser.
             // Also TODO: Find a decent balloon icon!
-            L.easyButton('fa-paper-plane', function(btn, map){
-                $('input:radio[name=autoFollow]').val(['payload']);
-            }, 'Follow Payload', 'followPayloadButton', {
-                position: 'topright'
-            }
-            ).addTo(map);
-
             L.easyButton('fa-car', function(btn, map){
                 $('input:radio[name=autoFollow]').val(['car']);
+                balloon_currently_following = 'none';
+                if (typeof updateAprsFollowIndicators === 'function') {
+                    updateAprsFollowIndicators();
+                }
             }, 'Follow Chase Car', 'followCarButton', {
                 position: 'topright'
             }
             ).addTo(map);
+
+            // EasyButton: Toggle 3D extrusion markers
+            L.easyButton('fa-cube', function(btn, map){
+                try{
+                    var currently = (localStorage.getItem('enable_3d_markers') === '1' || localStorage.getItem('enable_3d_markers') === 'true');
+                    var next = !currently;
+                    localStorage.setItem('enable_3d_markers', next ? '1' : '0');
+                    if (typeof chase_config !== 'undefined') {
+                        chase_config.enable_3d_markers = next;
+                    }
+                    if (typeof refreshAllBalloonIcons === 'function') {
+                        refreshAllBalloonIcons();
+                    }
+                }catch(e){
+                    console.warn('3D toggle failed', e);
+                }
+            }, 'Toggle 3D markers', 'toggle3DButton', { position: 'topright' }).addTo(map);
 
             map.zoomControl.setPosition('topright');
 
@@ -648,6 +722,12 @@
             function mapMovedEvent(e){
                 // The user has panned the map, stop following things.
                 $('input:radio[name=autoFollow]').val(['none']);
+                if (balloon_currently_following !== 'none') {
+                    balloon_currently_following = 'none';
+                    if (typeof updateAprsFollowIndicators === 'function') {
+                        updateAprsFollowIndicators();
+                    }
+                }
             }
             map.on('dragend',mapMovedEvent);
 
@@ -671,12 +751,20 @@
                   async: true,
                   success: function(data) {
 
-                    for (callsign in data){
-                        add_new_balloon(data[callsign]);
+                    for (var callsign in data){
+                        if (!Object.prototype.hasOwnProperty.call(data, callsign)) {
+                            continue;
+                        }
+
+                        replayArchiveEntry(callsign, data[callsign]);
                     }
-                    // Update telemetry table
-                    updateTelemetryTable();
-                    initial_load_complete = true;
+                                        finalizeInitialHydration();
+                                    },
+                                    error: function(xhr, status, error) {
+                                        console.warn('Archive bootstrap request failed, continuing with queued telemetry hydration.', status, error);
+                                    },
+                                    complete: function() {
+                                        finalizeInitialHydration();
                   }
             });
 
@@ -690,6 +778,10 @@
             // Telemetry event handler.
             // We will get one of these mesages with every new balloon position
             socket.on('telemetry_event', function(data) {
+                if (initial_load_complete == false) {
+                    queuePendingTelemetry(data);
+                    return;
+                }
                 handleTelemetry(data);
             });
 
@@ -704,6 +796,7 @@
             });
         
             socket.on('predictor_update', function(data){
+                console.log('Received predictor_update:', data);
                 handlePrediction(data);
             });
 
@@ -875,16 +968,15 @@
 <div id="menuDock" class="menu-dock">
     <!-- Floating log panel -->
     <div id="logPanel" class="log-panel">
+        <div class="panel-resize-handle" id="logPanelResizeHandle" data-resize-target="logPanel" title="Drag to resize panel" aria-label="Resize panel"></div>
         <div class="log-panel-header">
-            <span>Log Messages</span>
-            <select id="logLevelFilter" class="form-control form-control-sm log-filter-select" aria-label="Filter log messages by level">
-                <option value="all">All</option>
-                <option value="debug">Debug</option>
-                <option value="info">Info</option>
-                <option value="warn">Warnings</option>
-                <option value="error">Errors</option>
-            </select>
-            <button id="logPanelClose" class="btn-close">×</button>
+            <span class="log-panel-title">Log Messages</span>
+                <div id="logLevelFilter" class="log-filter-group" role="group" aria-label="Filter log messages by level">
+                    <button type="button" class="btn btn-sm log-filter-btn is-active" data-log-level="debug" aria-pressed="true">Debug</button>
+                    <button type="button" class="btn btn-sm log-filter-btn is-active" data-log-level="info" aria-pressed="true">Info</button>
+                    <button type="button" class="btn btn-sm log-filter-btn is-active" data-log-level="warn" aria-pressed="true">Warn</button>
+                    <button type="button" class="btn btn-sm log-filter-btn is-active" data-log-level="error" aria-pressed="true">Error</button>
+                </div>
         </div>
         <div id="logPanelBody" class="log-panel-body"></div>
     </div>
@@ -892,9 +984,9 @@
     <!-- Settings modal/panel -->
     <div id="settingsPanel" class="settings-panel">
         <div class="settings-panel-content">
+            <div class="panel-resize-handle" id="panelResizeHandle" data-resize-target="settingsPanel" title="Drag to resize panel" aria-label="Resize panel"></div>
             <div class="settings-header">
                 <span>Settings</span>
-                <button id="settingsPanelClose" class="btn-close">×</button>
             </div>
             <div class="settings-body">
                 <!-- APRS quick view (shown when APRS button selected) -->
@@ -904,27 +996,42 @@
                         <button id="aprsAddBtn" type="button" class="btn btn-primary" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
                     </div>
                     <ul id="aprsList" class="list-group"></ul>
-                    <div class="form-group">
-                        <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
-                        <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
-                    </div>
                 </div>
 
                 <!-- Full Settings (opened from Settings button) -->
                 <div id="otherSection" style="display:none;">
-                    <h4>Settings</h4>
-                    <div class="form-group">
+                    <div class="form-group settings-inline-row">
                         <label for="themeSelect">Theme</label>
-                        <select id="themeSelect" class="form-control">
-                            <option value="light">Light</option>
-                            <option value="dark">Dark</option>
-                        </select>
+                        <div id="themeSelect" class="button-select-group button-select-group-compact" role="group" aria-label="Theme selection">
+                            <button type="button" class="btn btn-sm button-select-btn is-active" data-value="light" title="Light theme">Light</button>
+                            <button type="button" class="btn btn-sm button-select-btn" data-value="dark" title="Dark theme">Dark</button>
+                        </div>
+                    </div>
+                    <div class="form-group settings-inline-row">
+                        <label for="unitSelection">Display Units</label>
+                        <div id="unitSelection" class="button-select-group button-select-group-compact" role="group" aria-label="Display units selection">
+                            <button type="button" class="btn btn-sm button-select-btn is-active" data-value="metric" title="Metric units">Metric</button>
+                            <button type="button" class="btn btn-sm button-select-btn" data-value="imperial" title="Imperial units">Imperial</button>
+                        </div>
+                    </div>
+                    <div class="form-group settings-inline-row">
+                        <label for="mapProviderSelect">Map Provider</label>
+                        <select id="mapProviderSelect" class="form-control map-provider-select" aria-label="Map provider selector"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="timezoneSelection">APRS Timezone</label>
+                        <input id="timezoneSelection" class="form-control" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
+                        <small class="text-muted">Use <code>local</code> or any IANA timezone name.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
+                        <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
                     </div>
                     <div class="form-group">
                         <label>Current Location</label>
                         <div class="d-flex align-items-center" style="gap:8px;">
                             <div id="currentLocationDisplay">Unknown</div>
-                            <button id="useCurrentLocation" type="button" class="btn btn-sm btn-outline-light">Use current location</button>
+                            <button id="useCurrentLocation" type="button" class="btn btn-sm btn-current-location">Use current location</button>
                         </div>
                         <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;">
                             <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
@@ -949,25 +1056,18 @@
         </div>
     </div>
 
+    <datalist id="timezoneOptions"></datalist>
+
     <!-- Menubar: compact floating bar (bottom) with app title, quick buttons and APRS status -->
     <div id="topbar" class="d-flex align-items-center p-2 topbar-shell">
-        <div class="d-flex align-items-center topbar-brand">
-            <div class="topbar-brand-mark"></div>
-            <div>
-                <div class="topbar-title">ChaseMapper</div>
-                <div class="topbar-subtitle">Live flight operations</div>
-            </div>
+        <div class="btn-group topbar-action-group" role="group" aria-label="Topbar actions">
+            <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarLogBtn">Logs</button>
+            <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarAprsBtn">APRS</button>
+            <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarSettingsBtn">Settings</button>
         </div>
-        <div class="ms-auto d-flex align-items-center topbar-actions">
-                <div class="btn-group me-3 topbar-action-group" role="group" aria-label="Topbar actions">
-                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarLogBtn">Log</button>
-                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarAprsBtn">APRS-IS</button>
-                <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarSettingsBtn">Settings</button>
-            </div>
-            <div class="d-flex align-items-center topbar-status">
-                <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
-                <span class="topbar-status-label">APRS-IS</span>
-            </div>
+        <div class="d-flex align-items-center topbar-status topbar-status-right">
+            <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
+            <span class="topbar-status-label">APRS</span>
         </div>
     </div>
 </div>
@@ -980,32 +1080,246 @@ function setTopbarSelection(mode){
     if (mode === 'settings') $('#topbarSettingsBtn').addClass('is-selected');
 }
 
-function openPanelWithAnimation($panel) {
+function ensureSettingsPanelHeight() {
+    if (typeof window.getDockPanelHeight === 'function' && typeof window.setDockPanelHeight === 'function') {
+        var rememberedDockHeight = window.getDockPanelHeight();
+        if (rememberedDockHeight > 0) {
+            window.setDockPanelHeight(rememberedDockHeight, false);
+            return;
+        }
+    }
+
+    var panel = document.getElementById('settingsPanel');
+    if (!panel || typeof window.setDockPanelHeight !== 'function') {
+        return;
+    }
+
+    var current = parseFloat(panel.style.height || panel.style.maxHeight || '0');
+    if (isFinite(current) && current > 0) {
+        window.setDockPanelHeight(current, false);
+        return;
+    }
+
+    var remembered = parseFloat(window.__dockPanelHeight || window.__settingsPanelHeight || '0');
+    if (isFinite(remembered) && remembered > 0) {
+        window.setDockPanelHeight(remembered, false);
+        return;
+    }
+
+    if (typeof window.getSettingsPanelSnapOpenHeight === 'function') {
+        var openHeight = parseFloat(window.getSettingsPanelSnapOpenHeight());
+        if (isFinite(openHeight) && openHeight > 0) {
+            window.setDockPanelHeight(openHeight, true);
+            return;
+        }
+    }
+
+    window.setDockPanelHeight(420, true);
+}
+
+function getDockPanelHeight() {
+    var remembered = parseFloat(window.__dockPanelHeight || window.__settingsPanelHeight || '0');
+    if (isFinite(remembered) && remembered > 0) {
+        return remembered;
+    }
+    if (typeof window.getSettingsPanelSnapOpenHeight === 'function') {
+        var fallbackHeight = parseFloat(window.getSettingsPanelSnapOpenHeight());
+        if (isFinite(fallbackHeight) && fallbackHeight > 0) {
+            return Math.min(420, fallbackHeight);
+        }
+    }
+    return 420;
+}
+
+function setDockPanelHeight(height, persistHeight) {
+    var targetPanelId = arguments.length > 2 ? arguments[2] : null;
+    var maxOpen = typeof window.getSettingsPanelSnapOpenHeight === 'function' ? parseFloat(window.getSettingsPanelSnapOpenHeight()) : 0;
+    if (!isFinite(maxOpen) || maxOpen <= 0) {
+        maxOpen = Math.max(240, Math.floor(window.innerHeight - 120));
+    }
+    var safeHeight = Math.max(0, Math.min(maxOpen, Math.round(height || 0)));
+    var settingsPanel = document.getElementById('settingsPanel');
+    var logPanel = document.getElementById('logPanel');
+    var targetPanel = null;
+
+    if (targetPanelId === 'settingsPanel') {
+        targetPanel = settingsPanel;
+    } else if (targetPanelId === 'logPanel') {
+        targetPanel = logPanel;
+    } else if (settingsPanel && settingsPanel.classList.contains('panel-open')) {
+        targetPanel = settingsPanel;
+    } else if (logPanel && logPanel.classList.contains('panel-open')) {
+        targetPanel = logPanel;
+    } else {
+        targetPanel = settingsPanel || logPanel;
+    }
+
+    if (settingsPanel) {
+        settingsPanel.style.height = '0px';
+        settingsPanel.style.maxHeight = '0px';
+    }
+    if (logPanel) {
+        logPanel.style.height = '0px';
+        logPanel.style.maxHeight = '0px';
+    }
+
+    if (targetPanel && safeHeight > 0) {
+        targetPanel.style.height = safeHeight + 'px';
+        targetPanel.style.maxHeight = safeHeight + 'px';
+    }
+
+    if (persistHeight !== false && safeHeight > 0) {
+        window.__dockPanelHeight = safeHeight;
+        window.__settingsPanelHeight = safeHeight;
+    }
+
+    return safeHeight;
+}
+
+window.getDockPanelHeight = getDockPanelHeight;
+window.setDockPanelHeight = setDockPanelHeight;
+
+function getOpenDockPanelWidth() {
+    var settingsPanel = document.getElementById('settingsPanel');
+    if (settingsPanel && settingsPanel.classList.contains('panel-open')) {
+        return settingsPanel.getBoundingClientRect().width;
+    }
+
+    var logPanel = document.getElementById('logPanel');
+    if (logPanel && logPanel.classList.contains('panel-open')) {
+        return logPanel.getBoundingClientRect().width;
+    }
+
+    return 0;
+}
+
+function getVisibleMapCenterPoint() {
+    if (typeof map === 'undefined' || !map) {
+        return null;
+    }
+
+    var size = map.getSize();
+    var coveredWidth = getOpenDockPanelWidth();
+    var dock = document.getElementById('menuDock');
+    var dockRect = dock ? dock.getBoundingClientRect() : null;
+    var dockOnLeft = true;
+    if (dockRect) {
+        dockOnLeft = dockRect.left < (size.x / 2);
+    }
+    var x = dockOnLeft ? (size.x / 2 + coveredWidth / 2) : (size.x / 2 - coveredWidth / 2);
+    return L.point(x, size.y / 2);
+}
+
+function panMapToVisibleCenter(latlng, panOptions) {
+    if (typeof map === 'undefined' || !map || !latlng) {
+        return;
+    }
+
+    var targetLatLng = L.latLng(latlng);
+    if (!targetLatLng) {
+        return;
+    }
+
+    var options = panOptions || {};
+    var desiredPoint = getVisibleMapCenterPoint();
+    if (!desiredPoint) {
+        map.panTo(targetLatLng, options);
+        return;
+    }
+
+    var zoom = map.getZoom();
+    var size = map.getSize();
+    var targetPoint = map.project(targetLatLng, zoom);
+    var halfSize = L.point(size.x / 2, size.y / 2);
+    var desiredCenterPoint = targetPoint.subtract(desiredPoint.subtract(halfSize));
+    var desiredCenterLatLng = map.unproject(desiredCenterPoint, zoom);
+    map.panTo(desiredCenterLatLng, options);
+}
+
+window.panMapToVisibleCenter = panMapToVisibleCenter;
+
+function openPanelWithAnimation($panel, animate) {
     if (!$panel || $panel.length === 0) {
         return;
     }
     if ($panel.hasClass('panel-open')) {
         return;
     }
-    $panel.removeClass('panel-open');
-    if ($panel[0]) {
-        $panel[0].offsetHeight;
+    var shouldAnimate = animate !== false;
+    if ($panel[0] && ($panel[0].id === 'logPanel' || $panel[0].id === 'settingsPanel')) {
+        setDockPanelHeight(getDockPanelHeight(), false, $panel[0].id);
     }
-    window.requestAnimationFrame(function() {
+    
+    if (shouldAnimate) {
+        // Opening with animation - use standard animation frame approach
+        $panel.removeClass('panel-open panel-closing');
+        if ($panel[0]) {
+            $panel[0].offsetHeight; // Force reflow
+        }
+        window.requestAnimationFrame(function() {
+            window.requestAnimationFrame(function() {
+                $panel.addClass('panel-open');
+            });
+        });
+    } else {
+        // Instant open - disable transitions, apply changes, re-enable
+        $panel.addClass('no-transitions');
+        $panel.removeClass('panel-open panel-closing');
         window.requestAnimationFrame(function() {
             $panel.addClass('panel-open');
+            window.requestAnimationFrame(function() {
+                $panel.removeClass('no-transitions');
+            });
         });
-    });
+    }
+}
+
+function swapPanelWithoutDockClose($fromPanel, $toPanel) {
+    if ($fromPanel && $fromPanel.length > 0) {
+        $fromPanel.addClass('no-transitions');
+        $fromPanel.removeClass('panel-open panel-closing');
+        window.requestAnimationFrame(function() {
+            $fromPanel.removeClass('no-transitions');
+        });
+    }
+    openPanelWithAnimation($toPanel, false);
 }
 
 function closePanel($panel) {
-    if ($panel && $panel.length > 0) {
-        $panel.removeClass('panel-open');
+    if (!$panel || $panel.length === 0) {
+        return;
     }
+    if (!$panel.hasClass('panel-open')) {
+        return;
+    }
+    
+    // Start close animation with panel-closing state
+    $panel.removeClass('panel-open').addClass('panel-closing');
+    
+    // Wait for animation to complete
+    var animationDone = false;
+    var completeClose = function() {
+        if (animationDone) return;
+        animationDone = true;
+        
+        $panel.off('transitionend', completeClose);
+        $panel.removeClass('panel-closing');
+        
+        var settingsOpen = $('#settingsPanel').hasClass('panel-open');
+        var logOpen = $('#logPanel').hasClass('panel-open');
+        if (!settingsOpen && !logOpen) {
+            setDockPanelHeight(0, false);
+        }
+    };
+    
+    $panel.on('transitionend', completeClose);
+    // Fallback timeout for browsers with transition issues (350ms > max transition time of 260ms)
+    setTimeout(completeClose, 350);
 }
 
 function showSettingsPanel(mode) {
-    closePanel($('#logPanel'));
+    var $logPanel = $('#logPanel');
+    var wasLogOpen = $logPanel.hasClass('panel-open');
 
     var $settingsPanel = $('#settingsPanel');
     var isAlreadyOpen = $settingsPanel.hasClass('panel-open');
@@ -1016,8 +1330,13 @@ function showSettingsPanel(mode) {
         $('#aprsSection').show();
         $('#otherSection').hide();
         $('#settingsPanel .settings-header span').text('APRS');
+        ensureSettingsPanelHeight();
         if (!isAlreadyOpen || !isSameMode) {
-            openPanelWithAnimation($settingsPanel);
+            if (wasLogOpen) {
+                swapPanelWithoutDockClose($logPanel, $settingsPanel);
+            } else {
+                openPanelWithAnimation($settingsPanel);
+            }
         }
         window.setTimeout(function(){ $('#aprsCallInput').focus(); }, 300);
     } else {
@@ -1025,13 +1344,16 @@ function showSettingsPanel(mode) {
         $('#otherSection').show();
         $('#aprsSection').hide();
         $('#settingsPanel .settings-header span').text('Settings');
-        var t = localStorage.getItem('chasemapper_theme') || 'light';
-        $('#themeSelect').val(t);
         if (navigator && navigator.geolocation){
             navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
         }
+        ensureSettingsPanelHeight();
         if (!isAlreadyOpen || !isSameMode) {
-            openPanelWithAnimation($settingsPanel);
+            if (wasLogOpen) {
+                swapPanelWithoutDockClose($logPanel, $settingsPanel);
+            } else {
+                openPanelWithAnimation($settingsPanel);
+            }
         }
     }
 }
@@ -1053,12 +1375,20 @@ function toggleSettingsPanel(mode) {
 
 // Menubar buttons: toggle panels
 $(document).on('click', '#topbarLogBtn', function(){
-    closePanel($('#settingsPanel'));
+    var $settingsPanel = $('#settingsPanel');
+    var settingsOpen = $settingsPanel.hasClass('panel-open');
     if ($('#logPanel').hasClass('panel-open')) {
         closePanel($('#logPanel'));
         setTopbarSelection('none');
     } else {
-        openPanelWithAnimation($('#logPanel'));
+        if (typeof window.renderLogEntries === 'function') {
+            window.renderLogEntries();
+        }
+        if (settingsOpen) {
+            swapPanelWithoutDockClose($settingsPanel, $('#logPanel'));
+        } else {
+            openPanelWithAnimation($('#logPanel'));
+        }
         setTopbarSelection('log');
     }
 });
@@ -1071,12 +1401,18 @@ $(document).on('click', '#topbarAprsBtn', function(){
     toggleSettingsPanel('aprs');
 });
 
-// Close buttons
-$(document).on('click', '#logPanelClose', function(){
+$(document).on('click', '.log-panel .log-panel-header', function(e){
+    if ($(e.target).closest('#logLevelFilter, button').length > 0) {
+        return;
+    }
     closePanel($('#logPanel'));
     setTopbarSelection('none');
 });
-$(document).on('click', '#settingsPanelClose', function(){
+
+$(document).on('click', '.settings-panel .settings-header', function(e){
+    if ($(e.target).closest('button, input, select, label').length > 0) {
+        return;
+    }
     closePanel($('#settingsPanel'));
     setTopbarSelection('none');
 });
@@ -1115,21 +1451,38 @@ $(document).ready(function(){
             </div>
         </div>
 
-        <div id="mark-recovered-dialog" title="Mark Payload Recovered" style='display:none;'>
-            <div class="paramRow">
-                <b>Last Position:</b> <div style='float:right;' id='recoveryPosition'></div><br/>
-            </div>
-            <div class="paramRow">
-                <b>Recovery Successful:</b> <input type="checkbox" class="paramSelector" id="recoverySuccessful" checked><br/>
-            </div>
-            <div class="paramRow">
-                <b>Use Car Position:</b> <input type="checkbox" class="paramSelector" id="recoveryCarPosition" onclick='setRecoveryCarPosition();'><br/>
-            </div>
-            <div class="paramRow">
-                <b>Title:</b><input type="text" class="paramEntry" size="40" id="customRecoveryTitle"><br/>
-            </div>
-            <div class="paramRow">
-                <b>Message:</b><input type="text" class="paramEntry" size="40" id="customRecoveryMessage"><br/>
+        <div id="recoveryModal" class="recovery-modal" aria-hidden="true">
+            <div class="recovery-modal-backdrop" data-recovery-close="true"></div>
+            <div class="recovery-modal-card" role="dialog" aria-modal="true" aria-labelledby="recoveryModalTitle">
+                <div class="recovery-modal-header">
+                    <h3 id="recoveryModalTitle" class="recovery-modal-title">Mark Payload Recovered</h3>
+                </div>
+                <div class="recovery-modal-body">
+                    <div class="recovery-row">
+                        <span class="recovery-label">Last Position</span>
+                        <span class="recovery-value" id="recoveryPosition"></span>
+                    </div>
+                    <label class="recovery-check-row" for="recoverySuccessful">
+                        <span>Recovery Successful</span>
+                        <input type="checkbox" id="recoverySuccessful" checked>
+                    </label>
+                    <label class="recovery-check-row" for="recoveryCarPosition">
+                        <span>Use Car Position</span>
+                        <input type="checkbox" id="recoveryCarPosition">
+                    </label>
+                    <div class="recovery-input-row recovery-title-row">
+                        <label for="customRecoveryTitle">Title</label>
+                        <input type="text" id="customRecoveryTitle" class="form-control">
+                    </div>
+                    <div class="recovery-input-row">
+                        <label for="customRecoveryMessage">Message</label>
+                        <input type="text" id="customRecoveryMessage" class="form-control" placeholder="Optional recovery message">
+                    </div>
+                </div>
+                <div class="recovery-modal-footer">
+                    <button type="button" class="btn btn-secondary" id="recoveryModalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="recoveryModalSubmitBtn">Submit</button>
+                </div>
             </div>
         </div>
     

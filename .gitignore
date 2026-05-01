@@ -36,3 +36,6 @@ node_modules/
 Thumbs.db
 
 # Keep local config file tracked (don't ignore horusmapper.cfg)
+
+# Ignore log files
+log_files

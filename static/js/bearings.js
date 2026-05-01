@@ -350,7 +350,11 @@ function toggleBearingsOnlyMode(){
 	// Enable-disable bearing only mode, which hides the summary and telemetry displays
 
 	// Grab the bearing-only-mode settings.
-	var _bearings_only_enabled = document.getElementById("bearingsOnlyMode").checked;
+	var bearingsOnlyModeElement = document.getElementById("bearingsOnlyMode");
+	if (bearingsOnlyModeElement == null){
+		return;
+	}
+	var _bearings_only_enabled = bearingsOnlyModeElement.checked;
 
 
 	if ((_bearings_only_enabled == true) ){//} && (bearings_only_mode == false)){

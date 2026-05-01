@@ -36,13 +36,36 @@ var chase_config = {
 // APRS UI state cache keyed by uppercased callsign.
 var aprs_telemetry_cache = {};
 var aprs_last_rx_ms = {};
+var aprs_refresh_pending = {};
+var APRS_DETAIL_FIELDS = [
+    {label: 'Alt', className: 'aprs-val-alt'},
+    {label: 'Speed', className: 'aprs-val-speed'},
+    {label: 'Ascent', className: 'aprs-val-ascent'},
+    {label: 'Az', className: 'aprs-val-az'},
+    {label: 'El', className: 'aprs-val-el'},
+    {label: 'Range', className: 'aprs-val-range'}
+];
 
 function getAprsStatusTimeoutMs() {
-    var poll = parseInt(chase_config.aprs_poll_interval || 30, 10);
-    if (isNaN(poll) || poll < 5) {
-        poll = 30;
+    return 60000;
+}
+
+function parseAprsPacketTimeMs(telem) {
+    if (!telem) {
+        return NaN;
     }
-    return Math.max(20000, ((poll * 3) + 10) * 1000);
+
+    var rawTime = telem.packet_time || telem.time_dt || telem.timestamp || null;
+    if (!rawTime) {
+        return NaN;
+    }
+
+    var ts = new Date(rawTime);
+    if (isNaN(ts.getTime())) {
+        return NaN;
+    }
+
+    return ts.getTime();
 }
 
 function setAprsStatusDot(state, titleText) {
@@ -89,9 +112,9 @@ function updateAprsStatusIndicator() {
     if (anyFresh) {
         setAprsStatusDot('good', 'APRS status: good (receiving data)');
     } else if (anySeen) {
-        setAprsStatusDot('broken', 'APRS status: broken (no recent APRS data)');
+        setAprsStatusDot('connecting', 'APRS status: stale (no recent APRS data)');
     } else {
-        setAprsStatusDot('connecting', 'APRS status: connecting');
+        setAprsStatusDot('broken', 'APRS status: broken (no APRS data yet)');
     }
 }
 
@@ -115,6 +138,44 @@ function getAprsReferencePosition() {
     return null;
 }
 
+function getAprsTimezone() {
+    var tz = (chase_config.aprs_timezone || 'local').toString().trim();
+    if (tz === '' || tz.toLowerCase() === 'local') {
+        return null;
+    }
+
+    try {
+        new Intl.DateTimeFormat(undefined, {timeZone: tz});
+        return tz;
+    } catch (e) {
+        return null;
+    }
+}
+
+function populateTimezoneOptions() {
+    var list = $('#timezoneOptions');
+    if (list.length === 0 || list.children().length > 0) {
+        return;
+    }
+
+    var zones = [];
+    try {
+        if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+            zones = Intl.supportedValuesOf('timeZone');
+        }
+    } catch (e) {
+        zones = [];
+    }
+
+    if (zones.length === 0) {
+        zones = ['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles'];
+    }
+
+    zones.slice(0, 200).forEach(function(tz) {
+        list.append($('<option>').attr('value', tz));
+    });
+}
+
 function createAprsDetailRow(label, valueClass) {
     var row = $('<div>').addClass('aprs-detail-row');
     row.append($('<span>').addClass('aprs-detail-label').text(label));
@@ -122,44 +183,246 @@ function createAprsDetailRow(label, valueClass) {
     return row;
 }
 
+function createAprsDetailGrid() {
+    var detailGrid = $('<div>').addClass('aprs-detail-grid mt-1');
+    APRS_DETAIL_FIELDS.forEach(function(field) {
+        detailGrid.append(createAprsDetailRow(field.label, field.className));
+    });
+    return detailGrid;
+}
+
 function createAprsListItem(cs, collecting) {
     var csKey = (cs || '').toString().toUpperCase();
     var li = $('<li>').addClass('list-group-item aprs-item');
     li.attr('data-callsign', csKey);
 
-    var row = $('<div>').addClass('d-flex justify-content-between align-items-start');
+    var row = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-row');
     var left = $('<div>').addClass('d-flex flex-column');
-    var titleRow = $('<div>').addClass('d-flex align-items-center');
-    var name = $('<strong>').text(csKey);
-    var timeSpan = $('<span>').addClass('aprs-last-time ms-2 text-muted').text('\u2014');
+    var titleRow = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-title-row');
+    var titleLeft = $('<div>').addClass('d-flex align-items-center aprs-title-left');
+    titleLeft.append($('<span>').addClass('aprs-staleness-light aprs-staleness-red').attr('title', 'No APRS data yet'));
+    titleLeft.append($('<strong>').text(csKey));
+    titleRow.append(titleLeft);
+
+    var timeSpan = $('<div>').addClass('aprs-last-time text-muted').text('\u2014');
     if (collecting) {
         timeSpan.addClass('collecting').text('Collecting...');
     }
-    titleRow.append(name).append(timeSpan);
+    titleRow.append(timeSpan);
 
-    var detailGrid = $('<div>').addClass('aprs-detail-grid mt-1');
-    detailGrid.append(createAprsDetailRow('Alt', 'aprs-val-alt'));
-    detailGrid.append(createAprsDetailRow('Speed', 'aprs-val-speed'));
-    detailGrid.append(createAprsDetailRow('Ascent', 'aprs-val-ascent'));
-    detailGrid.append(createAprsDetailRow('Az', 'aprs-val-az'));
-    detailGrid.append(createAprsDetailRow('El', 'aprs-val-el'));
-    detailGrid.append(createAprsDetailRow('Range', 'aprs-val-range'));
+    var locationRow = $('<div>').addClass('aprs-location-row aprs-detail-row');
+    locationRow.append($('<span>').addClass('aprs-detail-label').text('Location'));
+    locationRow.append($('<span>').addClass('aprs-detail-value aprs-location').text('\u2014'));
 
-    left.append(titleRow).append(detailGrid);
+    var detailGrid = createAprsDetailGrid();
 
-    var right = $('<div>');
+    left.append(titleRow).append(locationRow).append(detailGrid);
+
+    var right = $('<div>').addClass('d-flex flex-row align-items-center gap-1 flex-wrap aprs-actions');
+    var followBtn = $('<button type="button">')
+        .html('<i class="fa fa-location-arrow" aria-hidden="true"></i><span class="aprs-follow-fallback">Follow</span>')
+        .addClass('btn btn-primary btn-sm aprs-follow-btn')
+        .data('callsign', csKey)
+        .attr('title', 'Follow callsign')
+        .attr('aria-label', 'Follow callsign ' + csKey)
+        .attr('aria-pressed', 'false');
+    var refreshBtn = $('<button type="button">')
+        .html('<i class="fa fa-refresh" aria-hidden="true"></i><span class="aprs-refresh-fallback">Refresh</span>')
+        .addClass('btn btn-info btn-sm aprs-refresh-btn')
+        .data('callsign', csKey)
+        .attr('title', 'Force refresh callsign')
+        .attr('aria-label', 'Force refresh callsign ' + csKey);
+    var recoveryBtn = $('<button type="button">')
+        .html('<i class="fa fa-flag-o" aria-hidden="true"></i><span class="aprs-recovery-fallback">Recover</span>')
+        .addClass('btn btn-warning btn-sm aprs-recovery-btn')
+        .data('callsign', csKey)
+        .attr('title', 'Mark recovered')
+        .attr('aria-label', 'Mark recovered ' + csKey);
     var btn = $('<button type="button">')
         .html('<i class="fa fa-trash-o" aria-hidden="true"></i><span class="aprs-remove-fallback">Del</span>')
         .addClass('btn btn-danger btn-sm aprs-remove-btn')
         .data('callsign', csKey)
         .attr('title', 'Remove callsign')
         .attr('aria-label', 'Remove callsign ' + csKey);
-    right.append(btn);
+    right.append(followBtn).append(refreshBtn).append(recoveryBtn).append(btn);
 
     row.append(left).append(right);
     li.append(row);
 
     return li;
+}
+
+function setAprsRowStaleness(csKey, state) {
+    var item = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
+    if (item.length === 0) {
+        return;
+    }
+
+    var light = item.find('.aprs-staleness-light');
+    if (light.length === 0) {
+        return;
+    }
+
+    light.removeClass('aprs-staleness-green aprs-staleness-yellow aprs-staleness-red');
+
+    if (state === 'green') {
+        light.addClass('aprs-staleness-green').attr('title', 'Live APRS telemetry');
+    } else if (state === 'yellow') {
+        light.addClass('aprs-staleness-yellow').attr('title', 'Stale APRS telemetry');
+    } else {
+        light.addClass('aprs-staleness-red').attr('title', 'No recent APRS telemetry');
+    }
+}
+
+function updateAprsRowStaleness(csKey) {
+    var timeoutMs = getAprsStatusTimeoutMs();
+    if (!aprs_last_rx_ms.hasOwnProperty(csKey) || !aprs_telemetry_cache.hasOwnProperty(csKey)) {
+        setAprsRowStaleness(csKey, 'red');
+        return;
+    }
+
+    var ageMs = Date.now() - aprs_last_rx_ms[csKey];
+    if (ageMs <= timeoutMs) {
+        setAprsRowStaleness(csKey, 'green');
+    } else {
+        setAprsRowStaleness(csKey, 'yellow');
+    }
+}
+
+function updateAllAprsRowStaleness() {
+    var calls = chase_config.aprs_callsigns || [];
+    calls.forEach(function(cs) {
+        var key = (cs || '').toString().toUpperCase();
+        if (!key) {
+            return;
+        }
+        updateAprsRowStaleness(key);
+    });
+}
+
+function setAprsRefreshPending(csKey, isPending) {
+    var btn = $('#aprsList').find('li[data-callsign="' + csKey + '"] .aprs-refresh-btn');
+    if (btn.length === 0) {
+        return;
+    }
+
+    if (isPending) {
+        btn.addClass('aprs-refresh-spinning').attr('aria-busy', 'true');
+    } else {
+        btn.removeClass('aprs-refresh-spinning').removeAttr('aria-busy');
+    }
+}
+
+function getFollowedCallsign() {
+    if (typeof balloon_currently_following === 'undefined' || balloon_currently_following === null) {
+        return 'none';
+    }
+
+    return (balloon_currently_following || 'none').toString().toUpperCase();
+}
+
+function updateAprsFollowIndicators() {
+    if (typeof balloon_currently_following === 'undefined') {
+        return;
+    }
+
+    var followed = getFollowedCallsign();
+    $('#aprsList li[data-callsign]').each(function() {
+        var item = $(this);
+        var csKey = (item.data('callsign') || '').toString().toUpperCase();
+        var followBtn = item.find('.aprs-follow-btn');
+        var isActive = followed !== 'NONE' && csKey === followed;
+
+        item.toggleClass('aprs-is-following', isActive);
+        followBtn.toggleClass('is-active', isActive).attr('aria-pressed', isActive ? 'true' : 'false');
+        followBtn.attr('title', isActive ? 'Stop following callsign' : 'Follow callsign');
+        followBtn.attr('aria-label', (isActive ? 'Stop following ' : 'Follow ') + csKey);
+    });
+}
+
+function setFollowedCallsign(callsign) {
+    var csKey = (callsign || '').toString().toUpperCase();
+    balloon_currently_following = csKey || 'none';
+
+    if (csKey && csKey !== 'NONE') {
+        $('input:radio[name=autoFollow]').val(['payload']);
+    }
+
+    // Keep chase routing target in sync with the selected callsign.
+    if (typeof window !== 'undefined' && typeof window.balloon_currently_chased !== 'undefined') {
+        window.balloon_currently_chased = csKey || 'none';
+    }
+
+    updateAprsFollowIndicators();
+
+    if (!csKey || csKey === 'NONE') {
+        return;
+    }
+
+    if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(csKey)) {
+        var latest = balloon_positions[csKey].latest_data;
+        if (latest && latest.position && latest.position.length >= 2) {
+            if (typeof window.panMapToVisibleCenter === 'function') {
+                window.panMapToVisibleCenter(latest.position);
+            } else if (typeof map !== 'undefined' && map) {
+                map.panTo(latest.position);
+            }
+        }
+    }
+}
+
+function toggleFollowedCallsign(callsign) {
+    var csKey = (callsign || '').toString().toUpperCase();
+    if (!csKey) {
+        return;
+    }
+
+    if (getFollowedCallsign() === csKey) {
+        balloon_currently_following = 'none';
+        $('input:radio[name=autoFollow]').val(['none']);
+        if (typeof window !== 'undefined' && typeof window.balloon_currently_chased !== 'undefined') {
+            window.balloon_currently_chased = 'none';
+        }
+    } else {
+        setFollowedCallsign(csKey);
+    }
+
+    updateAprsFollowIndicators();
+}
+
+function populateMapProviderSelect() {
+    var select = $('#mapProviderSelect');
+    if (select.length === 0 || typeof map_layers === 'undefined' || !map_layers) {
+        return;
+    }
+
+    if (select.children().length === 0) {
+        for (var name in map_layers) {
+            if (!map_layers.hasOwnProperty(name)) {
+                continue;
+            }
+            select.append($('<option>').attr('value', name).text(name));
+        }
+    }
+
+    var current = null;
+    if (typeof map !== 'undefined') {
+        for (var layerName in map_layers) {
+            if (!map_layers.hasOwnProperty(layerName)) {
+                continue;
+            }
+            if (map.hasLayer(map_layers[layerName])) {
+                current = layerName;
+                break;
+            }
+        }
+    }
+
+    if (current === null) {
+        current = select.children().first().val() || 'OSM';
+    }
+
+    select.val(current);
 }
 
 function formatAprsTelemetryValue(telem) {
@@ -214,6 +477,129 @@ function formatAprsTelemetryValue(telem) {
     return out;
 }
 
+function formatAprsLocation(telem) {
+    if (!telem || !telem.position || telem.position.length < 2) {
+        return '\u2014';
+    }
+
+    var lat = parseFloat(telem.position[0]);
+    var lon = parseFloat(telem.position[1]);
+    if (isNaN(lat) || isNaN(lon)) {
+        return '\u2014';
+    }
+
+    return lat.toFixed(5) + ', ' + lon.toFixed(5);
+}
+
+function formatAprsTimestamp(telem) {
+    if (!telem) {
+        return '\u2014';
+    }
+
+    var rawTime = telem.packet_time || telem.time_dt || telem.timestamp || null;
+    if (!rawTime) {
+        return '\u2014';
+    }
+
+    var ts = new Date(rawTime);
+    if (isNaN(ts.getTime())) {
+        return '\u2014';
+    }
+
+    var timeZone = getAprsTimezone();
+
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            timeZoneName: 'short',
+            timeZone: timeZone || undefined
+        }).format(ts);
+    } catch (e) {
+        return ts.toLocaleString('en-US', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            timeZoneName: 'short'
+        });
+    }
+}
+
+function formatAprsTableTime(telem) {
+    if (!telem) {
+        return '\u2014';
+    }
+
+    var rawTime = telem.packet_time || telem.time_dt || telem.timestamp || null;
+    if (!rawTime) {
+        return '\u2014';
+    }
+
+    var ts = new Date(rawTime);
+    if (isNaN(ts.getTime())) {
+        return '\u2014';
+    }
+
+    var timeZone = getAprsTimezone();
+
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            timeZone: timeZone || undefined
+        }).format(ts);
+    } catch (e) {
+        return ts.toLocaleTimeString();
+    }
+}
+
+function getButtonGroupValue(groupSelector) {
+    var active = $(groupSelector).find('.button-select-btn.is-active, .log-filter-btn.is-active').first();
+    return active.length > 0 ? active.data('value') || active.data('log-level') : null;
+}
+
+function setButtonGroupValue(groupSelector, value, dataAttrName) {
+    var buttons = $(groupSelector).find('button');
+    buttons.removeClass('is-active').attr('aria-pressed', 'false');
+    buttons.each(function() {
+        var buttonValue = $(this).data(dataAttrName);
+        if ((buttonValue || '').toString() === (value || '').toString()) {
+            $(this).addClass('is-active').attr('aria-pressed', 'true');
+        }
+    });
+}
+
+function getSelectedLogLevels() {
+    var selected = [];
+    $('#logLevelFilter .log-filter-btn.is-active').each(function() {
+        var level = ($(this).data('log-level') || '').toString();
+        if (level) {
+            selected.push(level);
+        }
+    });
+    return selected;
+}
+
+function setSelectedLogLevels(levels) {
+    var activeLevels = Array.isArray(levels) && levels.length > 0 ? levels : ['debug', 'info', 'warn', 'error'];
+    $('#logLevelFilter .log-filter-btn').each(function() {
+        var level = ($(this).data('log-level') || '').toString();
+        var isActive = activeLevels.indexOf(level) !== -1;
+        $(this).toggleClass('is-active', isActive).attr('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
 function renderAprsTelemetryRow(cs) {
     var csKey = (cs || '').toString().toUpperCase();
     var item = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
@@ -226,15 +612,8 @@ function renderAprsTelemetryRow(cs) {
         return;
     }
 
-    var timeText = telem.short_time || '';
-    if (!timeText && telem.server_time) {
-        var d = new Date(Math.floor(telem.server_time) * 1000);
-        timeText = d.toISOString().replace('T', ' ').split('.')[0];
-    }
-    if (!timeText) {
-        timeText = '\u2014';
-    }
-    item.find('.aprs-last-time').removeClass('collecting').text(timeText);
+    item.find('.aprs-location').text(formatAprsLocation(telem));
+    item.find('.aprs-last-time').removeClass('collecting').text(formatAprsTimestamp(telem));
 
     var values = formatAprsTelemetryValue(telem);
     item.find('.aprs-val-alt').text(values.alt);
@@ -243,6 +622,8 @@ function renderAprsTelemetryRow(cs) {
     item.find('.aprs-val-az').text(values.az);
     item.find('.aprs-val-el').text(values.el);
     item.find('.aprs-val-range').text(values.range);
+    updateAprsFollowIndicators();
+    updateAprsRowStaleness(csKey);
 }
 
 function refreshAprsTelemetryRows() {
@@ -263,15 +644,30 @@ function updateAprsTelemetryRow(telem) {
     }
 
     aprs_telemetry_cache[csKey] = telem;
-    if (telem.server_time) {
-        aprs_last_rx_ms[csKey] = Math.floor(telem.server_time * 1000);
-    } else {
-        aprs_last_rx_ms[csKey] = Date.now();
+    var packetMs = parseAprsPacketTimeMs(telem);
+    if (isNaN(packetMs) == false) {
+        aprs_last_rx_ms[csKey] = packetMs;
+    } else if (aprs_last_rx_ms.hasOwnProperty(csKey) == false) {
+        delete aprs_last_rx_ms[csKey];
+    }
+
+    if (aprs_refresh_pending.hasOwnProperty(csKey) && aprs_last_rx_ms[csKey] >= aprs_refresh_pending[csKey]) {
+        delete aprs_refresh_pending[csKey];
+        setAprsRefreshPending(csKey, false);
     }
 
     if (csKey === 'CAR') {
         refreshAprsTelemetryRows();
         return;
+    }
+
+    // If APRS telemetry exists but map state has not yet been created, backfill it.
+    if (typeof balloon_positions !== 'undefined' && !balloon_positions.hasOwnProperty(csKey)) {
+        if (typeof initial_load_complete !== 'undefined' && initial_load_complete && typeof handleTelemetry === 'function') {
+            handleTelemetry(telem);
+        } else if (typeof pending_telemetry_updates !== 'undefined' && Array.isArray(pending_telemetry_updates)) {
+            pending_telemetry_updates.push(telem);
+        }
     }
 
     var hasRow = $('#aprsList').find('li[data-callsign="' + csKey + '"]').length > 0;
@@ -281,6 +677,60 @@ function updateAprsTelemetryRow(telem) {
 
     renderAprsTelemetryRow(csKey);
     updateAprsStatusIndicator();
+}
+
+function syncUnitAndTimezoneFromUI() {
+    if ($('#unitSelection').length > 0) {
+           chase_config.unitselection = getButtonGroupValue('#unitSelection') || 'metric';
+    }
+
+    if ($('#timezoneSelection').length > 0) {
+        var timezone = ($('#timezoneSelection').val() || 'local').trim();
+        chase_config.aprs_timezone = timezone === '' ? 'local' : timezone;
+    }
+}
+
+function refreshDerivedDisplaysForSettings() {
+    if ($('#unitSelection').length > 0) {
+        if (typeof refreshTelemetryTableColumns === 'function') {
+            refreshTelemetryTableColumns();
+        }
+        if (typeof refreshAprsTelemetryRows === 'function') {
+            refreshAprsTelemetryRows();
+        }
+        if (typeof updateTelemetryTable === 'function') {
+            updateTelemetryTable();
+        }
+        if (typeof updateSummaryDisplay === 'function') {
+            updateSummaryDisplay();
+        }
+    }
+
+    if ($('#timezoneSelection').length > 0 && typeof refreshAprsTelemetryRows === 'function') {
+        refreshAprsTelemetryRows();
+    }
+}
+
+function backfillAprsMarkersFromCache() {
+    if (typeof balloon_positions === 'undefined' || typeof handleTelemetry !== 'function') {
+        return;
+    }
+    if (typeof initial_load_complete === 'undefined' || initial_load_complete !== true) {
+        return;
+    }
+
+    var calls = chase_config.aprs_callsigns || [];
+    calls.forEach(function(cs) {
+        var key = (cs || '').toString().toUpperCase();
+        if (!key || balloon_positions.hasOwnProperty(key)) {
+            return;
+        }
+
+        var telem = aprs_telemetry_cache[key];
+        if (telem && telem.callsign) {
+            handleTelemetry(telem);
+        }
+    });
 }
 
 
@@ -306,6 +756,10 @@ function serverSettingsUpdate(data){
     $('#ringColorSelect').val(chase_config.range_ring_color);
     $('#ringCustomColor').val(chase_config.range_ring_custom_color);
     $('#rangeRingsEnabled').prop('checked', chase_config.range_rings_enabled);
+    setButtonGroupValue('#unitSelection', chase_config.unitselection || 'metric', 'value');
+    $('#timezoneSelection').val(chase_config.aprs_timezone || 'local');
+    populateTimezoneOptions();
+    setButtonGroupValue('#themeSelect', localStorage.getItem('chasemapper_theme') || 'light', 'value');
     
     // Chase Car Speedometer
     $('#showCarSpeed').prop('checked', chase_config.chase_car_speed);
@@ -323,11 +777,17 @@ function serverSettingsUpdate(data){
                 $('#aprsList').append(createAprsListItem(key, false));
                 if (!aprs_telemetry_cache[key] && typeof balloon_positions !== 'undefined' && balloon_positions[key] && balloon_positions[key].latest_data) {
                     aprs_telemetry_cache[key] = balloon_positions[key].latest_data;
-                    aprs_last_rx_ms[key] = Date.now();
+                    var cachedPacketMs = parseAprsPacketTimeMs(balloon_positions[key].latest_data);
+                    if (isNaN(cachedPacketMs) == false) {
+                        aprs_last_rx_ms[key] = cachedPacketMs;
+                    }
                 }
                 renderAprsTelemetryRow(key);
+                updateAprsRowStaleness(key);
             });
         }
+        updateAprsFollowIndicators();
+            backfillAprsMarkersFromCache();
         $('#aprsPollInterval').val(chase_config.aprs_poll_interval || 30);
         updateAprsStatusIndicator();
     } catch (e){
@@ -391,6 +851,10 @@ function clientSettingsUpdate(){
         chase_config.habitat_call = $('#habitatCall').val();
     }
 
+    var unitSelection = getButtonGroupValue('#unitSelection') || 'metric';
+    chase_config.unitselection = unitSelection;
+    syncUnitAndTimezoneFromUI();
+
     // Attempt to parse the text field values.
     var _burst_alt = parseFloat($('#burstAlt').val());
     if ($('#burstAlt').length > 0 && isNaN(_burst_alt) == false){
@@ -425,6 +889,8 @@ function clientSettingsUpdate(){
     } else {
         console.warn('Socket is not ready; unable to send settings update.');
     }
+
+    refreshDerivedDisplaysForSettings();
 };
 
 // APRS UI helpers
@@ -459,16 +925,137 @@ $(document).on('click', '.aprs-remove-btn', function(e){
     });
     delete aprs_telemetry_cache[cs];
     delete aprs_last_rx_ms[cs];
+    delete aprs_refresh_pending[cs];
+    if (getFollowedCallsign() === cs) {
+        balloon_currently_following = 'none';
+        if (typeof window !== 'undefined' && typeof window.balloon_currently_chased !== 'undefined') {
+            window.balloon_currently_chased = 'none';
+        }
+    }
     $(this).closest('li').remove();
     clientSettingsUpdate();
+    updateAprsFollowIndicators();
     updateAprsStatusIndicator();
 });
 
+$(document).on('click', '.aprs-follow-btn', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    toggleFollowedCallsign(cs);
+});
+
+$(document).on('click', '.aprs-refresh-btn', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    aprs_refresh_pending[cs] = Date.now();
+    setAprsRefreshPending(cs, true);
+    if (typeof socket !== 'undefined' && socket) {
+        socket.emit('aprs_refresh_request', {callsign: cs});
+    }
+});
+
+$(document).on('click', '.aprs-recovery-btn', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    markPayloadRecovered(cs);
+});
+
+function handleAprsRefreshComplete(data) {
+    var cs = data && data.callsign ? data.callsign.toString().toUpperCase() : '';
+    if (!cs) {
+        return;
+    }
+    delete aprs_refresh_pending[cs];
+    setAprsRefreshPending(cs, false);
+}
+
+function showAprsPanel(callsign) {
+    // Show the APRS section in the settings panel
+    if (typeof showSettingsPanel === 'function') {
+        showSettingsPanel('aprs');
+    }
+    
+    // Find the matching callsign row in the APRS list and highlight it
+    var csKey = (callsign || '').toString().toUpperCase();
+    var row = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
+    
+    if (row.length > 0) {
+        // Scroll the row into view after the panel animation completes
+        setTimeout(function() {
+            row[0].scrollIntoView({behavior: 'smooth', block: 'nearest'});
+            
+            // Apply highlight animation
+            row.addClass('highlight');
+            
+            // Remove highlight after 2 seconds
+            setTimeout(function() {
+                row.removeClass('highlight');
+            }, 2000);
+        }, 300);
+    }
+}
+
+function registerAprsSocketHandlers() {
+    if (typeof socket === 'undefined' || !socket || socket._chasemapperAprsHandlersRegistered) {
+        return;
+    }
+
+    socket.on('aprs_refresh_complete', handleAprsRefreshComplete);
+    socket._chasemapperAprsHandlersRegistered = true;
+}
+
+$(document).on('click', '#unitSelection .button-select-btn', function(){
+    setButtonGroupValue('#unitSelection', $(this).data('value'), 'value');
+    clientSettingsUpdate();
+});
+
+$(document).on('change', '#timezoneSelection', function(){
+    clientSettingsUpdate();
+});
+
 // Theme selector and use-current-location handler
-$(document).on('change', '#themeSelect', function(){
-    var val = $(this).val();
+$(document).on('click', '#themeSelect .button-select-btn', function(){
+    var val = $(this).data('value');
+    setButtonGroupValue('#themeSelect', val, 'value');
     localStorage.setItem('chasemapper_theme', val);
     if (val === 'dark') applyTheme(true); else applyTheme(false);
+});
+
+$(document).on('click', '#timezoneOptions option', function(){
+    clientSettingsUpdate();
+});
+
+$(document).on('change', '#mapProviderSelect', function(){
+    var layerName = ($(this).val() || '').toString();
+    if (!layerName || typeof map_layers === 'undefined' || !map_layers[layerName] || typeof map === 'undefined') {
+        return;
+    }
+
+    for (var name in map_layers) {
+        if (!map_layers.hasOwnProperty(name)) {
+            continue;
+        }
+        if (map.hasLayer(map_layers[name])) {
+            map.removeLayer(map_layers[name]);
+        }
+    }
+
+    map_layers[layerName].addTo(map);
 });
 
 $(document).on('click', '#useCurrentLocation', function(){
@@ -511,4 +1098,264 @@ $(document).on('change', '#aprsPollInterval', function(){
 
 window.setInterval(function(){
     updateAprsStatusIndicator();
+    updateAllAprsRowStaleness();
+
+    var now = Date.now();
+    Object.keys(aprs_refresh_pending).forEach(function(csKey) {
+        if ((now - aprs_refresh_pending[csKey]) > 20000) {
+            delete aprs_refresh_pending[csKey];
+            setAprsRefreshPending(csKey, false);
+        }
+    });
 }, 2000);
+
+// ===== Panel Resizing with Snap Points =====
+(function() {
+    function computeMaxOpenHeight() {
+        var dock = document.getElementById('menuDock');
+        var topbar = document.getElementById('topbar');
+
+        if (!dock) {
+            return Math.max(180, Math.floor(window.innerHeight - 80));
+        }
+
+        var style = window.getComputedStyle(dock);
+        var bottom = parseFloat(style.bottom);
+        var bottomPx = isFinite(bottom) ? bottom : 14;
+        var paddingTop = parseFloat(style.paddingTop) || 0;
+        var paddingBottom = parseFloat(style.paddingBottom) || 0;
+        var borderTop = parseFloat(style.borderTopWidth) || 0;
+        var borderBottom = parseFloat(style.borderBottomWidth) || 0;
+        var topbarHeight = topbar ? topbar.offsetHeight : 56;
+        var dockChrome = paddingTop + paddingBottom + borderTop + borderBottom + topbarHeight;
+
+        return Math.max(180, Math.floor(window.innerHeight - bottomPx - dockChrome));
+    }
+
+    window.getSettingsPanelSnapOpenHeight = computeMaxOpenHeight;
+
+    function getActivePanelElement() {
+        var settingsPanel = document.getElementById('settingsPanel');
+        if (settingsPanel && settingsPanel.classList.contains('panel-open')) {
+            return settingsPanel;
+        }
+
+        var logPanel = document.getElementById('logPanel');
+        if (logPanel && logPanel.classList.contains('panel-open')) {
+            return logPanel;
+        }
+
+        return settingsPanel || logPanel || null;
+    }
+
+    function getPanelChromeHeight(panel) {
+        if (!panel) {
+            return 52;
+        }
+
+        var header = panel.querySelector('.settings-header, .log-panel-header');
+        var handle = panel.querySelector('.panel-resize-handle');
+        var borderTop = parseFloat(window.getComputedStyle(panel).borderTopWidth) || 0;
+        var borderBottom = parseFloat(window.getComputedStyle(panel).borderBottomWidth) || 0;
+        var headerHeight = header ? header.offsetHeight : 48;
+        var handleHeight = handle ? handle.offsetHeight : 4;
+
+        return Math.round(headerHeight + handleHeight + borderTop + borderBottom);
+    }
+
+    function getAprsItemStepHeight() {
+        var items = document.querySelectorAll('#aprsList .aprs-item');
+        if (items.length >= 2) {
+            var step = items[1].offsetTop - items[0].offsetTop;
+            if (step > 0) {
+                return step;
+            }
+        }
+
+        if (items.length === 1) {
+            var style = window.getComputedStyle(items[0]);
+            var margins = (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+            return Math.max(64, Math.round(items[0].offsetHeight + margins));
+        }
+
+        return 92;
+    }
+
+    function getSnapHeights(panel) {
+        var maxOpen = computeMaxOpenHeight();
+        var chrome = getPanelChromeHeight(panel);
+        var itemStep = getAprsItemStepHeight();
+        var heights = [0, maxOpen];
+        var n = 1;
+
+        while (n <= 60) {
+            var candidate = Math.round(chrome + (itemStep * n));
+            if (candidate >= maxOpen) {
+                break;
+            }
+            heights.push(candidate);
+            n += 1;
+        }
+
+        heights.sort(function(a, b) { return a - b; });
+        return heights;
+    }
+
+    function findNearestSnapHeight(height, panel) {
+        var snaps = getSnapHeights(panel);
+        var candidate = Math.max(0, Math.round(height || 0));
+        var nearest = snaps[0];
+        var bestDelta = Math.abs(candidate - nearest);
+
+        for (var i = 1; i < snaps.length; i++) {
+            var delta = Math.abs(candidate - snaps[i]);
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                nearest = snaps[i];
+            }
+        }
+
+        return nearest;
+    }
+
+    function applySharedPanelHeight(height, persistHeight, panel) {
+        var panelId = panel && panel.id ? panel.id : null;
+        if (typeof window.setDockPanelHeight === 'function') {
+            return window.setDockPanelHeight(height, persistHeight, panelId);
+        }
+
+        var safeHeight = Math.max(0, Math.min(computeMaxOpenHeight(), Math.round(height || 0)));
+        var settingsPanel = document.getElementById('settingsPanel');
+        var logPanel = document.getElementById('logPanel');
+
+        if (settingsPanel) {
+            settingsPanel.style.height = safeHeight + 'px';
+            settingsPanel.style.maxHeight = safeHeight + 'px';
+        }
+        if (logPanel) {
+            logPanel.style.height = safeHeight + 'px';
+            logPanel.style.maxHeight = safeHeight + 'px';
+        }
+        return safeHeight;
+    }
+
+    function initResizer() {
+        var resizeHandles = Array.prototype.slice.call(document.querySelectorAll('.panel-resize-handle[data-resize-target]'));
+        var isDragging = false;
+        var startY = 0;
+        var startHeight = 0;
+        var lastDragClientY = 0;
+        var activeHandle = null;
+        var activePanel = null;
+
+        if (resizeHandles.length === 0) {
+            return;
+        }
+
+        function bindHandle(resizeHandle) {
+            if (!resizeHandle || resizeHandle.dataset.resizeBound === '1') {
+                return;
+            }
+
+            resizeHandle.dataset.resizeBound = '1';
+
+            resizeHandle.addEventListener('mousedown', function(e) {
+                if (e.button !== 0) {
+                    return;
+                }
+
+                var panelId = (resizeHandle.dataset.resizeTarget || '').trim();
+                var panel = panelId ? document.getElementById(panelId) : getActivePanelElement();
+                if (!panel) {
+                    return;
+                }
+
+                isDragging = true;
+                activeHandle = resizeHandle;
+                activePanel = panel;
+                startY = e.clientY;
+                lastDragClientY = e.clientY;
+                startHeight = panel.clientHeight;
+
+                resizeHandle.classList.add('is-dragging');
+                document.body.style.userSelect = 'none';
+                document.body.style.cursor = 'ns-resize';
+
+                e.preventDefault();
+            });
+        }
+
+        resizeHandles.forEach(bindHandle);
+
+        function applyHeight(height, persistHeight, panel) {
+            var safeHeight = applySharedPanelHeight(height, persistHeight, panel || activePanel);
+
+            if (safeHeight === 0) {
+                var settingsPanel = document.getElementById('settingsPanel');
+                var logPanel = document.getElementById('logPanel');
+                if (settingsPanel) {
+                    settingsPanel.classList.remove('panel-open');
+                }
+                if (logPanel) {
+                    logPanel.classList.remove('panel-open');
+                }
+                if (typeof setTopbarSelection === 'function') {
+                    setTopbarSelection('none');
+                }
+            }
+
+            return safeHeight;
+        }
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isDragging) {
+                return;
+            }
+
+            lastDragClientY = e.clientY;
+            var delta = startY - e.clientY;
+            applyHeight(startHeight + delta, false, activePanel);
+        });
+
+        document.addEventListener('mouseup', function(e) {
+            if (!isDragging) {
+                return;
+            }
+
+            isDragging = false;
+            if (activeHandle) {
+                activeHandle.classList.remove('is-dragging');
+            }
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+
+            lastDragClientY = e && typeof e.clientY === 'number' ? e.clientY : lastDragClientY;
+            var dragCandidateHeight = startHeight + (startY - lastDragClientY);
+            var snappedHeight = findNearestSnapHeight(dragCandidateHeight, activePanel || getActivePanelElement());
+            applyHeight(snappedHeight, true, activePanel);
+
+            activeHandle = null;
+            activePanel = null;
+        });
+
+        window.addEventListener('resize', function() {
+            var activePanelEl = getActivePanelElement();
+            if (!activePanelEl || !activePanelEl.classList.contains('panel-open')) {
+                return;
+            }
+            var current = 0;
+            if (typeof window.getDockPanelHeight === 'function') {
+                current = parseFloat(window.getDockPanelHeight() || '0');
+            }
+            if (isFinite(current) && current > 0) {
+                applyHeight(Math.min(current, computeMaxOpenHeight()), false, activePanelEl);
+            }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initResizer);
+    } else {
+        initResizer();
+    }
+})();

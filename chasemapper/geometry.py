@@ -8,6 +8,7 @@
 import traceback
 import logging
 import numpy as np
+from datetime import datetime, timezone
 from .atmosphere import *
 from .earthmaths import position_info
 
@@ -53,6 +54,22 @@ class GenericTrack(object):
         # Data is stored as a list-of-lists, with elements of [datetime, lat, lon, alt, comment]
         self.track_history = []
 
+    @staticmethod
+    def _normalize_time(value):
+        """Normalize telemetry time values to UTC-aware datetimes."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _is_finite(value):
+        try:
+            return np.isfinite(float(value))
+        except (TypeError, ValueError):
+            return False
+
     def add_telemetry(self, data_dict):
         """ 
         Accept telemetry data as a dictionary with fields 
@@ -60,7 +77,7 @@ class GenericTrack(object):
         """
 
         try:
-            _datetime = data_dict["time"]
+            _datetime = self._normalize_time(data_dict["time"])
             _lat = data_dict["lat"]
             _lon = data_dict["lon"]
             _alt = data_dict["alt"]
@@ -89,8 +106,8 @@ class GenericTrack(object):
             self.update_states()
 
             return self.get_latest_state()
-        except:
-            logging.error("Error reading input data: %s" % traceback.format_exc())
+        except Exception:
+            logging.error("Error reading input data: %s", traceback.format_exc())
 
     def get_latest_state(self):
         """ Get the latest position of the payload """
@@ -127,12 +144,15 @@ class GenericTrack(object):
             _altitude_delta = self.track_history[-1][3] - self.track_history[-2][3]
 
             if _time_delta == 0:
-                logging.warning(
+                logging.debug(
                     "Zero time-step encountered in ascent rate calculation - are multiple receivers reporting telemetry simultaneously?"
                 )
                 return 0.0
             else:
-                return _altitude_delta / _time_delta
+                _rate = _altitude_delta / _time_delta
+                if self._is_finite(_rate):
+                    return _rate
+                return 0.0
 
         else:
             _num_samples = min(len(self.track_history), self.ASCENT_AVERAGING)
@@ -148,7 +168,7 @@ class GenericTrack(object):
                 try:
                     _asc_rates.append(_altitude_delta / _time_delta)
                 except ZeroDivisionError:
-                    logging.warning(
+                    logging.debug(
                         "Zero time-step encountered in ascent rate calculation - are multiple receivers reporting telemetry simultaneously?"
                     )
                     continue
@@ -164,7 +184,13 @@ class GenericTrack(object):
             # _asc_rate2 = _mean2_altitude_delta / _mean2_time_delta
 
             #print(f"asc_rates: {_asc_rates}, Mean: {np.mean(_asc_rates)}")
-            return np.mean(_asc_rates)
+            if len(_asc_rates) == 0:
+                return 0.0
+
+            _mean_rate = float(np.mean(_asc_rates))
+            if self._is_finite(_mean_rate):
+                return _mean_rate
+            return 0.0
 
     def calculate_heading(self):
         """ Calculate the heading of the payload """
@@ -215,12 +241,14 @@ class GenericTrack(object):
             try:
                 _speed = _pos_info["great_circle_distance"] / _time_delta
             except ZeroDivisionError:
-                logging.warning(
+                logging.debug(
                     "Zero time-step encountered in speed calculation - are multiple receivers reporting telemetry simultaneously?"
                 )
                 return 0.0
 
-            return _speed
+            if self._is_finite(_speed):
+                return _speed
+            return 0.0
 
 
     def calculate_turn_rate(self):
@@ -235,7 +263,15 @@ class GenericTrack(object):
             if _heading_delta >= 180.0:
                 _heading_delta -= 360.0
             
-            self.turn_rate = abs(_heading_delta)/_time_delta
+            if _time_delta <= 0:
+                self.turn_rate = 0.0
+                return self.turn_rate
+
+            _turn_rate = abs(_heading_delta) / _time_delta
+            if self._is_finite(_turn_rate):
+                self.turn_rate = _turn_rate
+            else:
+                self.turn_rate = 0.0
 
             return self.turn_rate
 

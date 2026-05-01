@@ -9,6 +9,9 @@
 var summary_enlarged = false;
 
 function toggleSummarySize(){
+    if ($("#summary_table").length === 0) {
+        return;
+    }
     var row = $("#summary_table").tabulator("getRow", 1);
     if(summary_enlarged == false){
         row.getElement().addClass("largeTableRow");
@@ -22,6 +25,7 @@ function toggleSummarySize(){
 
 // Allow for the telemetry table to be expanded/hidden with a click.
 var telemetry_table_hidden = false;
+var recovery_modal_state = null;
 
 function toggleTelemTableHide(){
     if(telemetry_table_hidden == false){
@@ -57,50 +61,90 @@ function markPayloadRecovered(callsign){
         $('#customRecoveryTitle').prop('disabled', false);
     }
 
-    // Pop up a dialog box so the user can enter a custom message if they want.
-    var divObj = $('#mark-recovered-dialog');
-    divObj.dialog({
-        autoOpen: false,
-        //bgiframe: true,
-        modal: true,
-        resizable: false,
-        height: "auto",
-        width: 500,
-        title: "Mark " + callsign + " recovered",
-        buttons: {
-        "Submit": function() {
-          $( this ).dialog( "close" );
-          _recovery_data.message = $('#customRecoveryMessage').val();
-          _recovery_data.recovery_title = $('#customRecoveryTitle').val();
-          _recovery_data.recovered = $("#recoverySuccessful").is(':checked');
-
-          // If the user has requested to use the chase car position, override the last position with it.
-          if(document.getElementById("recoveryCarPosition").checked == true){
-            _recovery_data.last_pos = chase_car_position.latest_data;
-          }
-
-          if (chase_config.profiles[chase_config.selected_profile].online_tracker === "sondehub"){
-            // For sondehub recoveries, do the request in-browser.
-            ChaseCar.markRecovered(_recovery_data.payload_call, _recovery_data.last_pos[0], _recovery_data.last_pos[1], _recovery_data.recovered, _recovery_data.my_call, _recovery_data.message);
-          } else {
-            // Habitat 'recoveries' are a bit more involved, so do these in the backend.
-            socket.emit('mark_recovered', _recovery_data);
-          }
-          
-        },
-        Cancel: function() {
-          $( this ).dialog( "close" );
-        }
-      }
-    });
-    divObj.dialog('open');
+    $('#recoveryModalTitle').text('Mark ' + callsign + ' recovered');
+    recovery_modal_state = _recovery_data;
+    openRecoveryModal();
 }
 
 
 function setRecoveryCarPosition(){
     // Set recovery position to the chase car position.
-    $('#recoveryPosition').html(chase_car_position.latest_data[0].toFixed(5) + ", " + chase_car_position.latest_data[0].toFixed(5));
+    if (!chase_car_position || !chase_car_position.latest_data || chase_car_position.latest_data.length < 2) {
+        return;
+    }
+    $('#recoveryPosition').html(chase_car_position.latest_data[0].toFixed(5) + ", " + chase_car_position.latest_data[1].toFixed(5));
 }
+
+function openRecoveryModal() {
+    $('#recoveryModal').addClass('is-open').attr('aria-hidden', 'false');
+}
+
+function closeRecoveryModal() {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+        document.activeElement.blur();
+    }
+    $('#recoveryModal').removeClass('is-open').attr('aria-hidden', 'true');
+    recovery_modal_state = null;
+}
+
+function submitRecoveryModal() {
+    if (!recovery_modal_state) {
+        closeRecoveryModal();
+        return;
+    }
+
+    recovery_modal_state.message = $('#customRecoveryMessage').val();
+    recovery_modal_state.recovery_title = $('#customRecoveryTitle').val();
+    recovery_modal_state.recovered = $('#recoverySuccessful').is(':checked');
+
+    // If the user has requested to use the chase car position, override the last position with it.
+    if ($('#recoveryCarPosition').is(':checked') && chase_car_position && chase_car_position.latest_data) {
+        recovery_modal_state.last_pos = chase_car_position.latest_data;
+    }
+
+    if (chase_config.profiles[chase_config.selected_profile].online_tracker === 'sondehub') {
+        // For sondehub recoveries, do the request in-browser.
+        ChaseCar.markRecovered(
+            recovery_modal_state.payload_call,
+            recovery_modal_state.last_pos[0],
+            recovery_modal_state.last_pos[1],
+            recovery_modal_state.recovered,
+            recovery_modal_state.my_call,
+            recovery_modal_state.message
+        );
+    } else {
+        // Habitat 'recoveries' are a bit more involved, so do these in the backend.
+        socket.emit('mark_recovered', recovery_modal_state);
+    }
+
+    closeRecoveryModal();
+}
+
+$(document).on('click', '#recoveryCarPosition', function(){
+    if (this.checked) {
+        setRecoveryCarPosition();
+    } else if (recovery_modal_state && recovery_modal_state.last_pos) {
+        $('#recoveryPosition').html(recovery_modal_state.last_pos[0].toFixed(5) + ', ' + recovery_modal_state.last_pos[1].toFixed(5));
+    }
+});
+
+$(document).on('click', '#recoveryModalCancelBtn', function(){
+    closeRecoveryModal();
+});
+
+$(document).on('click', '#recoveryModalSubmitBtn', function(){
+    submitRecoveryModal();
+});
+
+$(document).on('click', '[data-recovery-close="true"]', function(){
+    closeRecoveryModal();
+});
+
+$(document).on('keydown', function(e){
+    if (e.key === 'Escape' && $('#recoveryModal').hasClass('is-open')) {
+        closeRecoveryModal();
+    }
+});
 
 
 // Dialog box for when a user clicks/taps on a row of the telemetry table.
@@ -111,107 +155,81 @@ function telemetryTableDialog(e, row){
         return;
     }
 
-    // Add the last position to the dialog box, and create it as a geo link.
-    var _last_pos = balloon_positions[callsign].latest_data.position;
-    $('#telemDialogPosition').html("<a href='geo:" + _last_pos[0].toFixed(5) + "," + _last_pos[1].toFixed(5) + "'>" + _last_pos[0].toFixed(5) + ", " + _last_pos[1].toFixed(5) + "</a>");
+    // Jump to APRS panel and highlight the callsign
+    if (typeof showAprsPanel === 'function') {
+        showAprsPanel(callsign);
+    }
+}
 
-    if(balloon_positions[callsign].pred_marker != null){
-        var _pred_latlng = balloon_positions[callsign].pred_marker.getLatLng();
-        $('#telemDialogPredPosition').html("<a href='geo:" + _pred_latlng.lat.toFixed(5) + "," + _pred_latlng.lng.toFixed(5) + "'>" + _pred_latlng.lat.toFixed(5) + ", " + _pred_latlng.lng.toFixed(5) + "</a>");
+function getTelemetryTableColumns(){
+    var isImperial = chase_config['unitselection'] == 'imperial';
+    return [
+        {title:"Callsign", field:"callsign", headerSort:false},
+        {title:"Time", field:"short_time", headerSort:false},
+        {title:"Latitude", field:"lat", headerSort:false},
+        {title:"Longitude", field:"lon", headerSort:false},
+        {title:isImperial ? "Alt (ft)" : "Alt (m)", field:"alt", headerSort:false},
+        {title:isImperial ? "V_rate (ft/min)" : "V_rate (m/s)", field:"vel_v", headerSort:false},
+        {title:"SVs", field:'sats', headerSort:false, visible:false},
+        {title:"SNR", field:'snr', headerSort:false, visible:false},
+        {title:"Aux", field:'aux', headerSort:false, visible:false}
+    ];
+}
 
-    }else{
-        $('#telemDialogPredPosition').html("Unknown");
+function refreshTelemetryTableColumns(){
+    if ($('#telem_table').length === 0 || typeof $('#telem_table').tabulator !== 'function') {
+        return;
     }
 
-    var _buttons = {
-        "Follow": function() {
-          // Follow the currently selected callsign.
-          balloon_currently_following = callsign;
-          $( this ).dialog( "close" );
-        },
-        "Mark Recovered": function() {
-          $( this ).dialog( "close" );
-          // Pop up another dialog box to enter details for marking the payload as recovered.
-          markPayloadRecovered(callsign);
-        }
-      };
-
-      if (balloon_positions[callsign].visible == true){
-          _buttons["Hide"] = function() {
-            // Follow the currently selected callsign.
-            hideBalloon(callsign);
-            $( this ).dialog( "close" );
-          };
-      } else{
-        _buttons["Show"] = function() {
-            // Follow the currently selected callsign.
-            showBalloon(callsign);
-            $( this ).dialog( "close" );
-          };
-      }
-
-    _buttons.Cancel = function() {
-        $( this ).dialog( "close" );
-      };
-
-    var divObj = $('#telemetry-select-dialog');
-    divObj.dialog({
-        autoOpen: false,
-        //bgiframe: true,
-        modal: true,
-        resizable: false,
-        height: "auto",
-        width: 400,
-        title: "Payload: " + callsign,
-        buttons: _buttons
-    });
-    divObj.dialog('open');
+    try {
+        $('#telem_table').tabulator('setColumns', getTelemetryTableColumns());
+    } catch (e) {
+        console.warn('Unable to refresh telemetry table columns:', e);
+    }
 }
 
 
 // Initialise tables
 function initTables(){
     // Telemetry data table
-    if (chase_config['unitselection'] == "imperial") {initTablesImperial() ; return ; } // else do everything in metric
-    $("#telem_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        //selectable:1, // TODO...
-        columns:[ //Define Table Columns
-            {title:"Callsign", field:"callsign", headerSort:false},
-            {title:"Time (Z)", field:"short_time", headerSort:false},
-            {title:"Latitude", field:"lat", headerSort:false},
-            {title:"Longitude", field:"lon", headerSort:false},
-            {title:"Alt (m)", field:"alt", headerSort:false},
-            {title:"V_rate (m/s)", field:"vel_v", headerSort:false},
-            {title:"SVs", field:'sats', headerSort:false, visible:false},
-            {title:"SNR", field:'snr', headerSort:false, visible:false},
-            {title:"Aux", field:'aux', headerSort:false, visible:false}
-        ],
-        rowClick:function(e, row){telemetryTableDialog(e, row);},
-        rowTap:function(e, row){telemetryTableDialog(e, row);}
+    if (chase_config['unitselection'] == "imperial") {
+        initTablesImperial();
+        return;
+    } // else do everything in metric
 
-    });
+    // Only initialise the telemetry table if the element exists (table may be removed)
+    if ($('#telem_table').length > 0 && typeof $('#telem_table').tabulator === 'function'){
+        $("#telem_table").tabulator({
+            layout:"fitData", 
+            layoutColumnsOnNewData:true,
+            //selectable:1, // TODO...
+            columns:getTelemetryTableColumns(),
+            rowClick:function(e, row){telemetryTableDialog(e, row);},
+            rowTap:function(e, row){telemetryTableDialog(e, row);}
+        });
+    }
 
-    $("#summary_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        columns:[ //Define Table Columns
-            {title:"Alt (m)", field:"alt", headerSort:false},
-            {title:"Speed (kph)", field:"speed", headerSort:false},
-            {title:"Asc Rate (m/s)", field:"vel_v", headerSort:false},
-            {title:"Azimuth", field:"azimuth", headerSort:false},
-            {title:"Elevation", field:"elevation", headerSort:false},
-            {title:"Range", field:"range", headerSort:false},
-        ],
-        data:[{id: 1, alt:'-----m', speed:'---kph', vel_v:'-.-m/s', azimuth:'---°', elevation:'--°', range:'----m'}],
-        rowClick:function(e, row){
-            toggleSummarySize();
-        },
-        rowTap:function(e, row){
-            toggleSummarySize();
-        }
-    });
+    if ($("#summary_table").length > 0) {
+        $("#summary_table").tabulator({
+            layout:"fitData", 
+            layoutColumnsOnNewData:true,
+            columns:[ //Define Table Columns
+                {title:"Alt (m)", field:"alt", headerSort:false},
+                {title:"Speed (kph)", field:"speed", headerSort:false},
+                {title:"Asc Rate (m/s)", field:"vel_v", headerSort:false},
+                {title:"Azimuth", field:"azimuth", headerSort:false},
+                {title:"Elevation", field:"elevation", headerSort:false},
+                {title:"Range", field:"range", headerSort:false},
+            ],
+            data:[{id: 1, alt:'-----m', speed:'---kph', vel_v:'-.-m/s', azimuth:'---°', elevation:'--°', range:'----m'}],
+            rowClick:function(e, row){
+                toggleSummarySize();
+            },
+            rowTap:function(e, row){
+                toggleSummarySize();
+            }
+        });
+    }
 
 
     $("#bearing_table").tabulator({
@@ -233,45 +251,39 @@ function initTables(){
 // Initialise tables in Imperial - Vertical velocity feet/min, Horizontal velocity Miles/hr, Range Miles then feet for Range < config setting 
 function initTablesImperial(){
     // Telemetry data table
-    $("#telem_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        //selectable:1, // TODO...
-        columns:[ //Define Table Columns
-            {title:"Callsign", field:"callsign", headerSort:false},
-            {title:"Time (Z)", field:"short_time", headerSort:false},
-            {title:"Latitude", field:"lat", headerSort:false},
-            {title:"Longitude", field:"lon", headerSort:false},
-            {title:"Alt (ft)", field:"alt", headerSort:false},
-            {title:"V_rate (ft/min)", field:"vel_v", headerSort:false},
-            {title:"SVs", field:'sats', headerSort:false, visible:false},
-            {title:"SNR", field:'snr', headerSort:false, visible:false},
-            {title:"Aux", field:'aux', headerSort:false, visible:false}
-        ],
-        rowClick:function(e, row){telemetryTableDialog(e, row);},
-        rowTap:function(e, row){telemetryTableDialog(e, row);}
+    // Only initialise the telemetry table if the element exists (table may be removed)
+    if ($('#telem_table').length > 0 && typeof $('#telem_table').tabulator === 'function'){
+        $("#telem_table").tabulator({
+            layout:"fitData", 
+            layoutColumnsOnNewData:true,
+            //selectable:1, // TODO...
+            columns:getTelemetryTableColumns(),
+            rowClick:function(e, row){telemetryTableDialog(e, row);},
+            rowTap:function(e, row){telemetryTableDialog(e, row);}
+        });
+    }
 
-    });
-
-    $("#summary_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        columns:[ //Define Table Columns
-            {title:"Alt (ft)", field:"alt", headerSort:false},
-            {title:"Speed (mph)", field:"speed", headerSort:false},
-            {title:"Asc Rate (ft/min)", field:"vel_v", headerSort:false},
-            {title:"Azimuth", field:"azimuth", headerSort:false},
-            {title:"Elevation", field:"elevation", headerSort:false},
-            {title:"Range", field:"range", headerSort:false},
-        ],
-        data:[{id: 1, alt:'-----ft', speed:'---mph', vel_v:'---ft/min', azimuth:'---°', elevation:'--°', range:'---- miles'}],
-        rowClick:function(e, row){
-            toggleSummarySize();
-        },
-        rowTap:function(e, row){
-            toggleSummarySize();
-        }
-    });
+    if ($("#summary_table").length > 0) {
+        $("#summary_table").tabulator({
+            layout:"fitData", 
+            layoutColumnsOnNewData:true,
+            columns:[ //Define Table Columns
+                {title:"Alt (ft)", field:"alt", headerSort:false},
+                {title:"Speed (mph)", field:"speed", headerSort:false},
+                {title:"Asc Rate (ft/min)", field:"vel_v", headerSort:false},
+                {title:"Azimuth", field:"azimuth", headerSort:false},
+                {title:"Elevation", field:"elevation", headerSort:false},
+                {title:"Range", field:"range", headerSort:false},
+            ],
+            data:[{id: 1, alt:'-----ft', speed:'---mph', vel_v:'---ft/min', azimuth:'---°', elevation:'--°', range:'---- miles'}],
+            rowClick:function(e, row){
+                toggleSummarySize();
+            },
+            rowTap:function(e, row){
+                toggleSummarySize();
+            }
+        });
+    }
 
 
     $("#bearing_table").tabulator({
@@ -304,8 +316,9 @@ function updateTelemetryTable(){
             // Modify some of the fields to fixed point values.
             balloon_call_data.lat = balloon_call_data.position[0].toFixed(5);
             balloon_call_data.lon = balloon_call_data.position[1].toFixed(5);
-            balloon_call_data.alt = balloon_call_data.position[2].toFixed(0) + " (" + balloon_call_data.max_alt.toFixed(0) + ")" ;
+            balloon_call_data.alt = balloon_call_data.position[2].toFixed(0);
             balloon_call_data.vel_v = balloon_call_data.vel_v.toFixed(1);
+            balloon_call_data.short_time = (typeof formatAprsTableTime === 'function') ? formatAprsTableTime(balloon_call_data) : balloon_call_data.short_time;
 
             // Add in any extra data to the aux field.
             balloon_call_data.aux = "";
@@ -323,6 +336,10 @@ function updateTelemetryTable(){
                     balloon_call_data.snr = balloon_positions[balloon_call].snr.toFixed(1);
                     $("#telem_table").tabulator("showColumn", "snr");
                 }
+            }
+
+            if (typeof updateAprsTelemetryRow === 'function'){
+                updateAprsTelemetryRow(balloon_call_data);
             }
 
             if (balloon_call_data.hasOwnProperty('sats')){
@@ -350,8 +367,9 @@ function updateTelemetryTableImperial(){
             // Modify some of the fields to fixed point values.
             balloon_call_data.lat = balloon_call_data.position[0].toFixed(5);
             balloon_call_data.lon = balloon_call_data.position[1].toFixed(5);
-            balloon_call_data.alt = (balloon_call_data.position[2]*3.28084).toFixed(1) + " (" + (balloon_call_data.max_alt*3.28084).toFixed(0) + ")" ;
+            balloon_call_data.alt = (balloon_call_data.position[2]*3.28084).toFixed(1);
             balloon_call_data.vel_v = (balloon_call_data.vel_v*3.28084*60).toFixed(1);
+            balloon_call_data.short_time = (typeof formatAprsTableTime === 'function') ? formatAprsTableTime(balloon_call_data) : balloon_call_data.short_time;
 
             // Add in any extra data to the aux field.
             balloon_call_data.aux = "";
@@ -369,6 +387,10 @@ function updateTelemetryTableImperial(){
                     balloon_call_data.snr = balloon_positions[balloon_call].snr.toFixed(1);
                     $("#telem_table").tabulator("showColumn", "snr");
                 }
+            }
+
+            if (typeof updateAprsTelemetryRow === 'function'){
+                updateAprsTelemetryRow(balloon_call_data);
             }
 
             // Update table

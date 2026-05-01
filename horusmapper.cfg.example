@@ -123,6 +123,11 @@ thunderforest_api_key = none
 # and obtaining an API key. Once you have a key, enter it below:
 stadia_api_key = none
 
+# openAIP Tile API Key
+# openAIP aviation tiles require an API key from https://www.openaip.net/
+# Leave as 'none' to disable openAIP layer.
+openaip_api_key = none
+
 # Predictor Settings
 # By default this will attempt to get predictions from the online Tawhiri Predictions API.
 # Optionally, you can enable offline predictions below.

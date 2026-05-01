@@ -25,6 +25,7 @@ default_config = {
     "payload_max_age": 180,
     "thunderforest_api_key": "none",
     "stadia_api_key": "none",
+    "openaip_api_key": "none",
     # Predictor settings
     "pred_enabled": True,  # Enable running and display of predicted flight paths.
     "offline_predictions": False,  # Use an offline GFS model and predictor instead of Tawhiri.
@@ -66,6 +67,7 @@ default_config = {
     "aprs_callsigns": [],
     "aprs_poll_interval": 30,
     "aprs_api_key": "none",
+    "aprs_timezone": "local",
 }
 
 
@@ -184,6 +186,12 @@ def parse_config_file(filename):
         logging.info("Missing Stadia API Key setting, using default (none)")
         chase_config["stadia_api_key"] = "none"
 
+    try:
+        chase_config["openaip_api_key"] = config.get("map", "openaip_api_key")
+    except:
+        logging.info("Missing openAIP API Key setting, using default (none)")
+        chase_config["openaip_api_key"] = "none"
+
     # APRS Settings (optional)
     try:
         chase_config["aprs_enabled"] = config.getboolean("aprs", "aprs_enabled")
@@ -196,6 +204,11 @@ def parse_config_file(filename):
         chase_config["aprs_api_key"] = config.get("aprs", "aprs_api_key", fallback="none")
     except Exception:
         logging.info("Missing APRS config section or keys, using defaults")
+
+    try:
+        chase_config["aprs_timezone"] = config.get("aprs", "aprs_timezone", fallback="local")
+    except Exception:
+        chase_config["aprs_timezone"] = "local"
 
     try:
         chase_config["turn_rate_threshold"] = config.getfloat("bearings", "turn_rate_threshold")

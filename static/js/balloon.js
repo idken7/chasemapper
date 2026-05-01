@@ -5,6 +5,186 @@
 //   Released under GNU GPL v3 or later
 //
 
+function normalizeTelemetryForMap(data) {
+    if (!data) {
+        return null;
+    }
+
+    var normalized = Object.assign({}, data);
+    normalized.callsign = (normalized.callsign || '').toString().toUpperCase();
+    if (!normalized.callsign) {
+        return null;
+    }
+
+    if (!Array.isArray(normalized.position)) {
+        var lat = normalized.lat;
+        var lon = normalized.lon;
+        if (lon === undefined) {
+            lon = normalized.lng;
+        }
+        if (lat !== undefined && lon !== undefined) {
+            normalized.position = [lat, lon, normalized.alt || 0];
+        }
+    }
+
+    if (!Array.isArray(normalized.position) || normalized.position.length < 2) {
+        return null;
+    }
+
+    var parsedPosition = [
+        parseFloat(normalized.position[0]),
+        parseFloat(normalized.position[1]),
+        parseFloat(normalized.position.length > 2 ? normalized.position[2] : 0)
+    ];
+
+    if (!isFinite(parsedPosition[0]) || !isFinite(parsedPosition[1])) {
+        return null;
+    }
+
+    if (!isFinite(parsedPosition[2])) {
+        parsedPosition[2] = 0;
+    }
+
+    normalized.position = parsedPosition;
+    normalized.vel_v = isFinite(parseFloat(normalized.vel_v)) ? parseFloat(normalized.vel_v) : 0;
+    normalized.speed = isFinite(parseFloat(normalized.speed)) ? parseFloat(normalized.speed) : 0;
+    normalized.max_alt = isFinite(parseFloat(normalized.max_alt)) ? parseFloat(normalized.max_alt) : normalized.position[2];
+    normalized.time_to_landing = normalized.time_to_landing || '';
+    return normalized;
+}
+
+function validMapPoint(point) {
+    if (!Array.isArray(point) || point.length < 2) {
+        return false;
+    }
+    return isFinite(parseFloat(point[0])) && isFinite(parseFloat(point[1]));
+}
+
+function normalizeMapPoint(point) {
+    var lat = parseFloat(point[0]);
+    var lon = parseFloat(point[1]);
+    var alt = parseFloat(point.length > 2 ? point[2] : 0);
+    return [lat, lon, isFinite(alt) ? alt : 0];
+}
+
+function normalizeMapPointList(points) {
+    if (!Array.isArray(points)) {
+        return [];
+    }
+
+    return points.filter(validMapPoint).map(normalizeMapPoint);
+}
+
+function buildTelemetrySnapshotFromLiveData(data) {
+    data = normalizeTelemetryForMap(data);
+    if (!data) {
+        return null;
+    }
+
+    return {
+        telem: data,
+        path: [data.position],
+        burst: [],
+        pred_path: [],
+        pred_landing: [],
+        abort_path: [],
+        abort_landing: []
+    };
+}
+
+function updateBalloonMarkerIcon(callsign, telem) {
+    if (!balloon_positions.hasOwnProperty(callsign) || !balloon_positions[callsign].marker) {
+        return;
+    }
+
+    if (!telem || !telem.position || !balloon_positions[callsign].colour) {
+        console.warn('updateBalloonMarkerIcon: invalid telem or colour for', callsign);
+        return;
+    }
+
+    try {
+        var colour = balloon_positions[callsign].colour;
+        var alt = parseFloat(telem.position[2]) || 0;
+        var newIcon = null;
+
+        // Determine which icon to use based on state
+        if (alt < parachute_min_alt) {
+            // Payload has descended below parachute altitude
+            if (_is3DEnabled()) {
+                newIcon = createBalloonIcon(telem, colour);
+            } else {
+                newIcon = balloonPayloadIcons[colour];
+            }
+        } else if (telem.vel_v < 0) {
+            // Balloon is descending
+            if (_is3DEnabled()) {
+                newIcon = createBalloonIcon(telem, colour);
+            } else {
+                newIcon = balloonDescentIcons[colour];
+            }
+        } else {
+            // Balloon is ascending
+            if (_is3DEnabled()) {
+                newIcon = createBalloonIcon(telem, colour);
+            } else {
+                newIcon = balloonAscentIcons[colour];
+            }
+        }
+
+        // Verify icon exists before setting
+        if (newIcon) {
+            balloon_positions[callsign].marker.setIcon(newIcon);
+        } else {
+            console.warn('updateBalloonMarkerIcon: newIcon is null for', callsign, 'colour=', colour, '3D=', _is3DEnabled());
+        }
+    } catch (e) {
+        console.error('updateBalloonMarkerIcon: error updating icon for', callsign, e);
+    }
+}
+
+function _is3DEnabled(){
+    try{
+        if (typeof chase_config !== 'undefined' && chase_config.enable_3d_markers === true) return true;
+        var v = localStorage.getItem('enable_3d_markers');
+        return v === '1' || v === 'true';
+    }catch(e){
+        return false;
+    }
+}
+
+function createBalloonIcon(telem, colour){
+    if (!_is3DEnabled()){
+        // fall back to existing icons (ascent/descent handling done elsewhere)
+        return null;
+    }
+    var alt = parseFloat(telem.position[2]) || 0;
+    // visual scale: 1 px per 2 meters, clamp
+    var h = Math.min(Math.max(8, Math.round(alt / 2)), 260);
+    var html = '<div class="extrusion-outer" style="height:'+h+'px;">'
+             + '<div class="alt-extrusion" style="height:'+h+'px;background:'+colour+';opacity:0.25;border-radius:4px;margin:0 auto;width:6px"></div>'
+             + '</div>'
+             + '<div class="extruded-dot" style="background:'+colour+';width:16px;height:16px;border-radius:50%;margin-top:6px;border:2px solid rgba(255,255,255,0.9)"></div>';
+    return L.divIcon({className:'extruded-marker', html:html, iconSize:[18, h+30], iconAnchor:[9, h+18]});
+}
+
+// Refresh icons for all existing balloon markers (re-apply 3D or 2D icons)
+function refreshAllBalloonIcons(){
+    try{
+        for (var callsign in balloon_positions){
+            if (!Object.prototype.hasOwnProperty.call(balloon_positions, callsign)) continue;
+            var bp = balloon_positions[callsign];
+            if (!bp || !bp.latest_data) continue;
+            try{
+                updateBalloonMarkerIcon(callsign, bp.latest_data);
+            }catch(e){
+                console.warn('refreshAllBalloonIcons: failed for', callsign, e);
+            }
+        }
+    }catch(e){
+        console.warn('refreshAllBalloonIcons error', e);
+    }
+}
+
 
 function add_new_balloon(data){
     // Add a new balloon to the telemetry store.
@@ -19,9 +199,30 @@ function add_new_balloon(data){
     //  abort_path: Abort prediction path
     //  abort_landing: Abort prediction landing location
 
+    if (!data || !data.telem) {
+        return false;
+    }
 
-    var telem = data.telem;
-    var callsign = data.telem.callsign;
+    var telem = normalizeTelemetryForMap(data.telem);
+    if (!telem) {
+        return false;
+    }
+    data.telem = telem;
+
+    var callsign = telem.callsign;
+
+    var pathData = normalizeMapPointList(data.path);
+    if (pathData.length === 0) {
+        pathData = [telem.position];
+    }
+    if (pathData.length === 1) {
+        pathData = [pathData[0], pathData[0]];
+    }
+    var predPathData = normalizeMapPointList(data.pred_path);
+    var predLandingData = validMapPoint(data.pred_landing) ? normalizeMapPoint(data.pred_landing) : [];
+    var burstData = validMapPoint(data.burst) ? normalizeMapPoint(data.burst) : [];
+    var abortPathData = normalizeMapPointList(data.abort_path);
+    var abortLandingData = validMapPoint(data.abort_landing) ? normalizeMapPoint(data.abort_landing) : [];
 
     balloon_positions[callsign] = {
         latest_data: telem,
@@ -31,21 +232,18 @@ function add_new_balloon(data){
         visible: true
     };
     // Balloon Path
-    balloon_positions[callsign].path = L.polyline(data.path,{title:callsign + " Path", color:balloon_positions[callsign].colour}).addTo(map);
-    // Balloon position marker
-    balloon_positions[callsign].marker = L.marker(telem.position,{title:callsign, icon: balloonAscentIcons[balloon_positions[callsign].colour]})
+    balloon_positions[callsign].path = L.polyline(pathData,{title:callsign + " Path", color:balloon_positions[callsign].colour}).addTo(map);
+    // Balloon position marker - always start with 2D icon, then updateBalloonMarkerIcon will handle 3D if enabled
+    var baseIcon = balloonAscentIcons[balloon_positions[callsign].colour];
+    if (!baseIcon) {
+        console.error('add_new_balloon: baseIcon not found for colour', balloon_positions[callsign].colour, '- available colours:', Object.keys(balloonAscentIcons));
+        return false;
+    }
+    balloon_positions[callsign].marker = L.marker(telem.position,{title:callsign, icon: baseIcon})
         .bindTooltip(callsign,{permanent:false,direction:'right'})
         .addTo(map);
-
-    // Set the balloon icon to a parachute if it is descending.
-    if (telem.vel_v < 0){
-            balloon_positions[callsign].marker.setIcon(balloonDescentIcons[balloon_positions[callsign].colour]);
-    }
-    
-    // If we have 'landed' (this is a bit of a guess), set the payload icon.
-    if (telem.position[2] < parachute_min_alt){
-        balloon_positions[callsign].marker.setIcon(balloonPayloadIcons[balloon_positions[callsign].colour]);
-    }
+    // Update icon to reflect 3D status or descent/payload state
+    updateBalloonMarkerIcon(callsign, telem);
 
 
     // If the balloon is in descent, or is above the burst altitude, clear out the abort path and marker
@@ -56,13 +254,13 @@ function add_new_balloon(data){
     }
 
     // Add predicted landing path
-    balloon_positions[callsign].pred_path = L.polyline(data.pred_path,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity}).addTo(map);
+    balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity}).addTo(map);
 
     // Landing position marker
     // Only add if there is data to show
-    if (data.pred_landing.length == 3){
-        var _landing_text = callsign + " Landing " + data.pred_landing[0].toFixed(5) + ", " + data.pred_landing[1].toFixed(5);
-        balloon_positions[callsign].pred_marker = L.marker(data.pred_landing,{title:callsign + " Landing", icon: balloonLandingIcons[balloon_positions[callsign].colour]})
+    if (predLandingData.length == 3){
+        var _landing_text = callsign + " Landing " + predLandingData[0].toFixed(5) + ", " + predLandingData[1].toFixed(5);
+        balloon_positions[callsign].pred_marker = L.marker(predLandingData,{title:callsign + " Landing", icon: balloonLandingIcons[balloon_positions[callsign].colour]})
             .bindTooltip(_landing_text,{permanent:false,direction:'right'})
             .addTo(map);
         // Add listener to copy prediction coords to clipboard.
@@ -77,8 +275,8 @@ function add_new_balloon(data){
 
     // Burst position marker
     // Only add if there is data to show
-    if (data.burst.length == 3){
-        balloon_positions[callsign].burst_marker = L.marker(data.burst,{title:callsign + " Burst", icon: burstIcon})
+    if (burstData.length == 3){
+        balloon_positions[callsign].burst_marker = L.marker(burstData,{title:callsign + " Burst", icon: burstIcon})
             .bindTooltip(callsign + " Burst",{permanent:false,direction:'right'})
             .addTo(map);
     } else{
@@ -86,15 +284,15 @@ function add_new_balloon(data){
     }
 
     // Abort path
-    balloon_positions[callsign].abort_path = L.polyline(data.abort_path,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
+    balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
 
     if ((chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
         balloon_positions[callsign].abort_path.addTo(map);
     }
 
     // Abort position marker
-    if (data.abort_landing.length == 3){
-        balloon_positions[callsign].abort_marker = L.marker(data.abort_landing,{title:callsign + " Abort", icon: abortIcon})
+    if (abortLandingData.length == 3){
+        balloon_positions[callsign].abort_marker = L.marker(abortLandingData,{title:callsign + " Abort", icon: abortIcon})
             .bindTooltip(callsign + " Abort Landing",{permanent:false,direction:'right'});
         if( (chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
             balloon_positions[callsign].abort_marker.addTo(map);
@@ -103,12 +301,21 @@ function add_new_balloon(data){
         balloon_positions[callsign].abort_marker = null;
     }
 
+    if (typeof flushPendingPrediction === 'function'){
+        flushPendingPrediction(callsign);
+    }
+
     
     colour_idx = (colour_idx+1)%colour_values.length; 
+
+    return true;
 
 }
 
 function updateSummaryDisplay(){
+    if ($("#summary_table").length === 0) {
+        return;
+    }
     
     if (chase_config['unitselection'] == "imperial") {updateSummaryDisplayImperial() ; return ; } // else do everything in metric
     // Update the 'Payload Summary' display.
@@ -162,6 +369,9 @@ function updateSummaryDisplay(){
     }
 }
 function updateSummaryDisplayImperial(){
+    if ($("#summary_table").length === 0) {
+        return;
+    }
     
     // Update the 'Payload Summary' display.
     var _summary_update = {id:1};
@@ -228,6 +438,11 @@ function handleTelemetry(data){
     //  vel_v: float
     //  time_to_landing: String
     // If callsign = 'CAR', the lat/lon/alt will be considered to be a car telemetry position.
+
+    data = normalizeTelemetryForMap(data);
+    if (!data) {
+        return;
+    }
 
     if(initial_load_complete == false){
         // If we have not completed our initial load of telemetry data, discard this data.
@@ -321,21 +536,24 @@ function handleTelemetry(data){
     }else{
 
         // Otherwise, we have a balloon
+        if (balloon_positions.hasOwnProperty(data.callsign) == true){
+            var _current_balloon = balloon_positions[data.callsign];
+            if (_current_balloon.latest_data && _current_balloon.latest_data.server_time && data.hasOwnProperty('server_time') && data.server_time <= _current_balloon.latest_data.server_time){
+                return;
+            }
+        }
+
         // Have we seen this ballon before? 
         if (balloon_positions.hasOwnProperty(data.callsign) == false){
 
             // Convert the incoming data into a format suitable for adding into the telem store.
-            var temp_data = {};
-            temp_data.telem = data;
-            temp_data.path = [data.position];
-            temp_data.burst = [];
-            temp_data.pred_path = [];
-            temp_data.pred_landing = [];
-            temp_data.abort_path = [];
-            temp_data.abort_landing = [];
+            var temp_data = buildTelemetrySnapshotFromLiveData(data);
 
             // Add it to the telemetry store and create markers.
-            add_new_balloon(temp_data);
+            var created = add_new_balloon(temp_data);
+            if (!created || balloon_positions.hasOwnProperty(data.callsign) == false){
+                return;
+            }
 
             // Update data age to indicate current time.
             balloon_positions[data.callsign].age = Date.now();
@@ -347,15 +565,7 @@ function handleTelemetry(data){
             balloon_positions[data.callsign].path.addLatLng(data.position);
             balloon_positions[data.callsign].marker.setLatLng(data.position).update();
 
-            if (data.vel_v < 0){
-                balloon_positions[data.callsign].marker.setIcon(balloonDescentIcons[balloon_positions[data.callsign].colour]);
-            }else{
-                balloon_positions[data.callsign].marker.setIcon(balloonAscentIcons[balloon_positions[data.callsign].colour]);
-            }
-
-            if (data.position[2] < parachute_min_alt){
-                balloon_positions[data.callsign].marker.setIcon(balloonPayloadIcons[balloon_positions[data.callsign].colour]);
-            }
+            updateBalloonMarkerIcon(data.callsign, data);
 
             if(data.hasOwnProperty('snr') == true){
                 balloon_positions[data.callsign].snr = data.snr;
@@ -382,9 +592,17 @@ function handleTelemetry(data){
     // Auto Pan selection between balloon or car.
     var _current_follow = $('input[name=autoFollow]:checked').val();
     if ((_current_follow == 'payload') && (data.callsign == balloon_currently_following)){
-        map.panTo(data.position);
+        if (typeof window.panMapToVisibleCenter === 'function') {
+            window.panMapToVisibleCenter(data.position);
+        } else {
+            map.panTo(data.position);
+        }
     } else if (_current_follow == 'car' && data.callsign == 'CAR'){
-        map.panTo(data.position);
+        if (typeof window.panMapToVisibleCenter === 'function') {
+            window.panMapToVisibleCenter(data.position);
+        } else {
+            map.panTo(data.position);
+        }
     }else{
         // Don't pan to anything.
     }
@@ -415,9 +633,10 @@ function hideBalloon(callsign){
                 balloon_positions[callsign].burst_marker.remove();
             }
 
-            if(map.hasLayer(balloon_positions[callsign].pred_marker) == true){
-                // Prediction marker and path will always be shown together.
+            if(balloon_positions[callsign].pred_marker != null && map.hasLayer(balloon_positions[callsign].pred_marker) == true){
                 balloon_positions[callsign].pred_marker.remove();
+            }
+            if(balloon_positions[callsign].pred_path != null && map.hasLayer(balloon_positions[callsign].pred_path) == true){
                 balloon_positions[callsign].pred_path.remove();
             }
             if(map.hasLayer(balloon_positions[callsign].abort_marker) == true){
@@ -440,9 +659,12 @@ function showBalloon(callsign){
                 balloon_positions[callsign].burst_marker.addTo(map);
             }
 
+            if(balloon_positions[callsign].pred_path != null){
+                balloon_positions[callsign].pred_path.addTo(map);
+            }
+
             if(balloon_positions[callsign].pred_marker != null){
                 balloon_positions[callsign].pred_marker.addTo(map);
-                balloon_positions[callsign].pred_path.addTo(map);
             }
 
             if(balloon_positions[callsign].abort_marker != null){

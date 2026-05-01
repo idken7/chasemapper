@@ -98,7 +98,7 @@ function handleSondeHubWebSocketPacket(data){
                             direction: 'center',
                             offset:[0,25],
                             className:'custom_label'}).openTooltip();
-                    if(document.getElementById("showOtherCars").checked){
+                    if(shouldShowSondeHubVehicles()){
                         // Add the car to the map if we have the show other cars button checked.
                         chase_vehicles[vcallsign].marker.addTo(map);
                         // Keep our own record of if this marker has been added to a map,
@@ -133,6 +133,11 @@ var client;
 var clientConnected = false;
 var clientActive = false;
 var clientTopic;
+
+function shouldShowSondeHubVehicles() {
+    var showOtherCarsElement = document.getElementById("showOtherCars");
+    return showOtherCarsElement != null && showOtherCarsElement.checked;
+}
 
 function onConnect() {
     if (chase_config.profiles[chase_config.selected_profile].online_tracker === "sondehub") {
@@ -176,7 +181,7 @@ function onMessageArrived(message) {
 };
 
 function startSondeHubWebsockets() {
-    if(document.getElementById("showOtherCars").checked){
+    if(shouldShowSondeHubVehicles()){
         // Clear off any vehicles on the map.
         flush_sondehub_vehicles();
 
@@ -203,7 +208,7 @@ function startSondeHubWebsockets() {
 
 // Show/Hide all vehicles.
 function show_sondehub_vehicles(){
-	var state = document.getElementById("showOtherCars").checked;
+	var state = shouldShowSondeHubVehicles();
 
 	for (_car in chase_vehicles){
 		// Add to map, if its not already on there.
