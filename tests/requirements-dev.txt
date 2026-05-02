@@ -1,0 +1,6 @@
+pytest
+pytest-cov
+responses
+requests-mock
+playwright
+pytest-playwright

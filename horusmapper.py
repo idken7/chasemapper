@@ -24,6 +24,7 @@ import traceback
 from threading import Thread
 from datetime import datetime, timedelta
 from dateutil.parser import parse
+import os
 
 # Ensure application logs (INFO+) are sent to stdout so container logs show APRS activity
 import logging as _logging
@@ -61,6 +62,101 @@ app.jinja_env.auto_reload = True
 
 # SocketIO instance
 socketio = SocketIO(app)
+
+
+def create_app():
+    """Return the Flask `app` and configured `socketio` instance.
+
+    This helper allows tests to import the application object without
+    triggering any startup side-effects. Use `start_services()` to
+    initialise background listeners and other long-running components.
+    """
+    return app, socketio
+
+
+def start_services(config_path: str = None, *, start_listeners_flag: bool = True, start_predictor_flag: bool = True):
+    """Initialise server globals and optionally start background services.
+
+    - `config_path`: path to configuration file. If omitted, default
+      behaviour mirrors the original CLI which looks for `horusmapper.cfg`.
+    - `start_listeners_flag`: start UDP/serial listeners when True
+    - `start_predictor_flag`: start predictor when True
+    """
+    global chasemapper_config, pred_settings, map_settings, bearing_store
+    global car_track, chase_logger, data_listeners, aprs_tracker
+
+    _default_cfg = "horusmapper.cfg"
+    if os.path.isdir(_default_cfg):
+        _candidate = os.path.join(_default_cfg, "horusmapper.cfg")
+        if os.path.isfile(_candidate):
+            _default_cfg = _candidate
+
+    cfg_path = config_path or _default_cfg
+
+    # Read config file
+    chasemapper_config = read_config(cfg_path)
+    if chasemapper_config is None:
+        raise RuntimeError("Could not read configuration data")
+
+    # Add version
+    chasemapper_config["version"] = CHASEMAPPER_VERSION
+
+    # Predictor settings and map settings
+    pred_settings = {
+        "pred_binary": chasemapper_config.get("pred_binary"),
+        "gfs_path": chasemapper_config.get("pred_gfs_directory") or chasemapper_config.get("gfs_directory"),
+        "pred_model_download": chasemapper_config.get("pred_model_download"),
+    }
+
+    map_settings = {
+        "tile_server_enabled": chasemapper_config.get("tile_server_enabled", False),
+        "tile_server_path": chasemapper_config.get("tile_server_path", ""),
+    }
+
+    # Initialise Bearing store
+    try:
+        bearing_store = Bearings(
+            socketio_instance=socketio,
+            max_bearings=chasemapper_config.get("max_bearings", 300),
+            max_bearing_age=chasemapper_config.get("max_bearing_age", 10),
+        )
+    except Exception:
+        bearing_store = None
+
+    # Set speed gate thresholds on the car track object
+    try:
+        car_track.heading_gate_threshold = chasemapper_config.get("car_speed_gate", car_track.heading_gate_threshold)
+        car_track.turn_rate_threshold = chasemapper_config.get("turn_rate_threshold", car_track.turn_rate_threshold)
+    except Exception:
+        pass
+
+    # Start listeners & services if requested
+    if start_listeners_flag:
+        start_listeners(chasemapper_config["profiles"][chasemapper_config["selected_profile"]])
+
+    # Start predictor if enabled and requested
+    if start_predictor_flag and chasemapper_config.get("pred_enabled"):
+        try:
+            initPredictor()
+        except Exception:
+            logging.exception("Failed to initialise predictor")
+
+    # Start data age monitor thread
+    global data_monitor_thread_running
+    data_monitor_thread_running = True
+    _data_age_monitor = Thread(target=check_data_age)
+    _data_age_monitor.daemon = True
+    _data_age_monitor.start()
+
+    # Start APRS tracker if enabled
+    if chasemapper_config.get("aprs_enabled", False):
+        try:
+            _calls = chasemapper_config.get("aprs_callsigns", [])
+            if len(_calls) > 0:
+                process_new_aprs_callsigns(_calls)
+        except Exception:
+            logging.exception("Failed to start APRS tracker")
+
 
 
 # Chase Logger Instance (Initialised in main)
@@ -145,6 +241,46 @@ def flask_get_bearings():
 @app.route("/server_time")
 def flask_get_server_time():
     return json.dumps(time.time())
+
+
+def _testing_mode():
+    """Return True when the app is running in testing mode.
+
+    Tests should set the environment variable `CHASEMAPPER_TESTING=1` to enable
+    test-only endpoints and to disable background listeners when the server is
+    launched from tests.
+    """
+    return os.environ.get("CHASEMAPPER_TESTING", "").lower() in ("1", "true", "yes")
+
+
+@app.route('/test/state')
+def flask_test_state():
+    """Return a small JSON snapshot of server state for GUI/integration tests.
+
+    This endpoint is only available when `CHASEMAPPER_TESTING=1` to avoid
+    exposing internal state in production.
+    """
+    if not _testing_mode():
+        flask.abort(404)
+
+    # Provide a minimal serialisable view of current payloads and config.
+    try:
+        payloads = {}
+        for k, v in current_payloads.items():
+            payloads[k] = {
+                'telem': v.get('telem'),
+                'pred_path': v.get('pred_path', []),
+                'pred_landing': v.get('pred_landing', []),
+            }
+    except Exception:
+        payloads = {}
+
+    state = {
+        'config': chasemapper_config,
+        'aprs_callsigns': chasemapper_config.get('aprs_callsigns', []),
+        'current_payloads': payloads,
+    }
+    return json.dumps(state)
 
 
 @app.route("/tiles/<path:filename>")
@@ -637,7 +773,16 @@ def run_prediction():
                     _current_pos["ascent_rate"] = 0.1
                 # If telemetry is stale, override launch time to now to avoid invalid hour computations
                 if _pos_age > 30.0:
-                    _current_pos["time"] = time.time()
+                    # Use a timezone-aware UTC datetime for Tawhiri (API expects RFC3339).
+                    _current_pos["time"] = pytz.utc.localize(datetime.utcnow())
+
+                # Defensive logging of parameters passed to Tawhiri to assist debugging dataset/hour errors.
+                try:
+                    logging.info("Tawhiri params: callsign=%s time=%s type=%s lat=%.5f lon=%.5f alt=%.1f ascent=%.2f desc=%.2f burst=%.1f pos_age=%.1f",
+                                  _payload, getattr(_current_pos["time"], "isoformat", lambda: str(_current_pos["time"]))(), type(_current_pos["time"]).__name__,
+                                  _current_pos["lat"], _current_pos["lon"], _current_pos["alt"], _current_pos["ascent_rate"], _desc_rate, _burst_alt, _pos_age)
+                except Exception:
+                    logging.info("Tawhiri params: (could not format parameters)")
 
                 _tawhiri = get_tawhiri_prediction(
                     launch_datetime=_current_pos["time"],
@@ -656,7 +801,41 @@ def run_prediction():
                     flask_emit_event("predictor_model_update", {"model": _dataset})
 
                 else:
-                    _pred_path = []
+                    # Tawhiri failed — create a simple fallback prediction using current state.
+                    try:
+                        logging.info("Tawhiri returned no data for %s, using simple fallback predictor.", _payload)
+                        # Estimate time to landing using descent rate and current altitude.
+                        _ttl = time_to_landing(_current_pos["alt"], -1.0 * abs(_desc_rate), ground_asl=0.0)
+                        if _ttl is None or _ttl == 0:
+                            _pred_path = []
+                        else:
+                            # Project landing position using current speed and heading.
+                            _speed = float(_current_pos.get("speed", 0.0) or 0.0)
+                            _heading = float(_current_pos.get("heading", 0.0) or 0.0)
+                            _distance = _speed * float(_ttl)
+                            # Earth radius used in earthmaths.py
+                            _radius = 6364963.0
+                            from math import radians, degrees, sin, cos, atan2, asin
+
+                            lat1 = radians(_current_pos["lat"])
+                            lon1 = radians(_current_pos["lon"])
+                            bearing = radians(_heading)
+                            d_r = _distance / _radius
+
+                            lat2 = asin(sin(lat1) * cos(d_r) + cos(lat1) * sin(d_r) * cos(bearing))
+                            lon2 = lon1 + atan2(sin(bearing) * sin(d_r) * cos(lat1), cos(d_r) - sin(lat1) * sin(lat2))
+
+                            lat2 = degrees(lat2)
+                            lon2 = degrees(lon2)
+
+                            # Create a minimal path: start (current) and landing point at alt=0
+                            _pred_path = [
+                                [int(time.time()), _current_pos["lat"], _current_pos["lon"], _current_pos["alt"]],
+                                [int(time.time() + _ttl), lat2, lon2, 0.0],
+                            ]
+                    except Exception:
+                        logging.error("Fallback prediction failed for %s: %s", _payload, traceback.format_exc())
+                        _pred_path = []
 
             else:
                 logging.info("Running Offline Predictor for %s." % _payload)
@@ -1696,118 +1875,54 @@ if __name__ == "__main__":
     else:
         logging.info("Chase Logging has been inhibited, not starting logger.")
 
-    # Attempt to read in config file.
-    chasemapper_config = read_config(args.config)
-    # Die if we cannot read a valid config file.
-    if chasemapper_config == None:
-        logging.critical("Could not read configuration data. Exiting")
+    # Initialise and start background services from config
+    try:
+        start_services(args.config, start_listeners_flag=True, start_predictor_flag=True)
+    except Exception as e:
+        logging.critical("Failed to initialise services: %s" % str(e))
         sys.exit(1)
 
-    # Add in Chasemapper version information.
-    chasemapper_config["version"] = CHASEMAPPER_VERSION
-
-    # Copy out the predictor settings to another dictionary.
-    pred_settings = {
-        "pred_binary": chasemapper_config["pred_binary"],
-        "gfs_path": chasemapper_config["pred_gfs_directory"],
-        "pred_model_download": chasemapper_config["pred_model_download"],
-    }
-
-    # Copy out Offline Map Settings
-    map_settings = {
-        "tile_server_enabled": chasemapper_config["tile_server_enabled"],
-        "tile_server_path": chasemapper_config["tile_server_path"],
-    }
-
-    # Initialise Bearing store
-    bearing_store = Bearings(
-        socketio_instance=socketio,
-        max_bearings=chasemapper_config["max_bearings"],
-        max_bearing_age=chasemapper_config["max_bearing_age"],
-    )
-
-    # Set speed gate for car position object
-    car_track.heading_gate_threshold = chasemapper_config["car_speed_gate"]
-    car_track.turn_rate_threshold = chasemapper_config["turn_rate_threshold"]
-
-    # Start listeners using the default profile selection.
-    start_listeners(
-        chasemapper_config["profiles"][chasemapper_config["selected_profile"]]
-    )
-
-    # Start up the predictor, if enabled.
-    if chasemapper_config["pred_enabled"]:
-        initPredictor()
-
-    # Read in last known position, if enabled
-
-    if chasemapper_config["reload_last_position"]:
-        logging.info("Read in last position requested")
-        try:
-            handle_new_payload_position(read_last_balloon_telemetry(), False)
-        except Exception as e:
-            logging.warning("Unable to read in last position")
-    else:
-        logging.debug("Read in last position not requested")
-
-    # Start up the data age monitor thread.
-    _data_age_monitor = Thread(target=check_data_age)
-    _data_age_monitor.start()
-
-    # Start APRS tracker if enabled in config
-    if chasemapper_config.get("aprs_enabled", False):
-        try:
-            _calls = chasemapper_config.get("aprs_callsigns", [])
-            if len(_calls) > 0:
-                process_new_aprs_callsigns(_calls)
-            else:
-                logging.info("APRS enabled but no callsigns configured")
-        except Exception as e:
-            logging.error("Failed to start APRS tracker: %s" % str(e))
-
-    # Run the Flask app, which will block until CTRL-C'd.
     logging.info(
         "Starting Chasemapper Server on: http://%s:%d/"
         % (chasemapper_config["flask_host"], chasemapper_config["flask_port"])
     )
+
     try:
         socketio.run(
             app,
             host=chasemapper_config["flask_host"],
             port=chasemapper_config["flask_port"],
-            allow_unsafe_werkzeug=True
+            allow_unsafe_werkzeug=True,
         )
-    except TypeError as e:
-        print(e)
-        logging.debug("Not using allow_unsafe_werkzeug argument.")
-        socketio.run(
-            app,
-            host=chasemapper_config["flask_host"],
-            port=chasemapper_config["flask_port"]
-        ) 
+    except TypeError:
+        logging.debug("Werkzeug param not supported; running without it.")
+        socketio.run(app, host=chasemapper_config["flask_host"], port=chasemapper_config["flask_port"]) 
 
-    # Close the predictor and data age monitor threads.
+    # Shutdown sequence: attempt to stop background services and close resources.
     predictor_thread_running = False
     data_monitor_thread_running = False
 
-    # Stop APRS tracker if running
     try:
         if aprs_tracker is not None:
             aprs_tracker.stop()
             aprs_tracker.join(timeout=5)
-    except Exception as e:
-        logging.error("Error stopping APRS tracker - %s" % str(e))
+    except Exception:
+        logging.exception("Error stopping APRS tracker")
 
-    # Close the chase logger
     if chase_logger:
-        chase_logger.close()
+        try:
+            chase_logger.close()
+        except Exception:
+            pass
 
-    if online_uploader != None:
-        online_uploader.close()
+    if online_uploader is not None:
+        try:
+            online_uploader.close()
+        except Exception:
+            pass
 
-    # Attempt to close the running listeners.
     for _thread in data_listeners:
         try:
             _thread.close()
-        except Exception as e:
-            logging.error("Error closing thread - %s" % str(e))
+        except Exception:
+            logging.exception("Error closing listener thread")

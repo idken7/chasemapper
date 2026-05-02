@@ -963,7 +963,7 @@
 
 <body>
 
-<div id="map" class="map"></div>
+<div id="map" class="map" data-test="map"></div>
 
 <div id="menuDock" class="menu-dock">
     <!-- Floating log panel -->
@@ -992,10 +992,10 @@
                 <!-- APRS quick view (shown when APRS button selected) -->
                 <div id="aprsSection" style="display:none;">
                     <div class="form-group input-group">
-                        <input id="aprsCallInput" class="form-control" placeholder="CALLSIGN or CALL-SSID" aria-label="APRS callsign">
-                        <button id="aprsAddBtn" type="button" class="btn btn-primary" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
+                        <input id="aprsCallInput" class="form-control" data-test="aprs-input" placeholder="CALLSIGN or CALL-SSID" aria-label="APRS callsign">
+                        <button id="aprsAddBtn" type="button" class="btn btn-primary" data-test="aprs-add-btn" title="Add callsign"><i class="fa fa-plus" aria-hidden="true"></i></button>
                     </div>
-                    <ul id="aprsList" class="list-group"></ul>
+                    <ul id="aprsList" class="list-group" data-test="aprs-list"></ul>
                 </div>
 
                 <!-- Full Settings (opened from Settings button) -->
@@ -1041,8 +1041,8 @@
                     </div>
                     <h4>Other</h4>
                     <div class="paramRow">
-                        <button type="button" class="btn btn-secondary" id="clearPayloadData" style="margin-right:8px;">Clear Payload Data</button>
-                        <button type="button" class="btn btn-secondary" id="clearCarData">Clear Chase-Car Track</button>
+                        <button type="button" class="btn btn-secondary" id="clearPayloadData" data-test="clear-payload" style="margin-right:8px;">Clear Payload Data</button>
+                        <button type="button" class="btn btn-secondary" id="clearCarData" data-test="clear-car">Clear Chase-Car Track</button>
                     </div>
                 </div>
 
@@ -1292,29 +1292,42 @@ function closePanel($panel) {
     if (!$panel.hasClass('panel-open')) {
         return;
     }
-    
-    // Start close animation with panel-closing state
-    $panel.removeClass('panel-open').addClass('panel-closing');
-    
-    // Wait for animation to complete
+    // Start a smooth close using max-height + opacity to avoid layout jumps.
+    $panel.removeClass('panel-open');
+
+    // Compute current height and set as explicit max-height to animate from.
+    var el = $panel[0];
+    var currentHeight = el.scrollHeight || el.getBoundingClientRect().height || 0;
+    // Apply explicit max-height so CSS transition animates from this value.
+    $panel.css('max-height', currentHeight + 'px');
+    // Force reflow
+    el.offsetHeight;
+
+    $panel.addClass('panel-closing');
+    // Trigger closing target
+    window.requestAnimationFrame(function(){
+        $panel.css('max-height', '0px');
+        $panel.css('opacity', '0');
+    });
+
     var animationDone = false;
     var completeClose = function() {
         if (animationDone) return;
         animationDone = true;
-        
         $panel.off('transitionend', completeClose);
         $panel.removeClass('panel-closing');
-        
+        $panel.css({'max-height':'', 'opacity':''});
+
         var settingsOpen = $('#settingsPanel').hasClass('panel-open');
         var logOpen = $('#logPanel').hasClass('panel-open');
         if (!settingsOpen && !logOpen) {
             setDockPanelHeight(0, false);
         }
     };
-    
+
     $panel.on('transitionend', completeClose);
-    // Fallback timeout for browsers with transition issues (350ms > max transition time of 260ms)
-    setTimeout(completeClose, 350);
+    // Fallback timeout for browsers with transition issues (slightly larger than CSS transition)
+    setTimeout(completeClose, 420);
 }
 
 function showSettingsPanel(mode) {

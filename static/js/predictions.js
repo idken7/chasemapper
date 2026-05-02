@@ -19,8 +19,38 @@ function clearPendingPrediction(callsign) {
 }
 
 function ensurePredictionPathLayer(callsign) {
+    // If we don't already have a balloon_positions entry, create a minimal
+    // placeholder for callsigns that are in the APRS allowlist so predictions
+    // can be rendered even before telemetry arrives.
     if (!balloon_positions.hasOwnProperty(callsign)) {
-        return null;
+        try{
+            var allowed = true;
+            if (typeof chase_config !== 'undefined' && Array.isArray(chase_config.aprs_callsigns) && chase_config.aprs_callsigns.length > 0){
+                allowed = chase_config.aprs_callsigns.some(function(x){ return (x||'').toString().toUpperCase() === callsign; });
+            }
+            if (!allowed) {
+                return null;
+            }
+        }catch(e){
+            return null;
+        }
+
+        // Create minimal entry so prediction layers can attach.
+        balloon_positions[callsign] = {
+            latest_data: null,
+            age: 0,
+            colour: colour_values[colour_idx],
+            snr: -255.0,
+            visible: true,
+            path: null,
+            marker: null,
+            pred_path: null,
+            pred_marker: null,
+            burst_marker: null,
+            abort_path: L.polyline([], {title: callsign + ' Abort Prediction', color:'red', opacity:prediction_opacity}),
+            abort_marker: null
+        };
+        colour_idx = (colour_idx+1)%colour_values.length;
     }
 
     if (!balloon_positions[callsign].pred_path) {
@@ -119,9 +149,26 @@ function handlePrediction(data){
     // Update the predicted path and ensure it is visible even when no landing marker is present.
     var predPathLayer = ensurePredictionPathLayer(_callsign);
     if (predPathLayer) {
-        predPathLayer.setLatLngs(_pred_path);
-        if (balloon_positions[_callsign].visible === true && !map.hasLayer(predPathLayer)) {
-            predPathLayer.addTo(map);
+        // Ensure the layer exists and contains the latest points.
+        try{
+            predPathLayer.setLatLngs(_pred_path || []);
+        }catch(e){
+            // recreate if something corrupted
+            console.warn('predPathLayer.setLatLngs failed, recreating layer for', _callsign, e);
+            balloon_positions[_callsign].pred_path = L.polyline(_pred_path || [], {title: _callsign + ' Prediction', color: balloon_positions[_callsign].colour, opacity: prediction_opacity});
+            predPathLayer = balloon_positions[_callsign].pred_path;
+        }
+        // If visible, ensure the layer is present on the map and on top.
+        if (balloon_positions[_callsign].visible === true) {
+            if (!map.hasLayer(predPathLayer)) {
+                predPathLayer.addTo(map);
+            }
+            try{ if (typeof predPathLayer.bringToFront === 'function') predPathLayer.bringToFront(); }catch(e){}
+        } else {
+            // If not visible, ensure it's removed to avoid stray lines.
+            if (map.hasLayer(predPathLayer)) {
+                predPathLayer.remove();
+            }
         }
     }
 

@@ -76,14 +76,34 @@ function setRecoveryCarPosition(){
 }
 
 function openRecoveryModal() {
-    $('#recoveryModal').addClass('is-open').attr('aria-hidden', 'false');
+    var $modal = $('#recoveryModal');
+    $modal.addClass('is-open').attr('aria-hidden', 'false');
+    var $card = $modal.find('.recovery-modal-card');
+    $card.removeClass('modal-closing modal-opened').addClass('modal-opening');
+    // allow next frame to settle then mark opened
+    window.requestAnimationFrame(function(){
+        $card.removeClass('modal-opening').addClass('modal-opened');
+    });
 }
 
 function closeRecoveryModal() {
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
         document.activeElement.blur();
     }
-    $('#recoveryModal').removeClass('is-open').attr('aria-hidden', 'true');
+    var $modal = $('#recoveryModal');
+    var $card = $modal.find('.recovery-modal-card');
+    $card.removeClass('modal-opening modal-opened').addClass('modal-closing');
+    $card.one('transitionend', function(){
+        $modal.removeClass('is-open').attr('aria-hidden', 'true');
+        $card.removeClass('modal-closing');
+    });
+    // Fallback
+    setTimeout(function(){
+        if ($modal.hasClass('is-open')) {
+            $modal.removeClass('is-open').attr('aria-hidden', 'true');
+            $card.removeClass('modal-closing');
+        }
+    }, 420);
     recovery_modal_state = null;
 }
 

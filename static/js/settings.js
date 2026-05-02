@@ -195,6 +195,7 @@ function createAprsListItem(cs, collecting) {
     var csKey = (cs || '').toString().toUpperCase();
     var li = $('<li>').addClass('list-group-item aprs-item');
     li.attr('data-callsign', csKey);
+    li.attr('data-test', 'aprs-item-' + csKey);
 
     var row = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-row');
     var left = $('<div>').addClass('d-flex flex-column');
@@ -226,24 +227,28 @@ function createAprsListItem(cs, collecting) {
         .attr('title', 'Follow callsign')
         .attr('aria-label', 'Follow callsign ' + csKey)
         .attr('aria-pressed', 'false');
+    followBtn.attr('data-test', 'aprs-follow-' + csKey);
     var refreshBtn = $('<button type="button">')
         .html('<i class="fa fa-refresh" aria-hidden="true"></i><span class="aprs-refresh-fallback">Refresh</span>')
         .addClass('btn btn-info btn-sm aprs-refresh-btn')
         .data('callsign', csKey)
         .attr('title', 'Force refresh callsign')
         .attr('aria-label', 'Force refresh callsign ' + csKey);
+    refreshBtn.attr('data-test', 'aprs-refresh-' + csKey);
     var recoveryBtn = $('<button type="button">')
         .html('<i class="fa fa-flag-o" aria-hidden="true"></i><span class="aprs-recovery-fallback">Recover</span>')
         .addClass('btn btn-warning btn-sm aprs-recovery-btn')
         .data('callsign', csKey)
         .attr('title', 'Mark recovered')
         .attr('aria-label', 'Mark recovered ' + csKey);
+    recoveryBtn.attr('data-test', 'aprs-recover-' + csKey);
     var btn = $('<button type="button">')
         .html('<i class="fa fa-trash-o" aria-hidden="true"></i><span class="aprs-remove-fallback">Del</span>')
         .addClass('btn btn-danger btn-sm aprs-remove-btn')
         .data('callsign', csKey)
         .attr('title', 'Remove callsign')
         .attr('aria-label', 'Remove callsign ' + csKey);
+    btn.attr('data-test', 'aprs-remove-' + csKey);
     right.append(followBtn).append(refreshBtn).append(recoveryBtn).append(btn);
 
     row.append(left).append(right);
@@ -932,6 +937,16 @@ $(document).on('click', '.aprs-remove-btn', function(e){
             window.balloon_currently_chased = 'none';
         }
     }
+    // Remove any map markers/paths for this callsign
+    try{
+        if (typeof hideBalloon === 'function'){
+            hideBalloon(cs);
+        }
+        if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(cs)){
+            delete balloon_positions[cs];
+        }
+    }catch(e){ console.warn('Error cleaning up balloon layers for', cs, e); }
+
     $(this).closest('li').remove();
     clientSettingsUpdate();
     updateAprsFollowIndicators();

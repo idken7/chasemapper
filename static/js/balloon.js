@@ -211,6 +211,18 @@ function add_new_balloon(data){
 
     var callsign = telem.callsign;
 
+    // Enforce APRS allowlist for any direct-add flows (archive replay / prefilled lists)
+    try{
+        if (callsign !== 'CAR' && typeof chase_config !== 'undefined' && Array.isArray(chase_config.aprs_callsigns) && chase_config.aprs_callsigns.length > 0){
+            var csKey = (callsign || '').toString().toUpperCase();
+            var allowed = chase_config.aprs_callsigns.some(function(x){ return (x||'').toString().toUpperCase() === csKey; });
+            if (!allowed){
+                console.debug('add_new_balloon: rejecting non-APRS callsign', csKey);
+                return false;
+            }
+        }
+    }catch(e){ /* proceed if something goes wrong with config */ }
+
     var pathData = normalizeMapPointList(data.path);
     if (pathData.length === 0) {
         pathData = [telem.position];
@@ -448,6 +460,19 @@ function handleTelemetry(data){
         // If we have not completed our initial load of telemetry data, discard this data.
         return;
     }
+
+    // Ignore non-APRS callsigns if an APRS allowlist is configured.
+    try{
+        if (data.callsign !== 'CAR' && typeof chase_config !== 'undefined' && Array.isArray(chase_config.aprs_callsigns) && chase_config.aprs_callsigns.length > 0){
+            var csKey = (data.callsign || '').toString().toUpperCase();
+            var allowed = chase_config.aprs_callsigns.some(function(x){ return (x||'').toString().toUpperCase() === csKey; });
+            if (!allowed){
+                // Not in APRS allowlist — ignore telemetry to avoid stray markers.
+                console.debug('Ignoring telemetry for non-APRS callsign', csKey);
+                return;
+            }
+        }
+    }catch(e){ /* if anything goes wrong, proceed to handle telemetry */ }
 
     // Handle chase car position updates.
     if (data.callsign == 'CAR'){
