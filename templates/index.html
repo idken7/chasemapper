@@ -13,6 +13,7 @@
     <link href="{{ url_for('static', filename='css/tabulator_simple.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/font-awesome.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/jquery-ui.css') }}" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/chasemapper.css') }}" rel="stylesheet">
 
 
@@ -33,6 +34,8 @@
 
     <script src="{{ url_for('static', filename='js/d3.v3.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/micropolar-v0.2.2.js') }}"></script>
+    <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/';</script>
+    <script src="https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/Cesium.js"></script>
 
     <!-- Custom scripts -->
     <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
@@ -40,6 +43,7 @@
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260422-aprs-fix"></script>
+    <script src="{{ url_for('static', filename='js/cesium-map.js') }}"></script>
     <script src="{{ url_for('static', filename='js/balloon.js') }}"></script>
     <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
     <script src="{{ url_for('static', filename='js/car.js') }}"></script>
@@ -155,6 +159,77 @@
         var namespace = '/chasemapper';
         // Socket.IO instance.
         var socket;
+
+        function toUpperCallsign(value) {
+            return (value || '').toString().toUpperCase();
+        }
+
+        function escapeHtml(value) {
+            return (value || '').toString()
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getTrackedPayloadCallsigns() {
+            var tracked = [];
+            var seen = {};
+
+            if (typeof chase_config !== 'undefined' && Array.isArray(chase_config.aprs_callsigns)) {
+                chase_config.aprs_callsigns.forEach(function(cs) {
+                    var key = toUpperCallsign(cs);
+                    if (key && !seen[key]) {
+                        seen[key] = true;
+                        tracked.push(key);
+                    }
+                });
+            }
+
+            if (typeof balloon_positions !== 'undefined' && balloon_positions) {
+                Object.keys(balloon_positions).forEach(function(cs) {
+                    var key = toUpperCallsign(cs);
+                    if (!key || key === 'CAR' || seen[key]) {
+                        return;
+                    }
+                    seen[key] = true;
+                    tracked.push(key);
+                });
+            }
+
+            tracked.sort();
+            return tracked;
+        }
+
+        function renderAgeRows(labelPrefix, callsigns, getAgeSecondsFn, badThresholdSeconds, noDataText) {
+            if (!Array.isArray(callsigns) || callsigns.length === 0) {
+                return {
+                    html: labelPrefix + ': No Data.',
+                    hasBad: false,
+                    hasRows: false
+                };
+            }
+
+            var lines = [];
+            var hasBad = false;
+
+            callsigns.forEach(function(cs) {
+                var ageSec = getAgeSecondsFn(cs);
+                var hasAge = isNaN(ageSec) === false && ageSec >= 0;
+                var isBad = !hasAge || ageSec > badThresholdSeconds;
+                hasBad = hasBad || isBad;
+                var cssClass = isBad ? 'dataAgeBad' : 'dataAgeOK';
+                var ageText = hasAge ? (ageSec + 's') : noDataText;
+                lines.push("<span class='" + cssClass + "'>" + escapeHtml(cs) + ": " + escapeHtml(ageText) + "</span>");
+            });
+
+            return {
+                html: labelPrefix + ':<br>' + lines.join('<br>'),
+                hasBad: hasBad,
+                hasRows: true
+            };
+        }
 
         $(document).ready(function() {
 
@@ -691,19 +766,35 @@
             // EasyButton: Toggle 3D extrusion markers
             L.easyButton('fa-cube', function(btn, map){
                 try{
-                    var currently = (localStorage.getItem('enable_3d_markers') === '1' || localStorage.getItem('enable_3d_markers') === 'true');
+                    var currently = (typeof get3DMapViewEnabled === 'function') ? get3DMapViewEnabled() : (localStorage.getItem('enable_3d_map_view') === '1' || localStorage.getItem('enable_3d_map_view') === 'true');
                     var next = !currently;
-                    localStorage.setItem('enable_3d_markers', next ? '1' : '0');
-                    if (typeof chase_config !== 'undefined') {
-                        chase_config.enable_3d_markers = next;
+                    if (typeof set3DMapViewEnabled === 'function') {
+                        set3DMapViewEnabled(next);
+                    } else {
+                        localStorage.setItem('enable_3d_map_view', next ? '1' : '0');
+                        if (typeof chase_config !== 'undefined') {
+                            chase_config.enable_3d_map_view = next;
+                        }
                     }
-                    if (typeof refreshAllBalloonIcons === 'function') {
-                        refreshAllBalloonIcons();
+                    if (typeof apply3DMapViewState === 'function') {
+                        apply3DMapViewState();
+                    }
+                    if (typeof syncAllCesiumStateFromStore === 'function') {
+                        syncAllCesiumStateFromStore();
                     }
                 }catch(e){
                     console.warn('3D toggle failed', e);
                 }
-            }, 'Toggle 3D markers', 'toggle3DButton', { position: 'topright' }).addTo(map);
+            }, 'Toggle 3D view', 'toggle3DButton', { position: 'topright' }).addTo(map);
+
+            window.setTimeout(function() {
+                if (typeof update3DButtonVisual === 'function') {
+                    update3DButtonVisual();
+                }
+                if (typeof apply3DMapViewState === 'function') {
+                    apply3DMapViewState();
+                }
+            }, 0);
 
             map.zoomControl.setPosition('topright');
 
@@ -791,8 +882,12 @@
 
             // Predictor Functions
             socket.on('predictor_model_update', function(data){
-                var _model_data = data.model;
-                $("#predictorModelValue").text(_model_data);
+                if (typeof setPredictorModelDisplay === 'function') {
+                    setPredictorModelDisplay(data.model, data.time);
+                } else {
+                    $("#predictorModelValue").text(data.model || 'Disabled');
+                    $("#predictorModelTimeValue").text(data.time || '—');
+                }
             });
         
             socket.on('predictor_update', function(data){
@@ -814,51 +909,60 @@
             });
 
             $("#clearPayloadData").click(function(){
-                var _confirm = confirm("Really clear all Payload data?");
-                if (_confirm == true){
-                    socket.emit('payload_data_clear', {data: 'plzkthx'});
+                if (typeof showDestructiveConfirmModal === 'function') {
+                    showDestructiveConfirmModal(
+                        'Clear Payload Data',
+                        'Really clear all Payload data?',
+                        'Clear',
+                        function() {
+                            socket.emit('payload_data_clear', {data: 'plzkthx'});
 
-                    // Clear all payload markers and tracks from the map/
-                    for (_callsign in balloon_positions){
-                        balloon_positions[_callsign].marker.remove();
-                        balloon_positions[_callsign].path.remove();
-                        balloon_positions[_callsign].pred_path.remove();
-                        balloon_positions[_callsign].abort_path.remove();
-                        // Clear out the markers if they exist.
-                        if (balloon_positions[_callsign].abort_marker != null){
-                            balloon_positions[_callsign].abort_marker.remove();
+                            for (var _callsign in balloon_positions){
+                                if (!balloon_positions.hasOwnProperty(_callsign)) {
+                                    continue;
+                                }
+                                balloon_positions[_callsign].marker.remove();
+                                balloon_positions[_callsign].path.remove();
+                                balloon_positions[_callsign].pred_path.remove();
+                                balloon_positions[_callsign].abort_path.remove();
+                                if (balloon_positions[_callsign].abort_marker != null){
+                                    balloon_positions[_callsign].abort_marker.remove();
+                                }
+                                if (balloon_positions[_callsign].burst_marker != null){
+                                    balloon_positions[_callsign].burst_marker.remove();
+                                }
+                                if (balloon_positions[_callsign].pred_marker != null){
+                                    balloon_positions[_callsign].pred_marker.remove();
+                                }
+                            }
+                            balloon_positions = {};
+                            balloon_currently_following = "none";
+                            updateTelemetryTable();
+                            updateSummaryDisplay();
+                            $('#time_to_landing').text("");
                         }
-                        if (balloon_positions[_callsign].burst_marker != null){
-                            balloon_positions[_callsign].burst_marker.remove();
-                        }
-                        if (balloon_positions[_callsign].pred_marker != null){
-                            balloon_positions[_callsign].pred_marker.remove();
-                        }
-                    }
-                    // Reset the balloon positions object to nothing.
-                    balloon_positions = {};
-                    balloon_currently_following = "none";
-                    // Update tables.
-                    updateTelemetryTable();
-                    updateSummaryDisplay();
-                    // Clear the time-to-landing display.
-                    $('#time_to_landing').text("");
+                    );
                 }
             });
 
             $("#clearCarData").click(function(){
-                var _confirm = confirm("Really clear all Chase Car data?");
-                if (_confirm == true){
-                    socket.emit('car_data_clear', {data: 'plzkthx'});
-                    if (chase_car_position.marker !== "NONE"){
-                        chase_car_position.marker.remove();
-                    }
-                    if (chase_car_position.path !== "NONE"){
-                        chase_car_position.path.remove();
-                    }
+                if (typeof showDestructiveConfirmModal === 'function') {
+                    showDestructiveConfirmModal(
+                        'Clear Chase-Car Track',
+                        'Really clear all Chase Car data?',
+                        'Clear',
+                        function() {
+                            socket.emit('car_data_clear', {data: 'plzkthx'});
+                            if (chase_car_position.marker !== "NONE"){
+                                chase_car_position.marker.remove();
+                            }
+                            if (chase_car_position.path !== "NONE"){
+                                chase_car_position.path.remove();
+                            }
 
-                    chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
-
+                            chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
+                        }
+                    );
                 }
             });
 
@@ -883,31 +987,37 @@
             });
 
 
-            // Data age update.
-            var age_update_rate = 500;
+            // Data age update (once per second)
+            var age_update_rate = 1000;
             window.setInterval(function () {
                 // Update the data age displays.
                 payload_data_age += age_update_rate/1000.0;
                 car_data_age += age_update_rate/1000.0;
                 pred_data_age += age_update_rate/1000.0;
 
-                if (balloon_currently_following === 'none'){
-                    $("#payload_age").text("Payload: No Data.");
-                }else{
-                    $("#payload_age").text("Payload: " + payload_data_age.toFixed(1)+"s");
-                    if (payload_data_age > payload_bad_age){
-                        $("#payload_age").removeClass();
-                        $("#payload_age").addClass('dataAgeBad');
-                    }else{
-                        $("#payload_age").removeClass();
-                        $("#payload_age").addClass('dataAgeOK');
-                    }
-                }
+                var trackedCallsigns = getTrackedPayloadCallsigns();
+                var nowMs = Date.now();
+
+                var payloadResult = renderAgeRows(
+                    'Payloads',
+                    trackedCallsigns,
+                    function(cs) {
+                        var entry = (typeof balloon_positions !== 'undefined' && balloon_positions) ? balloon_positions[cs] : null;
+                        if (!entry || !entry.age || entry.age <= 0) {
+                            return NaN;
+                        }
+                        return Math.floor((nowMs - entry.age) / 1000.0);
+                    },
+                    payload_bad_age,
+                    'No Data'
+                );
+                $("#payload_age").html(payloadResult.html);
+                $("#payload_age").removeClass().addClass(payloadResult.hasBad ? 'dataAgeBad' : 'dataAgeOK');
 
                 if(chase_car_position.latest_data.length == 0){
                     $("#car_age").text("Car GPS: No Data.");
                 }else{
-                    $("#car_age").text("Car GPS: " + car_data_age.toFixed(1)+"s");
+                    $("#car_age").text("Car GPS: " + Math.floor(car_data_age) + "s");
                     if (car_data_age > car_bad_age){
                         $("#car_age").removeClass();
                         $("#car_age").addClass('dataAgeBad');
@@ -920,7 +1030,27 @@
                 if (chase_config['pred_enabled']==false){
                     $("#pred_age").text("Predictions: No Data.");
                 }else{
-                    $("#pred_age").text("Predictions: " + pred_data_age.toFixed(1)+"s");
+                    if (trackedCallsigns.length === 0) {
+                        $("#pred_age").text("Predictions: No Payloads.");
+                        $("#pred_age").removeClass().addClass('dataAgeOK');
+                    } else {
+                        var predBadAge = Math.max(parseInt(chase_config.pred_update_rate || 15, 10) * 2, 30);
+                        var predResult = renderAgeRows(
+                            'Predictions',
+                            trackedCallsigns,
+                            function(cs) {
+                                var entry = (typeof balloon_positions !== 'undefined' && balloon_positions) ? balloon_positions[cs] : null;
+                                if (!entry || !entry.pred_age || entry.pred_age <= 0) {
+                                    return NaN;
+                                }
+                                return Math.floor((nowMs - entry.pred_age) / 1000.0);
+                            },
+                            predBadAge,
+                            'No Prediction'
+                        );
+                        $("#pred_age").html(predResult.html);
+                        $("#pred_age").removeClass().addClass(predResult.hasBad ? 'dataAgeBad' : 'dataAgeOK');
+                    }
                 }
 
                 updateTimeSeqClock();
@@ -964,6 +1094,32 @@
 <body>
 
 <div id="map" class="map" data-test="map"></div>
+
+<!-- Cesium 3D viewer container (hidden until enabled) -->
+<div id="cesiumMap" aria-hidden="true"></div>
+
+<!-- Cesium loader overlay shown while Cesium initializes -->
+<div id="cesiumLoader" style="display:none; position:fixed; inset:0; z-index:10000; pointer-events:none;">
+    <div style="position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); pointer-events:auto;">
+        <div class="cesium-loader" style="background:rgba(0,0,0,0.6); color:#fff; padding:12px 18px; border-radius:8px; font-family:Segoe UI, Arial, sans-serif;">Initializing 3D map…</div>
+    </div>
+</div>
+
+<div id="cesiumCameraSliderPanel" class="cesium-camera-slider-panel" aria-hidden="true">
+    <div class="cesium-camera-slider-card">
+        <div class="cesium-camera-slider-header">
+            <div id="cesiumCameraSliderTitle" class="cesium-camera-slider-title">Camera angle</div>
+            <button type="button" class="cesium-camera-slider-close" id="cesiumCameraSliderCloseBtn" aria-label="Close camera slider">&times;</button>
+        </div>
+        <div class="cesium-camera-slider-body">
+            <input id="cesiumCameraSliderInput" type="range" min="-89" max="-5" step="1" value="-35" aria-label="Camera pitch angle">
+            <div class="cesium-camera-slider-readout">
+                <span>Angle</span>
+                <span id="cesiumCameraSliderValue">-35°</span>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div id="menuDock" class="menu-dock">
     <!-- Floating log panel -->
@@ -1018,14 +1174,37 @@
                         <label for="mapProviderSelect">Map Provider</label>
                         <select id="mapProviderSelect" class="form-control map-provider-select" aria-label="Map provider selector"></select>
                     </div>
-                    <div class="form-group">
-                        <label for="timezoneSelection">APRS Timezone</label>
-                        <input id="timezoneSelection" class="form-control" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
-                        <small class="text-muted">Use <code>local</code> or any IANA timezone name.</small>
+                    <div class="form-group settings-inline-row">
+                        <label for="cesiumMapModeSelect">3D Map Mode</label>
+                        <select id="cesiumMapModeSelect" class="form-control map-provider-select" aria-label="3D map mode selector"></select>
                     </div>
                     <div class="form-group">
-                        <label for="aprsPollInterval">APRS Poll Interval (seconds)</label>
-                        <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
+                        <div class="settings-inline-row">
+                            <label for="timezoneSelection">APRS Timezone</label>
+                            <input id="timezoneSelection" class="form-control settings-inline-input" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
+                        </div>
+                        <small class="text-muted">Use <code>local</code> or any IANA timezone name.</small>
+                    </div>
+                    <div class="form-group settings-inline-row predictor-model-row">
+                        <label for="predictorModelValue">Predictor Model</label>
+                        <div class="predictor-model-value-stack">
+                            <div id="predictorModelValue" class="predictorModelValue">Disabled</div>
+                            <div id="predictorModelTimeValue" class="predictorModelTimeValue">—</div>
+                        </div>
+                    </div>
+                    <div class="form-group recovery-input-row settings-number-row">
+                        <label for="predUpdateRate">Prediction Update Interval</label>
+                        <div class="input-right">
+                            <input id="predUpdateRate" type="number" class="form-control" value="15" min="5">
+                            <span class="recovery-input-units" aria-hidden="true">s</span>
+                        </div>
+                    </div>
+                    <div class="form-group recovery-input-row settings-number-row">
+                        <label for="aprsPollInterval">APRS Poll Interval</label>
+                        <div class="input-right">
+                            <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
+                            <span class="recovery-input-units" aria-hidden="true">s</span>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Current Location</label>
@@ -1214,6 +1393,11 @@ function panMapToVisibleCenter(latlng, panOptions) {
     if (typeof map === 'undefined' || !map || !latlng) {
         return;
     }
+
+                if (typeof get3DMapViewEnabled === 'function' && get3DMapViewEnabled() && typeof flyCesiumToPosition === 'function') {
+                    flyCesiumToPosition(latlng, panOptions);
+                    return;
+                }
 
     var targetLatLng = L.latLng(latlng);
     if (!targetLatLng) {
@@ -1485,16 +1669,121 @@ $(document).ready(function(){
                     </label>
                     <div class="recovery-input-row recovery-title-row">
                         <label for="customRecoveryTitle">Title</label>
-                        <input type="text" id="customRecoveryTitle" class="form-control">
+                        <div class="input-right">
+                            <input type="text" id="customRecoveryTitle" class="form-control">
+                        </div>
                     </div>
                     <div class="recovery-input-row">
                         <label for="customRecoveryMessage">Message</label>
-                        <input type="text" id="customRecoveryMessage" class="form-control" placeholder="Optional recovery message">
+                        <div class="input-right">
+                            <input type="text" id="customRecoveryMessage" class="form-control" placeholder="Optional recovery message">
+                        </div>
                     </div>
                 </div>
                 <div class="recovery-modal-footer">
                     <button type="button" class="btn btn-secondary" id="recoveryModalCancelBtn">Cancel</button>
                     <button type="button" class="btn btn-primary" id="recoveryModalSubmitBtn">Submit</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="aprsPredictionModal" class="recovery-modal aprs-prediction-modal" aria-hidden="true">
+            <div class="recovery-modal-backdrop" data-aprs-prediction-close="true"></div>
+            <div class="recovery-modal-card aprs-prediction-modal-card" role="dialog" aria-modal="true" aria-labelledby="aprsPredictionModalTitle">
+                <div class="recovery-modal-header">
+                    <h3 id="aprsPredictionModalTitle" class="recovery-modal-title">Prediction Settings</h3>
+                </div>
+                <div class="recovery-modal-body">
+                    <div class="recovery-row">
+                        <span class="recovery-label">Callsign</span>
+                        <span class="recovery-value" id="aprsPredictionCallsign"></span>
+                    </div>
+                    <div class="recovery-input-row">
+                        <label for="aprsPredictionBurstAlt">Burst Altitude</label>
+                        <div class="input-right">
+                            <input type="number" id="aprsPredictionBurstAlt" class="form-control" min="0" step="1">
+                            <span class="recovery-input-units" aria-hidden="true">m</span>
+                        </div>
+                    </div>
+                    <div class="recovery-input-row">
+                        <label for="aprsPredictionDescentRate">Descent Rate</label>
+                        <div class="input-right">
+                            <input type="number" id="aprsPredictionDescentRate" class="form-control" min="0" step="0.1">
+                            <span class="recovery-input-units" aria-hidden="true">m/s</span>
+                        </div>
+                    </div>
+                    <div class="recovery-row">
+                        <span class="recovery-label">Note</span>
+                        <span class="recovery-value">Saved overrides apply to this callsign only.</span>
+                    </div>
+                </div>
+                <div class="recovery-modal-footer">
+                    <button type="button" class="btn btn-secondary" id="aprsPredictionModalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="aprsPredictionModalSubmitBtn">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="aprsCallsignModal" class="recovery-modal aprs-callsign-modal" aria-hidden="true">
+            <div class="recovery-modal-backdrop" data-aprs-callsign-close="true"></div>
+            <div class="recovery-modal-card aprs-callsign-modal-card" role="dialog" aria-modal="true" aria-labelledby="aprsCallsignModalTitle">
+                <div class="recovery-modal-header">
+                    <h3 id="aprsCallsignModalTitle" class="recovery-modal-title">Callsign Summary</h3>
+                </div>
+                <div class="recovery-modal-body aprs-callsign-modal-body">
+                    <div class="recovery-row">
+                        <span class="recovery-label">Callsign</span>
+                        <span class="recovery-value" id="aprsCallsignSummaryCallsign">—</span>
+                    </div>
+                    <div class="recovery-row">
+                        <span class="recovery-label">Last APRS Packet</span>
+                        <span class="recovery-value" id="aprsCallsignSummaryPacket">—</span>
+                    </div>
+                    <div class="recovery-row">
+                        <span class="recovery-label">Data Freshness</span>
+                        <span class="recovery-value" id="aprsCallsignSummaryFreshness">—</span>
+                    </div>
+                    <div class="aprs-callsign-summary-grid">
+                        <div class="recovery-row"><span class="recovery-label">Position</span><span class="recovery-value" id="aprsCallsignSummaryPosition">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Altitude</span><span class="recovery-value" id="aprsCallsignSummaryAlt">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Speed</span><span class="recovery-value" id="aprsCallsignSummarySpeed">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Ascent</span><span class="recovery-value" id="aprsCallsignSummaryAscent">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Azimuth</span><span class="recovery-value" id="aprsCallsignSummaryAz">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Elevation</span><span class="recovery-value" id="aprsCallsignSummaryEl">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Range</span><span class="recovery-value" id="aprsCallsignSummaryRange">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Max Altitude</span><span class="recovery-value" id="aprsCallsignSummaryMaxAlt">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Descent TTL</span><span class="recovery-value" id="aprsCallsignSummaryTTL">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Prediction Age</span><span class="recovery-value" id="aprsCallsignSummaryPredAge">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Last Prediction</span><span class="recovery-value" id="aprsCallsignSummaryPredTime">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Pred Path Points</span><span class="recovery-value" id="aprsCallsignSummaryPredPoints">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Landing Estimate</span><span class="recovery-value" id="aprsCallsignSummaryLanding">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Landing Range</span><span class="recovery-value" id="aprsCallsignSummaryLandingRange">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">ETA To Landing</span><span class="recovery-value" id="aprsCallsignSummaryETA">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Burst Estimate</span><span class="recovery-value" id="aprsCallsignSummaryBurst">—</span></div>
+                        <div class="recovery-row"><span class="recovery-label">Abort Landing</span><span class="recovery-value" id="aprsCallsignSummaryAbort">—</span></div>
+                    </div>
+                </div>
+                <div class="recovery-modal-footer">
+                    <button type="button" class="btn btn-secondary" data-aprs-callsign-close="true">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="destructiveConfirmModal" class="recovery-modal destructive-confirm-modal" aria-hidden="true">
+            <div class="recovery-modal-backdrop" data-destructive-close="true"></div>
+            <div class="recovery-modal-card destructive-confirm-modal-card" role="dialog" aria-modal="true" aria-labelledby="destructiveConfirmModalTitle">
+                <div class="recovery-modal-header">
+                    <h3 id="destructiveConfirmModalTitle" class="recovery-modal-title">Confirm Action</h3>
+                </div>
+                <div class="recovery-modal-body">
+                    <div class="recovery-row">
+                        <span class="recovery-label">Message</span>
+                        <span class="recovery-value" id="destructiveConfirmModalMessage">Are you sure?</span>
+                    </div>
+                </div>
+                <div class="recovery-modal-footer">
+                    <button type="button" class="btn btn-secondary" id="destructiveConfirmModalCancelBtn">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="destructiveConfirmModalSubmitBtn">Confirm</button>
                 </div>
             </div>
         </div>

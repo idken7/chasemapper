@@ -39,9 +39,151 @@ body,
 	transition-duration: 220ms;
 	transition-timing-function: ease;
 }
-html, body, #map {
+html, body, #map, #cesiumMap {
     height: 100%;
     width: 100vw;
+}
+
+#map,
+#cesiumMap {
+	position: fixed;
+	inset: 0;
+	overflow: hidden;
+}
+
+#map {
+	z-index: 1;
+}
+
+#cesiumMap {
+	z-index: 2;
+}
+
+/* Keep Leaflet controls above Cesium so buttons remain clickable */
+.leaflet-control-container,
+.leaflet-top,
+.leaflet-bottom {
+	z-index: 2147483647 !important;
+	position: fixed !important;
+	pointer-events: auto !important;
+}
+
+/* Ensure control buttons are clickable above the Cesium canvas */
+.leaflet-control-container .leaflet-control, .leaflet-control-container a, .leaflet-control-container button {
+	pointer-events: auto !important;
+}
+
+/* Ensure Cesium canvas is below control layer */
+#cesiumMap .cesium-widget canvas {
+	z-index: 1 !important;
+}
+
+#cesiumMap {
+	display: none;
+}
+
+/* When Cesium is active, allow full interactivity with pointer events */
+#cesiumMap.cesium-active {
+	display: block;
+	pointer-events: auto;
+}
+
+.cesium-camera-slider-panel {
+	position: fixed;
+	right: 18px;
+	bottom: 96px;
+	z-index: 2147483646;
+	display: none;
+	pointer-events: auto;
+}
+
+.cesium-camera-slider-panel.is-open {
+	display: block;
+}
+
+.cesium-camera-slider-card {
+	min-width: 240px;
+	max-width: 320px;
+	padding: 12px 14px 14px;
+	border-radius: 18px;
+	background: rgba(10, 16, 26, 0.82);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+	backdrop-filter: blur(24px) saturate(1.2);
+	color: #eaf2fb;
+}
+
+.cesium-camera-slider-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+
+.cesium-camera-slider-title {
+	font-size: 0.92rem;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: #fff;
+}
+
+.cesium-camera-slider-close {
+	border: 0;
+	background: rgba(255, 255, 255, 0.08);
+	color: #fff;
+	width: 28px;
+	height: 28px;
+	border-radius: 999px;
+	line-height: 1;
+	font-size: 20px;
+	padding: 0;
+	flex: 0 0 auto;
+}
+
+.cesium-camera-slider-body {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.cesium-camera-slider-body input[type="range"] {
+	width: 100%;
+	accent-color: var(--theme-accent);
+}
+
+.cesium-camera-slider-readout {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 0.82rem;
+	color: rgba(234, 242, 251, 0.8);
+}
+
+body.dark-theme .cesium-camera-slider-card {
+	background: rgba(8, 12, 18, 0.86);
+	border-color: rgba(255, 255, 255, 0.1);
+}
+
+@media (max-width: 520px) {
+	.cesium-camera-slider-panel {
+		right: 10px;
+		left: 10px;
+		bottom: 88px;
+	}
+
+	.cesium-camera-slider-card {
+		min-width: 0;
+		max-width: none;
+		width: 100%;
+	}
+}
+
+/* Moved control container remains fixed and interactive while Cesium is active */
+.leaflet-control-container[data-moved="1"] {
+	position: fixed !important;
+	z-index: 2147483647 !important;
+	pointer-events: auto !important;
 }
 
 /* Dark theme overrides */
@@ -65,6 +207,34 @@ body,
 }
 body.dark-theme .leaflet-container { background: #071226; }
 
+#cesiumMap .cesium-widget,
+#cesiumMap .cesium-viewer,
+#cesiumMap .cesium-viewer-cesiumWidgetContainer,
+#cesiumMap .cesium-widget canvas {
+	width: 100%;
+	height: 100%;
+}
+
+#map.map-3d-view .leaflet-map-pane,
+#map.map-3d-view .leaflet-tile-pane,
+#map.map-3d-view .leaflet-overlay-pane,
+#map.map-3d-view .leaflet-shadow-pane,
+#map.map-3d-view .leaflet-marker-pane,
+#map.map-3d-view .leaflet-tooltip-pane,
+#map.map-3d-view .leaflet-popup-pane {
+	visibility: hidden;
+}
+
+#map.map-3d-view .leaflet-control-container {
+	visibility: visible;
+}
+
+#map.map-3d-view .leaflet-control-container,
+#map.map-3d-view .leaflet-top,
+#map.map-3d-view .leaflet-bottom {
+	pointer-events: auto;
+}
+
 /* Dark-mode log text contrast fixes */
 body.dark-theme .log-panel { background: rgba(8,12,18,0.9); }
 body.dark-theme .log-panel .log-panel-header { color: #e6eef6; }
@@ -85,7 +255,7 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	transform: none;
 	z-index: 9999;
 	width: auto;
-	max-width: 520px;
+	max-width: 420px;
 	height: auto;
 	min-height: 56px;
 	max-height: none;
@@ -126,6 +296,19 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .recovery-modal-card.modal-closing {
 	transform: translateY(-6px) scale(0.995);
 	opacity: 0;
+}
+
+.aprs-prediction-modal-card {
+	min-width: min(92vw, 520px);
+}
+
+/* Make modal number input spinner match settings panel spinner theming */
+.recovery-modal-card input[type=number] { color: inherit; }
+.recovery-modal-card input[type=number]::-webkit-inner-spin-button, .recovery-modal-card input[type=number]::-webkit-outer-spin-button {
+	opacity: 1;
+}
+body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-button, body.dark-theme .recovery-modal-card input[type=number]::-webkit-outer-spin-button {
+	filter: invert(1) brightness(1.6);
 }
 
 /* Make inputs and labels use theme colors */
@@ -403,19 +586,19 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	max-height: 0;
 	flex-shrink: 1;
 	min-height: 0;
-	background: rgba(23, 30, 44, var(--glass-alpha));
-	border-radius: 16px;
-	box-shadow: 0 18px 42px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.08);
-	border: 0 solid rgba(255,255,255,0.08);
+	background: linear-gradient(180deg, rgba(23, 30, 44, 0.36), rgba(16, 22, 34, 0.28));
+	border-radius: 20px;
+	box-shadow: 0 22px 54px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.18);
+	border: 1px solid rgba(255,255,255,0.1);
 	overflow: hidden;
 	opacity: 0;
 	pointer-events: none;
 	visibility: hidden;
-	transition: transform 240ms cubic-bezier(.2,.9,.2,1), opacity 180ms ease, max-height 260ms cubic-bezier(.2,.9,.2,1);
+	transition: transform 240ms cubic-bezier(.2,.9,.2,1), opacity 180ms ease, max-height 260ms cubic-bezier(.2,.9,.2,1), box-shadow 220ms ease, border-color 220ms ease;
 	transform-origin: top left;
 	will-change: transform, opacity;
 	backface-visibility: hidden;
-	backdrop-filter: blur(28px) saturate(1.2);
+	backdrop-filter: blur(34px) saturate(1.32);
 }
 
 .settings-panel.panel-closing {
@@ -431,8 +614,10 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .settings-panel-content {
 	display: flex;
 	flex-direction: column;
-	max-height: 68vh;
+	max-height: none;
+	min-height: 0;
 	height: 100%;
+	overflow: hidden;
 }
 .panel-resize-handle {
 	height: 8px;
@@ -452,12 +637,12 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .settings-panel .settings-header {
 	padding:8px 12px 7px;
 	font-weight:700;
-	background:transparent;
+	background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
 	display:flex;
 	justify-content:space-between;
 	align-items:center;
 	color:#fff;
-	border-bottom: 1px solid rgba(255,255,255,0.06);
+	border-bottom: 1px solid rgba(255,255,255,0.08);
 	cursor: pointer;
 }
 
@@ -466,6 +651,8 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	display: none !important;
 }
 .settings-panel .settings-body {
+	flex: 1 1 auto;
+	min-height: 0;
 	padding:12px 16px 16px;
 	overflow:auto;
 	color:#e6eef6;
@@ -474,9 +661,11 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 
 /* APRS / settings form controls styling to match theme */
 .settings-panel .form-control {
-	background: rgba(255,255,255,0.06);
+	background: rgba(255,255,255,0.08);
 	color: #e6eef6;
-	border: 1px solid rgba(255,255,255,0.08);
+	border: 1px solid rgba(255,255,255,0.1);
+	border-radius: 12px;
+	box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
 }
 .settings-panel .map-provider-select {
 	max-width: 240px;
@@ -488,8 +677,8 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	gap: 4px;
 	padding: 4px;
 	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.06);
-	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.1);
 	flex-wrap: wrap;
 }
 .button-select-group-compact {
@@ -543,7 +732,7 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .button-select-btn:focus-visible {
 	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35), inset 0 1px 0 rgba(255,255,255,0.2) !important;
 }
-.settings-panel .list-group-item { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04); padding: 10px 12px; border-radius: 12px; margin-bottom: 8px; }
+.settings-panel .list-group-item { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); padding: 10px 12px; border-radius: 14px; margin-bottom: 8px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
 .settings-panel .aprs-last-time { font-size: 0.9em; color: #9fb3c9; }
 .settings-panel .aprs-title-row { gap: 12px; width: 100%; }
 .aprs-title-left { gap: 8px; }
@@ -557,16 +746,16 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .aprs-staleness-green { background: #2ecc71; }
 .aprs-staleness-yellow { background: #f1c40f; }
 .aprs-staleness-red { background: #e74c3c; }
-.settings-panel .aprs-row { gap: 6px; }
 .settings-panel .aprs-row {
-	gap: 12px;
-	align-items: flex-start;
+	gap: 10px;
+	align-items: stretch;
+	flex-direction: column;
 }
 .settings-panel .aprs-title-row {
 	gap: 10px;
 	width: 100%;
 	align-items: flex-start;
-	flex-wrap: nowrap;
+	flex-wrap: wrap;
 }
 .settings-panel .aprs-title-left {
 	gap: 8px;
@@ -577,31 +766,7 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 .settings-panel .aprs-title-left strong {
 	white-space: nowrap;
 }
-.settings-panel .aprs-actions {
-	margin-left: 0;
-	gap: 4px;
-	flex: 0 0 auto;
-}
 .settings-panel .aprs-location-row { width: 100%; margin-top: 2px; }
-.settings-panel .aprs-actions .btn {
-	width: 36px;
-	height: 36px;
-	padding: 0;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 10px;
-	font-size: 14px;
-}
-.settings-panel .aprs-actions .btn .fa { pointer-events: none; }
-.settings-panel .aprs-follow-btn .aprs-follow-fallback,
-.settings-panel .aprs-refresh-btn .aprs-refresh-fallback,
-.settings-panel .aprs-recovery-btn .aprs-recovery-fallback,
-.settings-panel .aprs-remove-btn .aprs-remove-fallback { display: none; }
-.settings-panel .aprs-is-following {
-	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
-	border-radius: 14px;
-}
 .settings-panel .aprs-detail-grid {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(90px, 1fr));
@@ -622,8 +787,77 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	text-align: right;
 }
 
+/* APRS Actions button styling - consolidated */
+.settings-panel .aprs-follow-btn .aprs-follow-fallback,
+.settings-panel .aprs-view-btn .aprs-view-fallback,
+.settings-panel .aprs-refresh-btn .aprs-refresh-fallback,
+.settings-panel .aprs-recovery-btn .aprs-recovery-fallback,
+.settings-panel .aprs-settings-btn .aprs-settings-fallback,
+.settings-panel .aprs-remove-btn .aprs-remove-fallback { display: none; }
+
+.settings-panel .aprs-actions-row {
+	display: flex;
+	gap: 8px;
+	justify-content: center;
+	margin-top: 8px;
+	width: 100%;
+}
+.settings-panel .aprs-actions-row .btn {
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 10px;
+	font-size: 14px;
+}
+.settings-panel .aprs-is-following {
+	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
+	border-radius: 14px;
+}
+
 /* Ensure FA icons are visible inside small buttons */
 .aprs-remove-btn i, #aprsAddBtn i { color: #fff; font-size: 14px; }
+.aprs-refresh-spinning .fa { animation: aprsRefreshSpin 0.8s linear infinite; }
+.aprs-remove-btn.btn-danger { background:#d9534f; border-color:#d43f3a; }
+.aprs-recovery-btn.btn-warning { background:#f0ad4e; border-color:#eea236; }
+.aprs-view-btn.btn-success { background:#2eaf67; border-color:#28945a; }
+
+.aprs-callsign-modal-card {
+	width: min(760px, 94vw);
+	max-height: 82vh;
+	overflow: hidden;
+}
+
+.aprs-callsign-modal-body {
+	overflow-y: auto;
+	max-height: calc(82vh - 120px);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.aprs-callsign-summary-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px 16px;
+	margin-top: 4px;
+}
+
+.aprs-callsign-summary-grid .recovery-row {
+	margin: 0;
+	padding: 0;
+}
+
+@media (max-width: 760px) {
+	.aprs-callsign-summary-grid {
+		grid-template-columns: 1fr;
+		gap: 6px;
+	}
+}
+
+
 .aprs-refresh-spinning .fa { animation: aprsRefreshSpin 0.8s linear infinite; }
 .aprs-remove-btn.btn-danger { background:#d9534f; border-color:#d43f3a; }
 .aprs-recovery-btn.btn-warning { background:#f0ad4e; border-color:#eea236; }
@@ -885,9 +1119,9 @@ body:not(.dark-theme) .ui-dialog.aprs-recovery-dialog .ui-dialog-buttonpane butt
 
 /* Dark theme form overrides */
 body.dark-theme .settings-panel .form-control {
-	background: rgba(255,255,255,0.03);
+	background: rgba(255,255,255,0.05);
 	color: #dfe9f3;
-	border-color: rgba(255,255,255,0.06);
+	border-color: rgba(255,255,255,0.1);
 }
 body.dark-theme .settings-panel .list-group-item { border-bottom: 1px solid rgba(255,255,255,0.03); }
 body.dark-theme .settings-panel .aprs-last-time { color: #9fb3c9; }
@@ -978,6 +1212,66 @@ body.dark-theme .menu-dock {
 	background: linear-gradient(180deg, rgba(12, 19, 31, 0.94), rgba(8, 13, 22, 0.9));
 	border-color: rgba(255, 255, 255, 0.06);
 }
+
+#toggle3DButton.is-active,
+#toggle3DButton a.is-active,
+#toggle3DButton button.is-active {
+	background: rgba(255,255,255,0.18);
+	border-color: rgba(255,255,255,0.35);
+	box-shadow: 0 10px 24px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.18);
+}
+
+.toggle-switch-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	cursor: pointer;
+	margin: 0;
+	font-weight: 600;
+}
+
+.toggle-switch-label input[type="checkbox"] {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	accent-color: var(--theme-accent);
+}
+
+.settings-inline-row .settings-inline-input {
+	margin-left: auto;
+	max-width: 280px;
+}
+
+.predictor-model-value-stack {
+	margin-left: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 2px;
+	text-align: right;
+}
+
+.predictorModelTimeValue {
+	display: block;
+	font-size: 0.78rem;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.72);
+	line-height: 1.2;
+}
+
+body.dark-theme .predictorModelTimeValue {
+	color: rgba(223, 233, 243, 0.68);
+}
+
+.destructive-confirm-modal .recovery-modal-card {
+	max-width: 420px;
+}
+
+.destructive-confirm-modal .recovery-modal-message,
+.destructive-confirm-modal .recovery-value {
+	white-space: normal;
+}
+
 body.dark-theme .log-panel {
 	background: rgba(8, 12, 18, 0.9);
 	color: #dfe9f3;
@@ -1355,8 +1649,10 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 
 .recovery-input-row {
 	display: flex;
-	flex-direction: column;
-	gap: 4px;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
 }
 
 .recovery-input-row label {
@@ -1364,6 +1660,29 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 	font-weight: 600;
 	color: #b8c6d8;
 	margin: 0;
+	flex: 0 0 auto;
+	min-width: 140px;
+	text-align: left;
+}
+
+.recovery-input-row .input-right {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	min-width: 0;
+}
+
+.recovery-input-row .input-right .form-control {
+	width: 100%;
+	min-width: 0;
+}
+
+.recovery-input-units {
+	flex: 0 0 auto;
+	white-space: nowrap;
+	color: #b8c6d8;
 }
 
 .recovery-modal-footer {
@@ -1393,6 +1712,30 @@ body:not(.dark-theme) .recovery-modal-footer {
 body:not(.dark-theme) .recovery-label,
 body:not(.dark-theme) .recovery-input-row label {
 	color: #334155;
+}
+
+body:not(.dark-theme) .recovery-input-units {
+	color: #475569;
+}
+
+@media (max-width: 520px) {
+	.recovery-input-row {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.recovery-input-row label {
+		min-width: 0;
+	}
+
+	.recovery-input-row .input-right {
+		width: 100%;
+		justify-content: flex-start;
+	}
+
+	.recovery-input-row .input-right .form-control {
+		width: 100%;
+	}
 }
 
 .leaflet-top.leaflet-left .leaflet-bar a:hover,
@@ -1528,6 +1871,11 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	display: inline-block;
 	margin-left: auto;
 	text-align: right;
+	font-weight: 600;
+}
+
+.predictor-model-row .predictorModelValue {
+	min-width: 140px;
 }
 
 .timeToLanding {
@@ -1555,20 +1903,26 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 }
 
 .dataAgeHeader {
-	color:black;
-	font-weight: bold;
+	color: var(--theme-foreground);
+	font-weight: 600;
 	text-decoration: underline;
 	font-size:1em;
 }
 .dataAgeOK {
-	color:black;
-	font-weight: bold;
+	color: var(--theme-foreground);
+	font-weight: 600;
 	font-size:1em;
 }
 .dataAgeBad {
-	color:red;
-	font-weight: bold;
-	font-size:1.5em;
+	color: #ff6b6b;
+	font-weight: 700;
+	font-size:1.25em;
+}
+
+#payload_age,
+#pred_age {
+	white-space: normal;
+	line-height: 1.3;
 }
 
 .largeTableRow {

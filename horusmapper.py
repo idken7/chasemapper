@@ -84,6 +84,7 @@ def start_services(config_path: str = None, *, start_listeners_flag: bool = True
     """
     global chasemapper_config, pred_settings, map_settings, bearing_store
     global car_track, chase_logger, data_listeners, aprs_tracker
+    global aprs_prediction_overrides_path
 
     _default_cfg = "horusmapper.cfg"
     if os.path.isdir(_default_cfg):
@@ -100,6 +101,9 @@ def start_services(config_path: str = None, *, start_listeners_flag: bool = True
 
     # Add version
     chasemapper_config["version"] = CHASEMAPPER_VERSION
+    chasemapper_config.setdefault("pred_model_time", "—")
+    aprs_prediction_overrides_path = os.path.join(_config_base_dir(cfg_path), "aprs_prediction_overrides.json")
+    chasemapper_config["aprs_prediction_overrides"] = _load_aprs_prediction_overrides()
 
     # Predictor settings and map settings
     pred_settings = {
@@ -166,6 +170,7 @@ chase_logger = None
 
 # These settings are shared between server and all clients, and are updated dynamically.
 chasemapper_config = {}
+aprs_prediction_overrides_path = None
 
 # Pointers to objects containing data listeners.
 # These should all present a .close() function which will be called on
@@ -177,6 +182,176 @@ pred_settings = {}
 
 # Offline map settings, again, not editable by the client.
 map_settings = {"tile_server_enabled": False}
+
+
+def _config_base_dir(config_path):
+    if not config_path:
+        return os.getcwd()
+
+    resolved = os.path.abspath(config_path)
+    if os.path.isdir(resolved):
+        return resolved
+
+    base_dir = os.path.dirname(resolved)
+    if base_dir:
+        return base_dir
+    return os.getcwd()
+
+
+def _sanitize_aprs_prediction_overrides(overrides):
+    sanitized = {}
+    if not isinstance(overrides, dict):
+        return sanitized
+
+    for callsign, values in overrides.items():
+        key = (callsign or "").upper()
+        if not key or not isinstance(values, dict):
+            continue
+
+        item = {}
+        for field in ["pred_burst", "pred_desc_rate"]:
+            if field in values:
+                try:
+                    item[field] = float(values[field])
+                except Exception:
+                    pass
+
+        if item:
+            sanitized[key] = item
+
+    return sanitized
+
+
+def _format_predictor_model_time(model_time):
+    if model_time is None:
+        return "—"
+
+    try:
+        if isinstance(model_time, str):
+            model_time = parse_dt(model_time)
+
+        if getattr(model_time, "tzinfo", None) is None:
+            model_time = pytz.utc.localize(model_time)
+        else:
+            model_time = model_time.astimezone(pytz.utc)
+
+        tz_name = model_time.tzname() or "UTC"
+        return model_time.strftime("%m/%d/%Y, %H:%M:%S ") + tz_name
+    except Exception:
+        logging.debug("Unable to format predictor model time: %s", traceback.format_exc())
+        return "—"
+
+
+def _emit_predictor_model_status(model, model_time=None):
+    chasemapper_config["pred_model"] = model
+    chasemapper_config["pred_model_time"] = _format_predictor_model_time(model_time)
+    flask_emit_event(
+        "predictor_model_update",
+        {"model": chasemapper_config["pred_model"], "time": chasemapper_config["pred_model_time"]},
+    )
+
+
+def _load_aprs_prediction_overrides():
+    global aprs_prediction_overrides_path
+
+    if not aprs_prediction_overrides_path or not os.path.isfile(aprs_prediction_overrides_path):
+        return {}
+
+    try:
+        with open(aprs_prediction_overrides_path, "r") as fh:
+            loaded = json.load(fh)
+        return _sanitize_aprs_prediction_overrides(loaded)
+    except Exception as exc:
+        logging.error("Failed to load APRS prediction overrides: %s", str(exc))
+        return {}
+
+
+def _save_aprs_prediction_overrides():
+    global aprs_prediction_overrides_path
+
+    if not aprs_prediction_overrides_path:
+        return
+
+    overrides = _sanitize_aprs_prediction_overrides(chasemapper_config.get("aprs_prediction_overrides", {}))
+    try:
+        tmp_path = aprs_prediction_overrides_path + ".tmp"
+        with open(tmp_path, "w") as fh:
+            json.dump(overrides, fh, indent=2, sort_keys=True)
+        os.replace(tmp_path, aprs_prediction_overrides_path)
+    except Exception as exc:
+        logging.error("Failed to save APRS prediction overrides: %s", str(exc))
+
+
+def _normalize_aprs_callsign(callsign):
+    return (callsign or "").strip().upper()
+
+
+def _set_server_aprs_callsigns(callsigns):
+    normalized = []
+    for callsign in callsigns or []:
+        key = _normalize_aprs_callsign(callsign)
+        if key and key not in normalized:
+            normalized.append(key)
+    chasemapper_config["aprs_callsigns"] = normalized
+    return normalized
+
+
+def _remove_server_payload_for_callsign(callsign):
+    key = _normalize_aprs_callsign(callsign)
+    if not key:
+        return
+
+    if key in current_payloads:
+        del current_payloads[key]
+    if key in current_payload_tracks:
+        del current_payload_tracks[key]
+
+
+def _start_aprs_tracker_for_callsigns(callsigns):
+    _calls = [_normalize_aprs_callsign(cs) for cs in callsigns or [] if _normalize_aprs_callsign(cs)]
+    if not _calls:
+        if aprs_tracker is not None:
+            try:
+                aprs_tracker.stop()
+                aprs_tracker.join(timeout=2)
+            except Exception as e:
+                logging.error("Error stopping APRS tracker: %s", str(e))
+        return
+
+    start_or_restart_aprs_tracker(_calls)
+
+
+def _apply_aprs_callsign_add(callsign):
+    key = _normalize_aprs_callsign(callsign)
+    if not key:
+        return False
+
+    callsigns = list(chasemapper_config.get("aprs_callsigns", []))
+    if key in [(_normalize_aprs_callsign(cs)) for cs in callsigns]:
+        return False
+
+    callsigns.append(key)
+    _set_server_aprs_callsigns(callsigns)
+    return True
+
+
+def _apply_aprs_callsign_remove(callsign):
+    key = _normalize_aprs_callsign(callsign)
+    if not key:
+        return False
+
+    current = [_normalize_aprs_callsign(cs) for cs in chasemapper_config.get("aprs_callsigns", []) if _normalize_aprs_callsign(cs)]
+    if key not in current:
+        return False
+
+    chasemapper_config["aprs_callsigns"] = [cs for cs in current if cs != key]
+    _remove_server_payload_for_callsign(key)
+    overrides = _sanitize_aprs_prediction_overrides(chasemapper_config.get("aprs_prediction_overrides", {}))
+    if key in overrides:
+        del overrides[key]
+        chasemapper_config["aprs_prediction_overrides"] = overrides
+        _save_aprs_prediction_overrides()
+    return True
 
 # Payload data Stores
 current_payloads = {}  #  Archive data which will be passed to the web client
@@ -330,18 +505,6 @@ def client_connected(_data):
                         namespace="/chasemapper",
                         room=flask.request.sid,
                     )
-
-        _aprs_calls = [c for c in chasemapper_config.get("aprs_callsigns", []) if c]
-        if chasemapper_config.get("aprs_enabled", False) and _aprs_calls:
-            logging.info(
-                "Client connect refreshing APRS data for callsigns: %s",
-                ", ".join(_aprs_calls),
-            )
-
-            # Run refresh in a background thread so connect handling returns quickly.
-            t = Thread(target=process_new_aprs_callsigns, args=(_aprs_calls,), kwargs={"restart_tracker": False})
-            t.daemon = True
-            t.start()
     except Exception as e:
         logging.debug("Error replaying telemetry to client: %s", str(e))
 
@@ -377,62 +540,43 @@ def aprs_refresh_request(data):
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
     global chasemapper_config, online_uploader
-    global aprs_tracker
+    global aprs_tracker, predictor
 
     try:
         logging.info(
-            "client_settings_update received: aprs_enabled=%s aprs_callsigns=%s"
-            % (
-                data.get("aprs_enabled", False),
-                ", ".join(data.get("aprs_callsigns", [])) if data.get("aprs_callsigns", []) else "none",
-            )
+            "client_settings_update received: aprs_enabled=%s",
+            data.get("aprs_enabled", False),
         )
     except Exception:
         pass
 
+    # Cache predictor state to reduce dict lookups
+    _old_pred_enabled = chasemapper_config.get("pred_enabled", False)
+    _new_pred_enabled = data.get("pred_enabled", False)
     _predictor_change = "none"
-    if (chasemapper_config["pred_enabled"] == False) and (data["pred_enabled"] == True):
+    if (not _old_pred_enabled) and _new_pred_enabled:
         _predictor_change = "restart"
-    elif (chasemapper_config["pred_enabled"] == True) and (
-        data["pred_enabled"] == False
-    ):
+    elif _old_pred_enabled and (not _new_pred_enabled):
         _predictor_change = "stop"
 
+    # Cache habitat state to reduce dict lookups
+    _old_habitat_enabled = chasemapper_config.get("habitat_upload_enabled", False)
+    _new_habitat_enabled = data.get("habitat_upload_enabled", False)
     _habitat_change = "none"
-    if (chasemapper_config["habitat_upload_enabled"] == False) and (
-        data["habitat_upload_enabled"] == True
-    ):
+    if (not _old_habitat_enabled) and _new_habitat_enabled:
         _habitat_change = "start"
-    elif (chasemapper_config["habitat_upload_enabled"] == True) and (
-        data["habitat_upload_enabled"] == False
-    ):
+    elif _old_habitat_enabled and (not _new_habitat_enabled):
         _habitat_change = "stop"
 
-    # APRS changes detection
-    _aprs_change = "none"
-    old_calls = set()
-    new_calls = set()
-    added_calls = []
-    removed_calls = []
-    try:
-        old_aprs_enabled = chasemapper_config.get("aprs_enabled", False)
-        new_aprs_enabled = data.get("aprs_enabled", False)
-        old_calls = set([c.upper() for c in chasemapper_config.get("aprs_callsigns", []) if c])
-        new_calls = set([c.upper() for c in data.get("aprs_callsigns", []) if c])
-        added_calls = list(new_calls - old_calls)
-        removed_calls = list(old_calls - new_calls)
+    _old_aprs_enabled = chasemapper_config.get("aprs_enabled", False)
+    _new_aprs_enabled = data.get("aprs_enabled", False)
+    _server_aprs_callsigns = list(chasemapper_config.get("aprs_callsigns", []))
+    _server_aprs_overrides = _sanitize_aprs_prediction_overrides(chasemapper_config.get("aprs_prediction_overrides", {}))
 
-        if (old_aprs_enabled == False) and (new_aprs_enabled == True):
-            _aprs_change = "start"
-        elif (old_aprs_enabled == True) and (new_aprs_enabled == False):
-            _aprs_change = "stop"
-        elif old_calls != new_calls:
-            _aprs_change = "update"
-    except Exception:
-        _aprs_change = "none"
-
-    # Overwrite local config data with data from the client.
-    chasemapper_config = data
+    # Overwrite local config data with data from the client, but preserve server-owned APRS state.
+    chasemapper_config.update(data)
+    chasemapper_config["aprs_callsigns"] = _server_aprs_callsigns
+    chasemapper_config["aprs_prediction_overrides"] = _server_aprs_overrides
 
     if _predictor_change == "restart":
         # Wait until any current predictions have finished.
@@ -477,53 +621,29 @@ def client_settings_update(data):
         online_uploader.close()
         online_uploader = None
 
-    # APRS start/stop/update handling
-    if _aprs_change != "none":
+    # APRS tracker state is managed by dedicated APRS add/remove events.
+    if _old_aprs_enabled and (not _new_aprs_enabled):
         try:
-            if _aprs_change == "start":
-                # start tracker with provided callsigns
-                _calls = chasemapper_config.get("aprs_callsigns", [])
-                logging.info("APRS start requested. Callsigns=%s", ", ".join(_calls) if _calls else "none")
-                if _calls:
-                    # Pull latest known points now so new callsigns immediately appear and can predict.
-                    process_new_aprs_callsigns(_calls)
-                else:
-                    logging.warning("APRS enabled but no callsigns are configured yet.")
-
-            elif _aprs_change == "stop":
-                logging.info("APRS stop requested. Stopping tracker.")
-                if aprs_tracker is not None:
-                    try:
-                        aprs_tracker.stop()
-                        aprs_tracker.join(timeout=2)
-                    except Exception as e:
-                        logging.error("Error stopping APRS tracker: %s", str(e))
-                    aprs_tracker = None
-
-            elif _aprs_change == "update":
-                _calls = chasemapper_config.get("aprs_callsigns", [])
-                logging.info(
-                    "APRS settings updated. Callsigns=%s Added=%s Removed=%s",
-                    ", ".join(_calls) if _calls else "none",
-                    ", ".join(added_calls) if added_calls else "none",
-                    ", ".join(removed_calls) if removed_calls else "none",
-                )
-                if not _calls:
-                    logging.info("No APRS callsigns remain; stopping APRS tracker.")
-                    if aprs_tracker is not None:
-                        try:
-                            aprs_tracker.stop()
-                            aprs_tracker.join(timeout=2)
-                        except Exception as e:
-                            logging.error("Error stopping APRS tracker: %s", str(e))
-                        aprs_tracker = None
-                else:
-                    if added_calls:
-                        process_new_aprs_callsigns(added_calls)
-                    else:
-                        start_or_restart_aprs_tracker(_calls)
+            logging.info("APRS stop requested. Stopping tracker.")
+            if aprs_tracker is not None:
+                try:
+                    aprs_tracker.stop()
+                    aprs_tracker.join(timeout=2)
+                except Exception as e:
+                    logging.error("Error stopping APRS tracker: %s", str(e))
+                aprs_tracker = None
         except Exception as e:
-            logging.error("Error processing APRS settings update: %s", str(e))
+            logging.error("Error processing APRS stop request: %s", str(e))
+    elif (not _old_aprs_enabled) and _new_aprs_enabled:
+        try:
+            _calls = chasemapper_config.get("aprs_callsigns", [])
+            logging.info("APRS start requested. Callsigns=%s", ", ".join(_calls) if _calls else "none")
+            if _calls:
+                process_new_aprs_callsigns(_calls)
+            else:
+                logging.warning("APRS enabled but no callsigns are configured yet.")
+        except Exception as e:
+            logging.error("Error starting APRS tracker: %s", str(e))
 
     # Update the habitat uploader with a new update rate, if one has changed.
     if online_uploader != None:
@@ -532,6 +652,96 @@ def client_settings_update(data):
 
     # Push settings back out to all clients.
     flask_emit_event("server_settings_update", chasemapper_config)
+
+
+@socketio.on("aprs_callsign_add", namespace="/chasemapper")
+def aprs_callsign_add(data):
+    callsign = _normalize_aprs_callsign(data.get("callsign") if isinstance(data, dict) else None)
+    if not callsign:
+        return
+
+    changed = _apply_aprs_callsign_add(callsign)
+    if not changed:
+        return
+
+    logging.info("APRS callsign added on server: %s", callsign)
+    flask_emit_event("server_settings_update", chasemapper_config)
+
+    def _bootstrap() -> None:
+        try:
+            process_new_aprs_callsigns([callsign])
+        except Exception as exc:
+            logging.error("APRS bootstrap failed for %s: %s", callsign, exc)
+
+    thread = Thread(target=_bootstrap)
+    thread.daemon = True
+    thread.start()
+
+
+@socketio.on("aprs_callsign_remove", namespace="/chasemapper")
+def aprs_callsign_remove(data):
+    callsign = _normalize_aprs_callsign(data.get("callsign") if isinstance(data, dict) else None)
+    if not callsign:
+        return
+
+    changed = _apply_aprs_callsign_remove(callsign)
+    if not changed:
+        return
+
+    logging.info("APRS callsign removed on server: %s", callsign)
+    _remaining = chasemapper_config.get("aprs_callsigns", [])
+    _start_aprs_tracker_for_callsigns(_remaining)
+    flask_emit_event("aprs_callsign_removed", {"callsign": callsign})
+    flask_emit_event("server_settings_update", chasemapper_config)
+
+
+@socketio.on("aprs_prediction_override_update", namespace="/chasemapper")
+def aprs_prediction_override_update(data):
+    if not isinstance(data, dict):
+        return
+
+    callsign = _normalize_aprs_callsign(data.get("callsign"))
+    if not callsign:
+        return
+
+    burst_alt = data.get("pred_burst", None)
+    descent_rate = data.get("pred_desc_rate", None)
+    overrides = _sanitize_aprs_prediction_overrides(chasemapper_config.get("aprs_prediction_overrides", {}))
+
+    current_defaults = {
+        "pred_burst": chasemapper_config.get("pred_burst"),
+        "pred_desc_rate": chasemapper_config.get("pred_desc_rate"),
+    }
+
+    if burst_alt is None:
+        burst_alt = current_defaults["pred_burst"]
+    if descent_rate is None:
+        descent_rate = current_defaults["pred_desc_rate"]
+
+    if float(burst_alt) == float(current_defaults["pred_burst"]) and float(descent_rate) == float(current_defaults["pred_desc_rate"]):
+        if callsign in overrides:
+            del overrides[callsign]
+    else:
+        overrides[callsign] = {
+            "pred_burst": float(burst_alt),
+            "pred_desc_rate": float(descent_rate),
+        }
+
+    chasemapper_config["aprs_prediction_overrides"] = overrides
+    _save_aprs_prediction_overrides()
+    logging.info("APRS prediction override updated on server for %s", callsign)
+    trigger_prediction_async("APRS prediction overrides updated")
+    flask_emit_event("server_settings_update", chasemapper_config)
+
+
+@socketio.on('client_request_prediction', namespace='/chasemapper')
+def client_request_prediction(data):
+    try:
+        _cs = data.get('callsign') if isinstance(data, dict) else None
+    except Exception:
+        _cs = None
+    logging.info('Client requested immediate prediction for %s', _cs or 'ALL')
+    trigger_prediction_async('client requested prediction')
 
 
 def handle_new_payload_position(data, log_position=True):
@@ -663,6 +873,12 @@ def handle_new_payload_position(data, log_position=True):
     else:
         logging.debug("Point not logged.")
 
+    # Trigger immediate prediction bootstrap for new payloads or small tracks
+    # (unless this is APRS bootstrap data, which gets special handling)
+    if not data.get("aprs_bootstrap", False):
+        _track_len = current_payload_tracks[_callsign].length()
+        if _track_len > 0 and _track_len <= 2:
+            trigger_prediction_async("Bootstrap prediction for %s" % _callsign)
 
 def handle_modem_stats(data):
     """ Basic handling of modem statistics data. If it matches a known payload, send the info to the client. """
@@ -690,10 +906,12 @@ def predictorThread():
 
     while predictor_thread_running:
         run_prediction()
-        for i in range(int(chasemapper_config["pred_update_rate"])):
-            time.sleep(1)
-            if predictor_thread_running == False:
+        # Use more efficient sleep instead of loop over 1-second intervals
+        update_rate = int(chasemapper_config.get("pred_update_rate", 15))
+        for _ in range(update_rate):
+            if not predictor_thread_running:
                 break
+            time.sleep(1)
 
     logging.info("Closed predictor loop.")
 
@@ -726,7 +944,7 @@ def run_prediction():
                     # We'll set the _current_pos time when calling the predictor below.
                     pass
                 else:
-                    logging.debug("Skipping prediction for %s due to old data." % _payload)
+                    logging.debug("Skipping prediction for %s due to old data.", _payload)
                     continue
 
             _current_pos = current_payload_tracks[_payload].get_latest_state()
@@ -752,18 +970,44 @@ def run_prediction():
             _pred_ok = False
             _abort_pred_ok = False
 
+            _burst_threshold = chasemapper_config["pred_burst"]
+            _call_overrides = chasemapper_config.get("aprs_prediction_overrides", {})
+            if isinstance(_call_overrides, dict):
+                _override = _call_overrides.get(_payload.upper(), {})
+                if isinstance(_override, dict):
+                    _override_burst = _override.get("pred_burst")
+                    if _override_burst is not None:
+                        try:
+                            _override_burst = float(_override_burst)
+                            if math.isfinite(_override_burst):
+                                _burst_threshold = _override_burst
+                        except Exception:
+                            pass
+
             if _current_pos["is_descending"]:
                 _desc_rate = _current_pos["landing_rate"]
             else:
                 _desc_rate = chasemapper_config["pred_desc_rate"]
 
-            if _current_pos["alt"] > chasemapper_config["pred_burst"]:
+                if isinstance(_call_overrides, dict):
+                    _override = _call_overrides.get(_payload.upper(), {})
+                    if isinstance(_override, dict):
+                        _override_desc = _override.get("pred_desc_rate")
+                        if _override_desc is not None:
+                            try:
+                                _override_desc = float(_override_desc)
+                                if math.isfinite(_override_desc):
+                                    _desc_rate = _override_desc
+                            except Exception:
+                                pass
+
+            if _current_pos["alt"] > _burst_threshold:
                 _burst_alt = _current_pos["alt"] + 100
             else:
-                _burst_alt = chasemapper_config["pred_burst"]
+                _burst_alt = _burst_threshold
 
             if predictor == "Tawhiri":
-                logging.info("Requesting Prediction from Tawhiri for %s." % _payload)
+                logging.info("Requesting Prediction from Tawhiri for %s.", _payload)
                 # Tawhiri requires that the burst altitude always be higher than the starting altitude.
                 if _current_pos["is_descending"]:
                     _burst_alt = _current_pos["alt"] + 1
@@ -796,9 +1040,14 @@ def run_prediction():
 
                 if _tawhiri:
                     _pred_path = _tawhiri["path"]
-                    _dataset = _tawhiri["dataset"] + " (Online)"
-                    # Inform the client of the dataset age
-                    flask_emit_event("predictor_model_update", {"model": _dataset})
+                    _dataset = _tawhiri["dataset"]
+                    _dataset_time = None
+                    try:
+                        _dataset_time = datetime.strptime(_dataset, "%Y%m%d%Hz")
+                    except Exception:
+                        _dataset_time = None
+                    _model_label = _dataset + " (Online)"
+                    _emit_predictor_model_status(_model_label, _dataset_time)
 
                 else:
                     # Tawhiri failed — create a simple fallback prediction using current state.
@@ -838,7 +1087,7 @@ def run_prediction():
                         _pred_path = []
 
             else:
-                logging.info("Running Offline Predictor for %s." % _payload)
+                logging.info("Running Offline Predictor for %s.", _payload)
                 _pred_path = predictor.predict(
                     launch_lat=_current_pos["lat"],
                     launch_lon=_current_pos["lon"],
@@ -886,7 +1135,7 @@ def run_prediction():
             # Abort predictions
             if (
                 chasemapper_config["show_abort"]
-                and (_current_pos["alt"] < chasemapper_config["pred_burst"])
+                and (_current_pos["alt"] < _burst_threshold)
                 and (_current_pos["is_descending"] == False)
             ):
 
@@ -916,7 +1165,7 @@ def run_prediction():
                         _abort_pred_path = []
 
                 else:
-                    logging.info("Running Offline Abort Predictor for: %s." % _payload)
+                    logging.info("Running Offline Abort Predictor for: %s.", _payload)
 
                     _abort_pred_path = predictor.predict(
                         launch_lat=_current_pos["lat"],
@@ -988,8 +1237,7 @@ def initPredictor():
             _model_age = gfs_model_age(pred_settings["gfs_path"])
             if _model_age == "Unknown":
                 logging.error("No GFS data in directory.")
-                chasemapper_config["pred_model"] = "No GFS Data."
-                flask_emit_event("predictor_model_update", {"model": "No GFS data."})
+                _emit_predictor_model_status("No GFS Data.")
                 chasemapper_config["offline_predictions"] = False
             else:
                 # Check model contains data to at least 4 hours into the future.
@@ -998,17 +1246,11 @@ def initPredictor():
                 if (_model_now < _model_start) or (_model_now > _model_end):
                     # No suitable GFS data!
                     logging.error("GFS Data in directory does not cover now!")
-                    chasemapper_config["pred_model"] = "Old GFS Data."
-                    flask_emit_event(
-                        "predictor_model_update", {"model": "Old GFS data."}
-                    )
+                    _emit_predictor_model_status("Old GFS Data.", _model_start)
                     chasemapper_config["offline_predictions"] = False
 
                 else:
-                    chasemapper_config["pred_model"] = _model_age + " (Offline)"
-                    flask_emit_event(
-                        "predictor_model_update", {"model": _model_age + " (Offline)"}
-                    )
+                    _emit_predictor_model_status(_model_age + " (Offline)", _model_start)
                     predictor = Predictor(
                         bin_path=pred_settings["pred_binary"],
                         gfs_path=pred_settings["gfs_path"],
@@ -1025,15 +1267,14 @@ def initPredictor():
         except Exception as e:
             traceback.print_exc()
             logging.error("Loading predictor failed: " + str(e))
-            flask_emit_event("predictor_model_update", {"model": "Failed - Check Log."})
-            chasemapper_config["pred_model"] = "Failed - Check Log."
+            _emit_predictor_model_status("Failed - Check Log.")
             print("Loading Predictor failed.")
             predictor = None
 
     else:
         # No initialization required for the online predictor
         predictor = "Tawhiri"
-        flask_emit_event("predictor_model_update", {"model": "Tawhiri"})
+        _emit_predictor_model_status("Tawhiri")
 
         # Start up the predictor thread if it is not running.
         if predictor_thread == None:
@@ -1197,14 +1438,6 @@ def aprs_listener_callback(data):
         )
 
         handle_new_payload_position(data)
-
-        _callsign = data.get("callsign", "")
-        if _callsign in current_payload_tracks:
-            # For new APRS callsigns we often only have one point; run a bootstrap prediction now.
-            if data.get("aprs_bootstrap", False):
-                return
-            if current_payload_tracks[_callsign].length() <= 2:
-                trigger_prediction_async("APRS bootstrap for %s" % _callsign)
     except Exception as e:
         logging.error("Error Handling APRS Position - %s" % str(e))
 
@@ -1235,7 +1468,7 @@ def start_or_restart_aprs_tracker(callsigns):
         logging.warning("APRS tracker start requested with no callsigns.")
         return
 
-    logging.info("(Re)starting APRS tracker for callsigns: %s" % (", ".join(_calls)))
+    logging.info("(Re)starting APRS tracker for callsigns: %s", ", ".join(_calls))
 
     if aprs_tracker is not None:
         try:
@@ -1314,7 +1547,7 @@ def fetch_aprs_recent_points(callsign, api_key=None, limit=2):
     alt, callsign and optionally time_dt.
     """
     try:
-        logging.info("APRS request: latest position for %s" % callsign)
+        logging.info("APRS request: latest position for %s", callsign)
         params = {"name": callsign, "what": "loc", "format": "json"}
         if not api_key:
             logging.warning(
@@ -1622,13 +1855,6 @@ def check_data_age():
                 if (_now - _latest_time) > (
                     chasemapper_config["payload_max_age"] * 60.0
                 ):
-                    # Data is older than our maximum age!
-                    # Make sure we do not have a predictor cycle running.
-                    while predictor_semaphore:
-                        time.sleep(0.1)
-
-                    # Remove this payload from our global data stores.
-                    current_payloads.pop(_call)
                     current_payload_tracks.pop(_call)
 
                     logging.info(

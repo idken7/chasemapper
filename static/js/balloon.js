@@ -157,14 +157,9 @@ function createBalloonIcon(telem, colour){
         // fall back to existing icons (ascent/descent handling done elsewhere)
         return null;
     }
-    var alt = parseFloat(telem.position[2]) || 0;
-    // visual scale: 1 px per 2 meters, clamp
-    var h = Math.min(Math.max(8, Math.round(alt / 2)), 260);
-    var html = '<div class="extrusion-outer" style="height:'+h+'px;">'
-             + '<div class="alt-extrusion" style="height:'+h+'px;background:'+colour+';opacity:0.25;border-radius:4px;margin:0 auto;width:6px"></div>'
-             + '</div>'
-             + '<div class="extruded-dot" style="background:'+colour+';width:16px;height:16px;border-radius:50%;margin-top:6px;border:2px solid rgba(255,255,255,0.9)"></div>';
-    return L.divIcon({className:'extruded-marker', html:html, iconSize:[18, h+30], iconAnchor:[9, h+18]});
+    // Disable altitude extrusion to avoid parallax in 2D view.
+    // Altitude is now represented by actual 3D position in Cesium, not visual extrusion.
+    return null;  // Return null to use standard icon, not extruded marker
 }
 
 // Refresh icons for all existing balloon markers (re-apply 3D or 2D icons)
@@ -236,14 +231,26 @@ function add_new_balloon(data){
     var abortPathData = normalizeMapPointList(data.abort_path);
     var abortLandingData = validMapPoint(data.abort_landing) ? normalizeMapPoint(data.abort_landing) : [];
 
-    balloon_positions[callsign] = {
-        latest_data: telem,
-        age: 0,
-        colour: colour_values[colour_idx],
-        snr: -255.0,
-        visible: true
-    };
+    var existingBalloon = balloon_positions.hasOwnProperty(callsign) ? balloon_positions[callsign] : null;
+    var existingPredPath = existingBalloon ? existingBalloon.pred_path : null;
+    var existingPredMarker = existingBalloon ? existingBalloon.pred_marker : null;
+    var existingBurstMarker = existingBalloon ? existingBalloon.burst_marker : null;
+    var existingAbortPath = existingBalloon ? existingBalloon.abort_path : null;
+    var existingAbortMarker = existingBalloon ? existingBalloon.abort_marker : null;
+
+    balloon_positions[callsign] = existingBalloon || {};
+    balloon_positions[callsign].latest_data = telem;
+    balloon_positions[callsign].age = 0;
+    if (!balloon_positions[callsign].colour) {
+        balloon_positions[callsign].colour = colour_values[colour_idx];
+    }
+    balloon_positions[callsign].snr = -255.0;
+    balloon_positions[callsign].visible = true;
+    balloon_positions[callsign].pred_age = balloon_positions[callsign].pred_age || 0;
     // Balloon Path
+    if (balloon_positions[callsign].path && map.hasLayer(balloon_positions[callsign].path)) {
+        balloon_positions[callsign].path.remove();
+    }
     balloon_positions[callsign].path = L.polyline(pathData,{title:callsign + " Path", color:balloon_positions[callsign].colour}).addTo(map);
     // Balloon position marker - always start with 2D icon, then updateBalloonMarkerIcon will handle 3D if enabled
     var baseIcon = balloonAscentIcons[balloon_positions[callsign].colour];
@@ -251,11 +258,40 @@ function add_new_balloon(data){
         console.error('add_new_balloon: baseIcon not found for colour', balloon_positions[callsign].colour, '- available colours:', Object.keys(balloonAscentIcons));
         return false;
     }
+    if (balloon_positions[callsign].marker && map.hasLayer(balloon_positions[callsign].marker)) {
+        balloon_positions[callsign].marker.remove();
+    }
     balloon_positions[callsign].marker = L.marker(telem.position,{title:callsign, icon: baseIcon})
         .bindTooltip(callsign,{permanent:false,direction:'right'})
         .addTo(map);
+    // Clicking the marker should open the APRS settings panel and highlight the APRS list item
+    try {
+        balloon_positions[callsign].marker.on('click', function(e) {
+            if (typeof showAprsPanel === 'function') {
+                try {
+                    showAprsPanel(callsign);
+                } catch (innerErr) {
+                    console.warn('Error calling showAprsPanel for', callsign, innerErr);
+                }
+            }
+        });
+    } catch (e) {
+        console.warn('Failed to attach click handler to marker for', callsign, e);
+    }
     // Update icon to reflect 3D status or descent/payload state
     updateBalloonMarkerIcon(callsign, telem);
+        if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+            syncCesiumAfterBalloonUpdate(callsign, {
+                telem: telem,
+                pathData: pathData,
+                predPathData: predPathData,
+                predLandingData: predLandingData,
+                burstData: burstData,
+                abortPathData: abortPathData,
+                abortLandingData: abortLandingData,
+                visible: balloon_positions[callsign].visible
+            });
+        }
 
 
     // If the balloon is in descent, or is above the burst altitude, clear out the abort path and marker
@@ -266,47 +302,116 @@ function add_new_balloon(data){
     }
 
     // Add predicted landing path
-    balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity}).addTo(map);
+    if (existingPredPath) {
+        balloon_positions[callsign].pred_path = existingPredPath;
+        try{
+            if (predPathData.length > 0) {
+                balloon_positions[callsign].pred_path.setLatLngs(predPathData);
+            }
+        }catch(e){
+            console.warn('add_new_balloon: unable to reuse prediction path for', callsign, e);
+            balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity});
+        }
+    } else {
+        balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity});
+    }
+
+    if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_path)){
+        balloon_positions[callsign].pred_path.addTo(map);
+    }
 
     // Landing position marker
     // Only add if there is data to show
     if (predLandingData.length == 3){
         var _landing_text = callsign + " Landing " + predLandingData[0].toFixed(5) + ", " + predLandingData[1].toFixed(5);
-        balloon_positions[callsign].pred_marker = L.marker(predLandingData,{title:callsign + " Landing", icon: balloonLandingIcons[balloon_positions[callsign].colour]})
-            .bindTooltip(_landing_text,{permanent:false,direction:'right'})
-            .addTo(map);
+        if (existingPredMarker) {
+            balloon_positions[callsign].pred_marker = existingPredMarker;
+            balloon_positions[callsign].pred_marker.setLatLng(predLandingData);
+            balloon_positions[callsign].pred_marker.setTooltipContent(_landing_text);
+        } else {
+            balloon_positions[callsign].pred_marker = L.marker(predLandingData,{title:callsign + " Landing", icon: balloonLandingIcons[balloon_positions[callsign].colour]})
+                .bindTooltip(_landing_text,{permanent:false,direction:'right'});
+        }
         // Add listener to copy prediction coords to clipboard.
         // This is also duplicated in prediction.js, until I rearrange things...
         balloon_positions[callsign].pred_marker.on('click', function(e) {
             var _landing_pos_text = e.latlng.lat.toFixed(5) + ", " + e.latlng.lng.toFixed(5);
             textToClipboard(_landing_pos_text);
         });
-    } else{
+        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_marker)){
+            balloon_positions[callsign].pred_marker.addTo(map);
+        }
+    } else if (existingPredMarker) {
+        balloon_positions[callsign].pred_marker = existingPredMarker;
+        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_marker)){
+            balloon_positions[callsign].pred_marker.addTo(map);
+        }
+    } else {
         balloon_positions[callsign].pred_marker = null;
     }
 
     // Burst position marker
     // Only add if there is data to show
     if (burstData.length == 3){
-        balloon_positions[callsign].burst_marker = L.marker(burstData,{title:callsign + " Burst", icon: burstIcon})
-            .bindTooltip(callsign + " Burst",{permanent:false,direction:'right'})
-            .addTo(map);
-    } else{
+        if (existingBurstMarker) {
+            balloon_positions[callsign].burst_marker = existingBurstMarker;
+            balloon_positions[callsign].burst_marker.setLatLng(burstData);
+            balloon_positions[callsign].burst_marker.setTooltipContent(callsign + " Burst");
+        } else {
+            balloon_positions[callsign].burst_marker = L.marker(burstData,{title:callsign + " Burst", icon: burstIcon})
+                .bindTooltip(callsign + " Burst",{permanent:false,direction:'right'});
+        }
+        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].burst_marker)){
+            balloon_positions[callsign].burst_marker.addTo(map);
+        }
+    } else if (existingBurstMarker) {
+        balloon_positions[callsign].burst_marker = existingBurstMarker;
+        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].burst_marker)){
+            balloon_positions[callsign].burst_marker.addTo(map);
+        }
+    } else {
         balloon_positions[callsign].burst_marker = null;
     }
 
     // Abort path
-    balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
+    if (existingAbortPath) {
+        balloon_positions[callsign].abort_path = existingAbortPath;
+        try{
+            if (abortPathData.length > 0) {
+                balloon_positions[callsign].abort_path.setLatLngs(abortPathData);
+            }
+        }catch(e){
+            console.warn('add_new_balloon: unable to reuse abort path for', callsign, e);
+            balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
+        }
+    } else {
+        balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
+    }
 
     if ((chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
-        balloon_positions[callsign].abort_path.addTo(map);
+        if (!map.hasLayer(balloon_positions[callsign].abort_path)){
+            balloon_positions[callsign].abort_path.addTo(map);
+        }
     }
 
     // Abort position marker
     if (abortLandingData.length == 3){
-        balloon_positions[callsign].abort_marker = L.marker(abortLandingData,{title:callsign + " Abort", icon: abortIcon})
-            .bindTooltip(callsign + " Abort Landing",{permanent:false,direction:'right'});
+        if (existingAbortMarker) {
+            balloon_positions[callsign].abort_marker = existingAbortMarker;
+            balloon_positions[callsign].abort_marker.setLatLng(abortLandingData);
+            balloon_positions[callsign].abort_marker.setTooltipContent(callsign + " Abort Landing");
+        } else {
+            balloon_positions[callsign].abort_marker = L.marker(abortLandingData,{title:callsign + " Abort", icon: abortIcon})
+                .bindTooltip(callsign + " Abort Landing",{permanent:false,direction:'right'});
+        }
         if( (chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
+            if (!map.hasLayer(balloon_positions[callsign].abort_marker)){
+                balloon_positions[callsign].abort_marker.addTo(map);
+            }
+        }
+    }else if (existingAbortMarker) {
+        balloon_positions[callsign].abort_marker = existingAbortMarker;
+        if( (chase_config.show_abort == true) && (balloon_positions[callsign].visible == true) && !map.hasLayer(balloon_positions[callsign].abort_marker)){
             balloon_positions[callsign].abort_marker.addTo(map);
         }
     }else{
@@ -558,6 +663,9 @@ function handleTelemetry(data){
             chase_car_position.marker.setRotationAngle(_car_heading);
         }
         car_data_age = 0.0;
+        if (typeof syncCesiumAfterCarUpdate === 'function') {
+            syncCesiumAfterCarUpdate();
+        }
     }else{
 
         // Otherwise, we have a balloon
@@ -591,6 +699,19 @@ function handleTelemetry(data){
             balloon_positions[data.callsign].marker.setLatLng(data.position).update();
 
             updateBalloonMarkerIcon(data.callsign, data);
+
+                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+                    syncCesiumAfterBalloonUpdate(data.callsign, {
+                        telem: data,
+                        pathData: balloon_positions[data.callsign].path.getLatLngs(),
+                        predPathData: balloon_positions[data.callsign].pred_path ? balloon_positions[data.callsign].pred_path.getLatLngs() : [],
+                        predLandingData: balloon_positions[data.callsign].pred_marker && balloon_positions[data.callsign].pred_marker.getLatLng ? balloon_positions[data.callsign].pred_marker.getLatLng() : [],
+                        burstData: balloon_positions[data.callsign].burst_marker && balloon_positions[data.callsign].burst_marker.getLatLng ? balloon_positions[data.callsign].burst_marker.getLatLng() : [],
+                        abortPathData: balloon_positions[data.callsign].abort_path ? balloon_positions[data.callsign].abort_path.getLatLngs() : [],
+                        abortLandingData: balloon_positions[data.callsign].abort_marker && balloon_positions[data.callsign].abort_marker.getLatLng ? balloon_positions[data.callsign].abort_marker.getLatLng() : [],
+                        visible: balloon_positions[data.callsign].visible
+                    });
+                }
 
             if(data.hasOwnProperty('snr') == true){
                 balloon_positions[data.callsign].snr = data.snr;
@@ -669,6 +790,9 @@ function hideBalloon(callsign){
                 balloon_positions[callsign].abort_marker.remove();
                 balloon_positions[callsign].abort_path.remove();
             }
+                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+                    syncCesiumAfterBalloonUpdate(callsign, {visible: false});
+                }
     }
 }
 
@@ -696,6 +820,9 @@ function showBalloon(callsign){
                 balloon_positions[callsign].abort_marker.addTo(map);
                 balloon_positions[callsign].abort_path.addTo(map);
             }
+                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+                    syncCesiumAfterBalloonUpdate(callsign, {visible: true});
+                }
 
     }
 }

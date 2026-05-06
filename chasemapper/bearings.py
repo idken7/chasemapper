@@ -216,52 +216,48 @@ class Bearings(object):
             return
 
         # We now have our bearing - now we need to store it
-        self.bearing_lock.acquire()
+        with self.bearing_lock:
+            # Try and ensure the key is going to be consistent between client and server
+            _new_key = "%.2f" % _arrival_time
+            _new_bearing["key"] = _new_key
 
-        # Try and ensure the key is going to be consistent between client and server
-        _new_key = "%.2f" % _arrival_time
-        _new_bearing["key"] = _new_key
+            self.bearings[_new_key] = _new_bearing
 
-        self.bearings[_new_key] = _new_bearing
+            if _source not in self.bearing_sources:
+                self.bearing_sources.append(_source)
+                logging.info(f"Bearing Handler - New source of bearings: {_source}")
 
-        if _source not in self.bearing_sources:
-            self.bearing_sources.append(_source)
-            logging.info(f"Bearing Handler - New source of bearings: {_source}")
+            # Now we need to do a clean-up of our bearing list.
+            # At this point, we should always have at least 2 bearings in our store
+            if len(self.bearings) == 1:
+                return
 
-        # Now we need to do a clean-up of our bearing list.
-        # At this point, we should always have at least 2 bearings in our store
-        if len(self.bearings) == 1:
-            self.bearing_lock.release()
-            return
+            # Keep a list of what we remove, so we can pass it on to the web clients.
+            _removal_list = []
 
-        # Keep a list of what we remove, so we can pass it on to the web clients.
-        _removal_list = []
+            # Grab the list of bearing entries, and sort them by time
+            _bearing_list = list(self.bearings.keys())
+            _bearing_list.sort()
 
-        # Grab the list of bearing entries, and sort them by time
-        _bearing_list = list(self.bearings.keys())
-        _bearing_list.sort()
+            # First remove any excess entries - we only get one bearing at a time, so we can do this simply:
+            if len(_bearing_list) > self.max_bearings:
+                self.bearings.pop(_bearing_list[0])
+                _removal_list.append(_bearing_list[0])
+                _bearing_list = _bearing_list[1:]
 
-        # First remove any excess entries - we only get one bearing at a time, so we can do this simply:
-        if len(_bearing_list) > self.max_bearings:
-            self.bearings.pop(_bearing_list[0])
-            _removal_list.append(_bearing_list[0])
-            _bearing_list = _bearing_list[1:]
+            # Now we need to remove *old* bearings.
+            _min_time = time.time() - self.max_age
 
-        # Now we need to remove *old* bearings.
-        _min_time = time.time() - self.max_age
-
-        _curr_time = float(_bearing_list[0])
-
-        while _curr_time < _min_time:
-            # Current entry is older than our limit, remove it.
-            self.bearings.pop(_bearing_list[0])
-            _removal_list.append(_bearing_list[0])
-            _bearing_list = _bearing_list[1:]
-
-            # Advance to the next entry in the list.
             _curr_time = float(_bearing_list[0])
 
-        self.bearing_lock.release()
+            while _curr_time < _min_time:
+                # Current entry is older than our limit, remove it.
+                self.bearings.pop(_bearing_list[0])
+                _removal_list.append(_bearing_list[0])
+                _bearing_list = _bearing_list[1:]
+
+                # Advance to the next entry in the list.
+                _curr_time = float(_bearing_list[0])
 
         # Add in any raw DOA data we may have been given.
         if "raw_bearing_angles" in bearing:
@@ -279,6 +275,5 @@ class Bearings(object):
 
     def flush(self):
         """ Clear the bearing store """
-        self.bearing_lock.acquire()
-        self.bearings = {}
-        self.bearing_lock.release()
+        with self.bearing_lock:
+            self.bearings = {}

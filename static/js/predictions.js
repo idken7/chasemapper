@@ -91,6 +91,23 @@ function setPredictionLandingMarker(callsign, predLanding) {
     }
 }
 
+function buildCesiumPredictionSyncData(callsign, predPathData, predLandingData, burstData, abortPathData, abortLandingData) {
+    var hasBalloon = balloon_positions.hasOwnProperty(callsign);
+    var entry = hasBalloon ? balloon_positions[callsign] : null;
+
+    return {
+        telem: hasBalloon ? entry.latest_data : null,
+        pathData: hasBalloon && entry.path ? entry.path.getLatLngs() : [],
+        predPathData: predPathData,
+        predLandingData: predLandingData,
+        burstData: burstData,
+        abortPathData: abortPathData,
+        abortLandingData: abortLandingData,
+        visible: hasBalloon ? entry.visible : true,
+        colour: hasBalloon ? entry.colour : null
+    };
+}
+
 function handlePrediction(data){
     // We expect the fields: callsign, pred_path, pred_landing, and abort_path and abort_landing, if abort predictions are enabled.
     var _callsign = (data.callsign || '').toString().toUpperCase();
@@ -108,10 +125,26 @@ function handlePrediction(data){
 
     data.callsign = _callsign;
 
+    if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(_callsign)) {
+        balloon_positions[_callsign].pred_age = Date.now();
+    }
+
+    if (typeof window !== 'undefined' && typeof window.cacheAprsPredictionMeta === 'function') {
+        window.cacheAprsPredictionMeta({
+            callsign: _callsign,
+            pred_path: _pred_path,
+            pred_landing: _pred_landing,
+            burst: _burst,
+            abort_landing: _abort_landing
+        });
+    }
+
     if (balloon_positions.hasOwnProperty(_callsign) == false){
         queuePendingPrediction(data);
         return;
     }
+
+    balloon_positions[_callsign].pred_age = Date.now();
 
     if (_pred_path.length === 0 && _pred_landing.length === 3) {
         var latest = balloon_positions[_callsign].latest_data;
@@ -204,6 +237,17 @@ function handlePrediction(data){
             window.updateChaseRouteIfActive(data.callsign, data.pred_landing);
         }
     }catch(e){ /* ignore */ }
+
+    if (typeof syncCesiumAfterPredictionUpdate === 'function') {
+        syncCesiumAfterPredictionUpdate(_callsign, buildCesiumPredictionSyncData(
+            _callsign,
+            _pred_path,
+            _pred_landing,
+            _burst,
+            _abort_path,
+            _abort_landing
+        ));
+    }
 }
 
 function flushPendingPrediction(callsign){

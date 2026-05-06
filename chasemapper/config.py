@@ -31,6 +31,7 @@ default_config = {
     "offline_predictions": False,  # Use an offline GFS model and predictor instead of Tawhiri.
     # Default prediction settings (actual values will be used once the flight is underway)
     "pred_model": "Disabled",
+    "pred_model_time": "—",
     "pred_desc_rate": 6.0,
     "pred_burst": 28000,
     "show_abort": True,  # Show a prediction of an 'abort' paths (i.e. if the balloon bursts *now*)
@@ -65,6 +66,7 @@ default_config = {
     "aprs_enabled": False,
     # Stored as a list of callsigns (strings)
     "aprs_callsigns": [],
+    "aprs_prediction_overrides": {},
     "aprs_poll_interval": 30,
     "aprs_api_key": "none",
     "aprs_timezone": "local",

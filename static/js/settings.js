@@ -28,15 +28,20 @@ var chase_config = {
     pred_burst: 28000,
     pred_update_rate: 15,
     pred_model: 'Disabled',
+    pred_model_time: '—',
+    enable_3d_map_view: false,
+    cesium_map_mode: 'standard',
     show_abort: true, // Show a prediction of an 'abort' paths (i.e. if the balloon bursts *now*)
     offline_tile_layers: [],
-    habitat_call: 'N0CALL'
+    habitat_call: 'N0CALL',
+    aprs_prediction_overrides: {}
 };
 
 // APRS UI state cache keyed by uppercased callsign.
 var aprs_telemetry_cache = {};
 var aprs_last_rx_ms = {};
 var aprs_refresh_pending = {};
+var aprs_prediction_meta_cache = {};
 var APRS_DETAIL_FIELDS = [
     {label: 'Alt', className: 'aprs-val-alt'},
     {label: 'Speed', className: 'aprs-val-speed'},
@@ -45,6 +50,52 @@ var APRS_DETAIL_FIELDS = [
     {label: 'El', className: 'aprs-val-el'},
     {label: 'Range', className: 'aprs-val-range'}
 ];
+
+// Cache for frequently accessed DOM elements to reduce selector overhead
+var _aprsListCache = null;
+var _aprsPredictionModalCache = null;
+var _aprsStatusDotCache = null;
+
+function getAprsListElement() {
+    if (_aprsListCache === null) {
+        _aprsListCache = $('#aprsList');
+    }
+    return _aprsListCache;
+}
+
+function getAprsPredictionModal() {
+    if (_aprsPredictionModalCache === null) {
+        _aprsPredictionModalCache = $('#aprsPredictionModal');
+    }
+    return _aprsPredictionModalCache;
+}
+
+function getAprsStatusDotElement() {
+    if (_aprsStatusDotCache === null) {
+        _aprsStatusDotCache = $('#aprsStatusDot');
+    }
+    return _aprsStatusDotCache;
+}
+
+function normalizeCallsign(value) {
+    return (value || '').toString().toUpperCase();
+}
+
+function createAprsActionButton(htmlIcon, fallbackLabel, csKey, btnClass, testSuffix, title, ariaLabel) {
+    return $('<button type="button">')
+        .html(htmlIcon + '<span class="' + fallbackLabel + '">'
+            + (fallbackLabel === 'aprs-follow-fallback' ? 'Follow' :
+               fallbackLabel === 'aprs-refresh-fallback' ? 'Refresh' :
+               fallbackLabel === 'aprs-recovery-fallback' ? 'Recover' :
+               fallbackLabel === 'aprs-settings-fallback' ? 'Settings' :
+               fallbackLabel === 'aprs-view-fallback' ? 'View' :
+               fallbackLabel === 'aprs-remove-fallback' ? 'Del' : fallbackLabel) + '</span>')
+        .addClass('btn btn-sm ' + btnClass)
+        .data('callsign', csKey)
+        .attr('title', title)
+        .attr('aria-label', ariaLabel)
+        .attr('data-test', 'aprs-' + testSuffix + '-' + csKey);
+}
 
 function getAprsStatusTimeoutMs() {
     return 60000;
@@ -69,7 +120,7 @@ function parseAprsPacketTimeMs(telem) {
 }
 
 function setAprsStatusDot(state, titleText) {
-    var dot = $('#aprsStatusDot');
+    var dot = getAprsStatusDotElement();
     if (dot.length === 0) {
         return;
     }
@@ -97,7 +148,7 @@ function updateAprsStatusIndicator() {
     var anyFresh = false;
 
     calls.forEach(function(cs) {
-        var key = (cs || '').toString().toUpperCase();
+        var key = normalizeCallsign(cs);
         if (!key) {
             return;
         }
@@ -191,13 +242,241 @@ function createAprsDetailGrid() {
     return detailGrid;
 }
 
+function getAprsPredictionOverrides() {
+    if (!chase_config.aprs_prediction_overrides || typeof chase_config.aprs_prediction_overrides !== 'object') {
+        chase_config.aprs_prediction_overrides = {};
+    }
+    if (typeof chase_config.cesium_map_mode !== 'string' || chase_config.cesium_map_mode.length === 0) {
+        try {
+            chase_config.cesium_map_mode = localStorage.getItem('chasemapper_cesium_map_mode') || 'standard';
+        } catch (e) {
+            chase_config.cesium_map_mode = 'standard';
+        }
+    }
+
+    return chase_config.aprs_prediction_overrides;
+}
+
+function getAprsPredictionOverride(csKey) {
+    var key = normalizeCallsign(csKey);
+    if (!key) {
+        return {};
+    }
+
+    var overrides = getAprsPredictionOverrides();
+    var entry = overrides[key];
+    if (!entry || typeof entry !== 'object') {
+        return {};
+    }
+
+    return entry;
+}
+
+function normalizeAprsPredictionNumber(value, fallback) {
+    var parsed = parseFloat(value);
+    if (isNaN(parsed) || !isFinite(parsed)) {
+        return fallback;
+    }
+    return parsed;
+}
+
+function setPredictorModelDisplay(model, modelTime) {
+    $('#predictorModelValue').text(model || 'Disabled');
+    if (typeof modelTime === 'string' && modelTime.length > 0) {
+        $('#predictorModelTimeValue').text(modelTime);
+    } else if (typeof modelTime !== 'undefined' && modelTime !== null) {
+        $('#predictorModelTimeValue').text(String(modelTime));
+    } else if (!$('#predictorModelTimeValue').text()) {
+        $('#predictorModelTimeValue').text('—');
+    }
+}
+
+function get3DMapViewEnabled() {
+    try {
+        var stored = localStorage.getItem('enable_3d_map_view');
+        if (stored === '1' || stored === 'true') {
+            return true;
+        }
+        if (stored === '0' || stored === 'false') {
+            return false;
+        }
+    } catch (e) {
+        // Ignore storage failures and fall through to config state.
+    }
+
+    if (typeof chase_config !== 'undefined' && chase_config.enable_3d_map_view === true) {
+        return true;
+    }
+
+    return false;
+}
+
+function set3DMapViewEnabled(enabled, persistStorage) {
+    var next = !!enabled;
+    chase_config.enable_3d_map_view = next;
+
+    if (persistStorage !== false) {
+        try {
+            localStorage.setItem('enable_3d_map_view', next ? '1' : '0');
+        } catch (e) {
+            // Ignore storage failures.
+        }
+    }
+
+    return next;
+}
+
+function update3DButtonVisual() {
+    var active = get3DMapViewEnabled();
+    var button = $('#toggle3DButton');
+    if (button.length === 0) {
+        return;
+    }
+
+    button.toggleClass('is-active', active);
+    button.find('a, button').toggleClass('is-active', active).attr('aria-pressed', active ? 'true' : 'false');
+    button.attr('title', active ? 'Disable 3D view' : 'Enable 3D view');
+}
+
+function apply3DMapViewState() {
+    var active = get3DMapViewEnabled();
+    $('#map').toggleClass('map-3d-view', active);
+    $('body').toggleClass('map-3d-view', active);
+    if (typeof applyCesiumMapViewState === 'function') {
+        applyCesiumMapViewState(active);
+    }
+
+    if (active && typeof window !== 'undefined' && typeof window.applyCesiumMapMode === 'function') {
+        var selectedMode = null;
+        try {
+            selectedMode = localStorage.getItem('chasemapper_cesium_map_mode');
+        } catch (e) {
+            selectedMode = null;
+        }
+        window.applyCesiumMapMode(selectedMode || chase_config.cesium_map_mode || 'standard', {persist: false});
+    }
+
+    update3DButtonVisual();
+
+    // Disable map-provider switching while in 3D mode (irrelevant)
+    try {
+        var $provider = $('#mapProviderSelect');
+        if ($provider && $provider.length) {
+            $provider.prop('disabled', !!active);
+            $provider.attr('aria-disabled', !!active);
+        }
+
+        var $cesiumMode = $('#cesiumMapModeSelect');
+        if ($cesiumMode && $cesiumMode.length) {
+            $cesiumMode.prop('disabled', !active);
+            $cesiumMode.attr('aria-disabled', !active);
+        }
+
+        // Also disable any custom provider controls
+        $('.map-provider-control .mp-btn, .map-provider-control .mp-item').toggleClass('disabled', !!active).attr('aria-disabled', !!active);
+    } catch (e) {
+        // ignore
+    }
+}
+
+var _destructiveConfirmCallback = null;
+
+function showDestructiveConfirmModal(title, message, confirmLabel, confirmCallback) {
+    _destructiveConfirmCallback = typeof confirmCallback === 'function' ? confirmCallback : null;
+    $('#destructiveConfirmModalTitle').text(title || 'Confirm Action');
+    $('#destructiveConfirmModalMessage').text(message || 'Are you sure?');
+    $('#destructiveConfirmModalSubmitBtn').text(confirmLabel || 'Confirm');
+
+    var $modal = $('#destructiveConfirmModal');
+    $modal.addClass('is-open').attr('aria-hidden', 'false');
+    window.requestAnimationFrame(function() {
+        $modal.find('.recovery-modal-card').addClass('modal-opened');
+    });
+}
+
+function hideDestructiveConfirmModal() {
+    var $modal = $('#destructiveConfirmModal');
+    $modal.find('.recovery-modal-card').removeClass('modal-opened');
+    $modal.removeClass('is-open').attr('aria-hidden', 'true');
+    _destructiveConfirmCallback = null;
+}
+
+function openAprsPredictionSettingsModal(callsign) {
+    var csKey = normalizeCallsign(callsign);
+    if (!csKey) {
+        return;
+    }
+
+    var override = getAprsPredictionOverride(csKey);
+    var burstValue = override.hasOwnProperty('pred_burst') ? override.pred_burst : chase_config.pred_burst;
+    var descentValue = override.hasOwnProperty('pred_desc_rate') ? override.pred_desc_rate : chase_config.pred_desc_rate;
+
+    $('#aprsPredictionModalTitle').text('Prediction Settings for ' + csKey);
+    $('#aprsPredictionCallsign').text(csKey);
+    $('#aprsPredictionBurstAlt').val(normalizeAprsPredictionNumber(burstValue, chase_config.pred_burst).toFixed(0));
+    $('#aprsPredictionDescentRate').val(normalizeAprsPredictionNumber(descentValue, chase_config.pred_desc_rate).toFixed(1));
+
+    var $modal = getAprsPredictionModal();
+    var $card = $modal.find('.aprs-prediction-modal-card');
+    $modal.attr('data-callsign', csKey).addClass('is-open').attr('aria-hidden', 'false');
+    $card.removeClass('modal-closing modal-opened').addClass('modal-opening');
+
+    window.requestAnimationFrame(function() {
+        $card.removeClass('modal-opening').addClass('modal-opened');
+    });
+}
+
+function closeAprsPredictionSettingsModal() {
+    var $modal = getAprsPredictionModal();
+    var $card = $modal.find('.aprs-prediction-modal-card');
+
+    $card.removeClass('modal-opening modal-opened').addClass('modal-closing');
+    $card.one('transitionend', function() {
+        $modal.removeClass('is-open').attr('aria-hidden', 'true');
+        $card.removeClass('modal-closing');
+    });
+
+    window.setTimeout(function() {
+        if ($modal.hasClass('is-open')) {
+            $modal.removeClass('is-open').attr('aria-hidden', 'true');
+            $card.removeClass('modal-closing');
+        }
+    }, 420);
+}
+
+function saveAprsPredictionSettingsModal() {
+    var $modal = getAprsPredictionModal();
+    var csKey = normalizeCallsign($modal.attr('data-callsign'));
+    if (!csKey) {
+        closeAprsPredictionSettingsModal();
+        return;
+    }
+
+    var burstAlt = normalizeAprsPredictionNumber($('#aprsPredictionBurstAlt').val(), chase_config.pred_burst);
+    var descentRate = normalizeAprsPredictionNumber($('#aprsPredictionDescentRate').val(), chase_config.pred_desc_rate);
+
+    if (typeof socket !== 'undefined' && socket) {
+        try {
+            socket.emit('aprs_prediction_override_update', {
+                callsign: csKey,
+                pred_burst: burstAlt,
+                pred_desc_rate: descentRate
+            });
+        } catch (e) {
+            console.warn('Unable to save APRS prediction override:', e);
+        }
+    }
+
+    closeAprsPredictionSettingsModal();
+}
+
 function createAprsListItem(cs, collecting) {
-    var csKey = (cs || '').toString().toUpperCase();
+    var csKey = normalizeCallsign(cs);
     var li = $('<li>').addClass('list-group-item aprs-item');
     li.attr('data-callsign', csKey);
     li.attr('data-test', 'aprs-item-' + csKey);
 
-    var row = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-row');
+    var row = $('<div>').addClass('d-flex flex-column aprs-row');
     var left = $('<div>').addClass('d-flex flex-column');
     var titleRow = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-title-row');
     var titleLeft = $('<div>').addClass('d-flex align-items-center aprs-title-left');
@@ -219,46 +498,49 @@ function createAprsListItem(cs, collecting) {
 
     left.append(titleRow).append(locationRow).append(detailGrid);
 
-    var right = $('<div>').addClass('d-flex flex-row align-items-center gap-1 flex-wrap aprs-actions');
-    var followBtn = $('<button type="button">')
-        .html('<i class="fa fa-location-arrow" aria-hidden="true"></i><span class="aprs-follow-fallback">Follow</span>')
-        .addClass('btn btn-primary btn-sm aprs-follow-btn')
-        .data('callsign', csKey)
-        .attr('title', 'Follow callsign')
-        .attr('aria-label', 'Follow callsign ' + csKey)
-        .attr('aria-pressed', 'false');
-    followBtn.attr('data-test', 'aprs-follow-' + csKey);
-    var refreshBtn = $('<button type="button">')
-        .html('<i class="fa fa-refresh" aria-hidden="true"></i><span class="aprs-refresh-fallback">Refresh</span>')
-        .addClass('btn btn-info btn-sm aprs-refresh-btn')
-        .data('callsign', csKey)
-        .attr('title', 'Force refresh callsign')
-        .attr('aria-label', 'Force refresh callsign ' + csKey);
-    refreshBtn.attr('data-test', 'aprs-refresh-' + csKey);
-    var recoveryBtn = $('<button type="button">')
-        .html('<i class="fa fa-flag-o" aria-hidden="true"></i><span class="aprs-recovery-fallback">Recover</span>')
-        .addClass('btn btn-warning btn-sm aprs-recovery-btn')
-        .data('callsign', csKey)
-        .attr('title', 'Mark recovered')
-        .attr('aria-label', 'Mark recovered ' + csKey);
-    recoveryBtn.attr('data-test', 'aprs-recover-' + csKey);
-    var btn = $('<button type="button">')
-        .html('<i class="fa fa-trash-o" aria-hidden="true"></i><span class="aprs-remove-fallback">Del</span>')
-        .addClass('btn btn-danger btn-sm aprs-remove-btn')
-        .data('callsign', csKey)
-        .attr('title', 'Remove callsign')
-        .attr('aria-label', 'Remove callsign ' + csKey);
-    btn.attr('data-test', 'aprs-remove-' + csKey);
-    right.append(followBtn).append(refreshBtn).append(recoveryBtn).append(btn);
+    var actionsRow = $('<div>').addClass('d-flex align-items-center gap-1 flex-wrap aprs-actions aprs-actions-row');
+    var followBtn = createAprsActionButton(
+        '<i class="fa fa-location-arrow" aria-hidden="true"></i>',
+        'aprs-follow-fallback', csKey, 'btn-primary aprs-follow-btn',
+        'follow', 'Follow callsign', 'Follow callsign ' + csKey
+    ).attr('aria-pressed', 'false');
+    var refreshBtn = createAprsActionButton(
+        '<i class="fa fa-refresh" aria-hidden="true"></i>',
+        'aprs-refresh-fallback', csKey, 'btn-info aprs-refresh-btn',
+        'refresh', 'Force refresh callsign', 'Force refresh callsign ' + csKey
+    );
+    var recoveryBtn = createAprsActionButton(
+        '<i class="fa fa-flag-o" aria-hidden="true"></i>',
+        'aprs-recovery-fallback', csKey, 'btn-warning aprs-recovery-btn',
+        'recover', 'Mark recovered', 'Mark recovered ' + csKey
+    );
+    var settingsBtn = createAprsActionButton(
+        '<i class="fa fa-cog" aria-hidden="true"></i>',
+        'aprs-settings-fallback', csKey, 'btn-secondary aprs-settings-btn',
+        'settings', 'Prediction settings', 'Prediction settings ' + csKey
+    );
+    var viewBtn = createAprsActionButton(
+        '<i class="fa fa-list-alt" aria-hidden="true"></i>',
+        'aprs-view-fallback', csKey, 'btn-success aprs-view-btn',
+        'view', 'View callsign summary', 'View callsign summary ' + csKey
+    );
+    var btn = createAprsActionButton(
+        '<i class="fa fa-trash-o" aria-hidden="true"></i>',
+        'aprs-remove-fallback', csKey, 'btn-danger aprs-remove-btn',
+        'remove', 'Remove callsign', 'Remove callsign ' + csKey
+    );
+    // Reorder buttons for ergonomic layout and better fit: follow, summary, settings, refresh, recover, remove
+    actionsRow.append(followBtn).append(viewBtn).append(settingsBtn).append(refreshBtn).append(recoveryBtn).append(btn);
 
-    row.append(left).append(right);
+    // Arrange: data on top (left), actions in a horizontal row below the data
+    row.append(left).append(actionsRow);
     li.append(row);
 
     return li;
 }
 
 function setAprsRowStaleness(csKey, state) {
-    var item = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
+    var item = getAprsListElement().find('li[data-callsign="' + csKey + '"]');
     if (item.length === 0) {
         return;
     }
@@ -268,15 +550,13 @@ function setAprsRowStaleness(csKey, state) {
         return;
     }
 
-    light.removeClass('aprs-staleness-green aprs-staleness-yellow aprs-staleness-red');
-
-    if (state === 'green') {
-        light.addClass('aprs-staleness-green').attr('title', 'Live APRS telemetry');
-    } else if (state === 'yellow') {
-        light.addClass('aprs-staleness-yellow').attr('title', 'Stale APRS telemetry');
-    } else {
-        light.addClass('aprs-staleness-red').attr('title', 'No recent APRS telemetry');
-    }
+    // Use single class update instead of multiple operations
+    var titleMap = {green: 'Live APRS telemetry', yellow: 'Stale APRS telemetry', red: 'No recent APRS telemetry'};
+    var classMap = {green: 'aprs-staleness-green', yellow: 'aprs-staleness-yellow', red: 'aprs-staleness-red'};
+    
+    light.removeClass('aprs-staleness-green aprs-staleness-yellow aprs-staleness-red')
+         .addClass(classMap[state] || classMap.red)
+         .attr('title', titleMap[state] || titleMap.red);
 }
 
 function updateAprsRowStaleness(csKey) {
@@ -297,7 +577,7 @@ function updateAprsRowStaleness(csKey) {
 function updateAllAprsRowStaleness() {
     var calls = chase_config.aprs_callsigns || [];
     calls.forEach(function(cs) {
-        var key = (cs || '').toString().toUpperCase();
+        var key = normalizeCallsign(cs);
         if (!key) {
             return;
         }
@@ -306,7 +586,7 @@ function updateAllAprsRowStaleness() {
 }
 
 function setAprsRefreshPending(csKey, isPending) {
-    var btn = $('#aprsList').find('li[data-callsign="' + csKey + '"] .aprs-refresh-btn');
+    var btn = getAprsListElement().find('li[data-callsign="' + csKey + '"] .aprs-refresh-btn');
     if (btn.length === 0) {
         return;
     }
@@ -337,11 +617,14 @@ function updateAprsFollowIndicators() {
         var csKey = (item.data('callsign') || '').toString().toUpperCase();
         var followBtn = item.find('.aprs-follow-btn');
         var isActive = followed !== 'NONE' && csKey === followed;
+        var pressed = isActive ? 'true' : 'false';
+        var title = isActive ? 'Stop following callsign' : 'Follow callsign';
+        var ariaLabel = (isActive ? 'Stop following ' : 'Follow ') + csKey;
 
+        // Batch attribute updates
         item.toggleClass('aprs-is-following', isActive);
-        followBtn.toggleClass('is-active', isActive).attr('aria-pressed', isActive ? 'true' : 'false');
-        followBtn.attr('title', isActive ? 'Stop following callsign' : 'Follow callsign');
-        followBtn.attr('aria-label', (isActive ? 'Stop following ' : 'Follow ') + csKey);
+        followBtn.toggleClass('is-active', isActive)
+                 .attr({aria_pressed: pressed, title: title, 'aria-label': ariaLabel});
     });
 }
 
@@ -367,6 +650,9 @@ function setFollowedCallsign(callsign) {
     if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(csKey)) {
         var latest = balloon_positions[csKey].latest_data;
         if (latest && latest.position && latest.position.length >= 2) {
+            if (get3DMapViewEnabled() && typeof window.focusCesiumOnCallsign === 'function' && window.focusCesiumOnCallsign(csKey, {duration: 1.2, alignToFollowViewport: true})) {
+                return;
+            }
             if (typeof window.panMapToVisibleCenter === 'function') {
                 window.panMapToVisibleCenter(latest.position);
             } else if (typeof map !== 'undefined' && map) {
@@ -377,7 +663,7 @@ function setFollowedCallsign(callsign) {
 }
 
 function toggleFollowedCallsign(callsign) {
-    var csKey = (callsign || '').toString().toUpperCase();
+    var csKey = normalizeCallsign(callsign);
     if (!csKey) {
         return;
     }
@@ -428,6 +714,53 @@ function populateMapProviderSelect() {
     }
 
     select.val(current);
+}
+
+function populateCesiumMapModeSelect() {
+    var select = $('#cesiumMapModeSelect');
+    if (select.length === 0) {
+        return;
+    }
+
+    var modes = [];
+    if (typeof window !== 'undefined' && typeof window.getCesiumMapModes === 'function') {
+        try {
+            modes = window.getCesiumMapModes();
+        } catch (e) {
+            modes = [];
+        }
+    }
+
+    if (!Array.isArray(modes) || modes.length === 0) {
+        modes = [{id: 'standard', label: 'Standard (OSM)'}];
+    }
+
+    select.empty();
+    modes.forEach(function(mode) {
+        if (!mode || !mode.id) {
+            return;
+        }
+        select.append($('<option>').attr('value', mode.id).text(mode.label || mode.id));
+    });
+
+    var selectedMode = null;
+    try {
+        selectedMode = localStorage.getItem('chasemapper_cesium_map_mode');
+    } catch (e) {
+        selectedMode = null;
+    }
+    if (!selectedMode) {
+        selectedMode = chase_config.cesium_map_mode || 'standard';
+    }
+
+    var hasSelected = modes.some(function(mode) {
+        return mode && mode.id === selectedMode;
+    });
+    if (!hasSelected) {
+        selectedMode = modes[0].id;
+    }
+
+    select.val(selectedMode);
 }
 
 function formatAprsTelemetryValue(telem) {
@@ -569,6 +902,277 @@ function formatAprsTableTime(telem) {
     }
 }
 
+function formatAprsAgeFromMs(ageMs) {
+    if (!isFinite(ageMs) || ageMs < 0) {
+        return '\u2014';
+    }
+
+    if (ageMs < 1000) {
+        return '0s';
+    }
+
+    return Math.floor(ageMs / 1000).toString() + 's';
+}
+
+function formatAprsDuration(seconds) {
+    if (!isFinite(seconds) || seconds < 0) {
+        return '\u2014';
+    }
+
+    var total = Math.floor(seconds);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+
+    if (h > 0) {
+        return h + 'h ' + m + 'm';
+    }
+    if (m > 0) {
+        return m + 'm ' + s + 's';
+    }
+    return s + 's';
+}
+
+function formatAprsLatLon(point) {
+    if (!point || point.length < 2) {
+        return '\u2014';
+    }
+
+    var lat = parseFloat(point[0]);
+    var lon = parseFloat(point[1]);
+    if (!isFinite(lat) || !isFinite(lon)) {
+        return '\u2014';
+    }
+
+    return lat.toFixed(5) + ', ' + lon.toFixed(5);
+}
+
+function getAprsPredictionMeta(csKey) {
+    var meta = aprs_prediction_meta_cache[csKey] || null;
+    if (meta) {
+        return meta;
+    }
+
+    if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(csKey)) {
+        var balloon = balloon_positions[csKey] || {};
+        var predPoints = 0;
+        try {
+            if (balloon.pred_path && typeof balloon.pred_path.getLatLngs === 'function') {
+                predPoints = balloon.pred_path.getLatLngs().length;
+            }
+        } catch (e) {
+            predPoints = 0;
+        }
+
+        return {
+            last_prediction_ms: NaN,
+            pred_path_points: predPoints,
+            pred_landing: balloon.pred_marker && balloon.pred_marker.getLatLng ? [balloon.pred_marker.getLatLng().lat, balloon.pred_marker.getLatLng().lng, 0] : [],
+            burst: balloon.burst_marker && balloon.burst_marker.getLatLng ? [balloon.burst_marker.getLatLng().lat, balloon.burst_marker.getLatLng().lng, 0] : [],
+            abort_landing: balloon.abort_marker && balloon.abort_marker.getLatLng ? [balloon.abort_marker.getLatLng().lat, balloon.abort_marker.getLatLng().lng, 0] : []
+        };
+    }
+
+    return null;
+}
+
+function cacheAprsPredictionMeta(data) {
+    if (!data || !data.callsign) {
+        return;
+    }
+
+    var csKey = normalizeCallsign(data.callsign);
+    if (!csKey) {
+        return;
+    }
+
+    var predPathPoints = Array.isArray(data.pred_path) ? data.pred_path.length : 0;
+    aprs_prediction_meta_cache[csKey] = {
+        last_prediction_ms: Date.now(),
+        pred_path_points: predPathPoints,
+        pred_landing: Array.isArray(data.pred_landing) ? data.pred_landing : [],
+        burst: Array.isArray(data.burst) ? data.burst : [],
+        abort_landing: Array.isArray(data.abort_landing) ? data.abort_landing : []
+    };
+}
+
+function estimateLandingEtaSeconds(telem, landingPoint) {
+    if (!telem || !telem.position || telem.position.length < 2 || !landingPoint || landingPoint.length < 2) {
+        return NaN;
+    }
+
+    if (telem.time_to_landing && telem.time_to_landing !== '' && telem.time_to_landing !== 'LANDED') {
+        var ttlParts = telem.time_to_landing.split(':');
+        if (ttlParts.length === 2) {
+            var mins = parseInt(ttlParts[0], 10);
+            var secs = parseInt(ttlParts[1], 10);
+            if (!isNaN(mins) && !isNaN(secs)) {
+                return (mins * 60) + secs;
+            }
+        }
+    }
+
+    var speedMs = parseFloat(telem.speed);
+    if (!isFinite(speedMs) || speedMs <= 0.5 || typeof calculate_lookangles !== 'function') {
+        return NaN;
+    }
+
+    var look = calculate_lookangles(
+        {lat: parseFloat(telem.position[0]), lon: parseFloat(telem.position[1]), alt: parseFloat(telem.position[2] || 0)},
+        {lat: parseFloat(landingPoint[0]), lon: parseFloat(landingPoint[1]), alt: parseFloat(landingPoint[2] || 0)}
+    );
+
+    if (!look || !isFinite(look.range) || look.range <= 0) {
+        return NaN;
+    }
+
+    return look.range / speedMs;
+}
+
+function buildAprsSummarySnapshot(csKey) {
+    var telem = aprs_telemetry_cache[csKey] || (typeof balloon_positions !== 'undefined' && balloon_positions[csKey] ? balloon_positions[csKey].latest_data : null);
+    var values = formatAprsTelemetryValue(telem);
+    var packetText = formatAprsTimestamp(telem);
+    var locationText = formatAprsLocation(telem);
+    var maxAltText = '\u2014';
+    var ttlText = '\u2014';
+    var freshnessText = 'No APRS data yet';
+
+    if (telem && telem.max_alt !== undefined && isFinite(parseFloat(telem.max_alt))) {
+        var maxAltM = parseFloat(telem.max_alt);
+        maxAltText = (chase_config.unitselection === 'imperial') ? ((maxAltM * 3.28084).toFixed(0) + ' ft') : (maxAltM.toFixed(0) + ' m');
+    }
+
+    if (telem && telem.time_to_landing) {
+        ttlText = telem.time_to_landing;
+    }
+
+    if (aprs_last_rx_ms.hasOwnProperty(csKey)) {
+        var ageMs = Date.now() - aprs_last_rx_ms[csKey];
+        var timeoutMs = getAprsStatusTimeoutMs();
+        freshnessText = ageMs <= timeoutMs ? ('Fresh (' + formatAprsAgeFromMs(ageMs) + ' ago)') : ('Stale (' + formatAprsAgeFromMs(ageMs) + ' ago)');
+    }
+
+    var predMeta = getAprsPredictionMeta(csKey);
+    var predAgeText = '\u2014';
+    var predTimeText = '\u2014';
+    var predPointsText = '\u2014';
+    var landingText = '\u2014';
+    var burstText = '\u2014';
+    var abortText = '\u2014';
+    var landingRangeText = '\u2014';
+    var etaText = '\u2014';
+
+    if (predMeta) {
+        if (isFinite(predMeta.last_prediction_ms)) {
+            predAgeText = formatAprsAgeFromMs(Date.now() - predMeta.last_prediction_ms);
+            predTimeText = formatAprsTimestamp({packet_time: new Date(predMeta.last_prediction_ms).toISOString()});
+        }
+        predPointsText = (predMeta.pred_path_points || 0).toString();
+        landingText = formatAprsLatLon(predMeta.pred_landing);
+        burstText = formatAprsLatLon(predMeta.burst);
+        abortText = formatAprsLatLon(predMeta.abort_landing);
+
+        if (telem && telem.position && predMeta.pred_landing && predMeta.pred_landing.length >= 2 && typeof calculate_lookangles === 'function') {
+            var lookToLanding = calculate_lookangles(
+                {lat: parseFloat(telem.position[0]), lon: parseFloat(telem.position[1]), alt: parseFloat(telem.position[2] || 0)},
+                {lat: parseFloat(predMeta.pred_landing[0]), lon: parseFloat(predMeta.pred_landing[1]), alt: parseFloat(predMeta.pred_landing[2] || 0)}
+            );
+
+            if (lookToLanding && isFinite(lookToLanding.range)) {
+                if (chase_config.unitselection === 'imperial') {
+                    landingRangeText = (lookToLanding.range * 0.000621371).toFixed(1) + ' mi';
+                } else {
+                    landingRangeText = (lookToLanding.range / 1000.0).toFixed(1) + ' km';
+                }
+            }
+
+            var etaSeconds = estimateLandingEtaSeconds(telem, predMeta.pred_landing);
+            etaText = formatAprsDuration(etaSeconds);
+        }
+    }
+
+    return {
+        callsign: csKey,
+        packet: packetText,
+        freshness: freshnessText,
+        position: locationText,
+        alt: values.alt,
+        speed: values.speed,
+        ascent: values.ascent,
+        az: values.az,
+        el: values.el,
+        range: values.range,
+        max_alt: maxAltText,
+        ttl: ttlText,
+        pred_age: predAgeText,
+        pred_time: predTimeText,
+        pred_points: predPointsText,
+        landing: landingText,
+        landing_range: landingRangeText,
+        eta: etaText,
+        burst: burstText,
+        abort: abortText
+    };
+}
+
+function renderAprsCallsignSummaryModal(csKey) {
+    var snapshot = buildAprsSummarySnapshot(csKey);
+
+    $('#aprsCallsignModalTitle').text('Callsign Summary: ' + csKey);
+    $('#aprsCallsignSummaryCallsign').text(snapshot.callsign);
+    $('#aprsCallsignSummaryPacket').text(snapshot.packet);
+    $('#aprsCallsignSummaryFreshness').text(snapshot.freshness);
+    $('#aprsCallsignSummaryPosition').text(snapshot.position);
+    $('#aprsCallsignSummaryAlt').text(snapshot.alt);
+    $('#aprsCallsignSummarySpeed').text(snapshot.speed);
+    $('#aprsCallsignSummaryAscent').text(snapshot.ascent);
+    $('#aprsCallsignSummaryAz').text(snapshot.az);
+    $('#aprsCallsignSummaryEl').text(snapshot.el);
+    $('#aprsCallsignSummaryRange').text(snapshot.range);
+    $('#aprsCallsignSummaryMaxAlt').text(snapshot.max_alt);
+    $('#aprsCallsignSummaryTTL').text(snapshot.ttl);
+    $('#aprsCallsignSummaryPredAge').text(snapshot.pred_age);
+    $('#aprsCallsignSummaryPredTime').text(snapshot.pred_time);
+    $('#aprsCallsignSummaryPredPoints').text(snapshot.pred_points);
+    $('#aprsCallsignSummaryLanding').text(snapshot.landing);
+    $('#aprsCallsignSummaryLandingRange').text(snapshot.landing_range);
+    $('#aprsCallsignSummaryETA').text(snapshot.eta);
+    $('#aprsCallsignSummaryBurst').text(snapshot.burst);
+    $('#aprsCallsignSummaryAbort').text(snapshot.abort);
+}
+
+function openAprsCallsignSummaryModal(csKey) {
+    var key = (csKey || '').toString().toUpperCase();
+    if (!key) {
+        return;
+    }
+
+    var $modal = $('#aprsCallsignModal');
+    $modal.attr('data-callsign', key).addClass('is-open').attr('aria-hidden', 'false');
+    $modal.find('.recovery-modal-card').addClass('modal-opened').removeClass('modal-closing');
+    renderAprsCallsignSummaryModal(key);
+}
+
+function closeAprsCallsignSummaryModal() {
+    var $modal = $('#aprsCallsignModal');
+    var $card = $modal.find('.recovery-modal-card');
+    if (!$modal.hasClass('is-open')) {
+        return;
+    }
+
+    $card.removeClass('modal-opened').addClass('modal-closing');
+    $modal.removeClass('is-open').attr('aria-hidden', 'true');
+    window.setTimeout(function() {
+        if ($modal.hasClass('is-open')) {
+            return;
+        }
+        $card.removeClass('modal-closing');
+    }, 420);
+}
+
+window.cacheAprsPredictionMeta = cacheAprsPredictionMeta;
+
 function getButtonGroupValue(groupSelector) {
     var active = $(groupSelector).find('.button-select-btn.is-active, .log-filter-btn.is-active').first();
     return active.length > 0 ? active.data('value') || active.data('log-level') : null;
@@ -607,7 +1211,7 @@ function setSelectedLogLevels(levels) {
 
 function renderAprsTelemetryRow(cs) {
     var csKey = (cs || '').toString().toUpperCase();
-    var item = $('#aprsList').find('li[data-callsign="' + csKey + '"]');
+    var item = getAprsListElement().find('li[data-callsign="' + csKey + '"]');
     if (item.length === 0) {
         return;
     }
@@ -617,16 +1221,17 @@ function renderAprsTelemetryRow(cs) {
         return;
     }
 
+    var values = formatAprsTelemetryValue(telem);
+    // Batch DOM updates to reduce layout thrashing
     item.find('.aprs-location').text(formatAprsLocation(telem));
     item.find('.aprs-last-time').removeClass('collecting').text(formatAprsTimestamp(telem));
-
-    var values = formatAprsTelemetryValue(telem);
     item.find('.aprs-val-alt').text(values.alt);
     item.find('.aprs-val-speed').text(values.speed);
     item.find('.aprs-val-ascent').text(values.ascent);
     item.find('.aprs-val-az').text(values.az);
     item.find('.aprs-val-el').text(values.el);
     item.find('.aprs-val-range').text(values.range);
+    
     updateAprsFollowIndicators();
     updateAprsRowStaleness(csKey);
 }
@@ -675,7 +1280,7 @@ function updateAprsTelemetryRow(telem) {
         }
     }
 
-    var hasRow = $('#aprsList').find('li[data-callsign="' + csKey + '"]').length > 0;
+    var hasRow = getAprsListElement().find('li[data-callsign="' + csKey + '"]').length > 0;
     if (!hasRow) {
         return;
     }
@@ -741,9 +1346,16 @@ function backfillAprsMarkersFromCache() {
 
 function serverSettingsUpdate(data){
     // Accept a json blob of settings data from the client, and update our local store.
+    var previousAprsCallsigns = Array.isArray(chase_config.aprs_callsigns) ? chase_config.aprs_callsigns.slice() : [];
     chase_config = data;
+    if (typeof chase_config.pred_model_time !== 'string') {
+        chase_config.pred_model_time = '—';
+    }
+    if (!chase_config.aprs_prediction_overrides || typeof chase_config.aprs_prediction_overrides !== 'object') {
+        chase_config.aprs_prediction_overrides = {};
+    }
     // Update a few fields based on this data.
-    $("#predictorModelValue").text(chase_config.pred_model);
+    setPredictorModelDisplay(chase_config.pred_model, chase_config.pred_model_time);
     $('#burstAlt').val(chase_config.pred_burst.toFixed(0));
     $('#descentRate').val(chase_config.pred_desc_rate.toFixed(1));
     $('#predUpdateRate').val(chase_config.pred_update_rate.toFixed(0));
@@ -761,10 +1373,16 @@ function serverSettingsUpdate(data){
     $('#ringColorSelect').val(chase_config.range_ring_color);
     $('#ringCustomColor').val(chase_config.range_ring_custom_color);
     $('#rangeRingsEnabled').prop('checked', chase_config.range_rings_enabled);
-    setButtonGroupValue('#unitSelection', chase_config.unitselection || 'metric', 'value');
+    setButtonGroupValue('#unitSelection', localStorage.getItem('chasemapper_units') || chase_config.unitselection || 'metric', 'value');
     $('#timezoneSelection').val(chase_config.aprs_timezone || 'local');
     populateTimezoneOptions();
     setButtonGroupValue('#themeSelect', localStorage.getItem('chasemapper_theme') || 'light', 'value');
+    if (typeof populateMapProviderSelect === 'function') {
+        populateMapProviderSelect();
+    }
+    if (typeof populateCesiumMapModeSelect === 'function') {
+        populateCesiumMapModeSelect();
+    }
     
     // Chase Car Speedometer
     $('#showCarSpeed').prop('checked', chase_config.chase_car_speed);
@@ -772,14 +1390,16 @@ function serverSettingsUpdate(data){
     // APRS settings
     try {
         // populate callsigns list (with last-beacon timestamp placeholder)
-        $('#aprsList').empty();
+        getAprsListElement().empty();
+        var currentAprsCallsigns = [];
         if (chase_config.aprs_callsigns && chase_config.aprs_callsigns.length > 0){
             chase_config.aprs_callsigns.forEach(function(cs){
                 var key = (cs || '').toString().toUpperCase();
                 if (!key) {
                     return;
                 }
-                $('#aprsList').append(createAprsListItem(key, false));
+                currentAprsCallsigns.push(key);
+                getAprsListElement().append(createAprsListItem(key, false));
                 if (!aprs_telemetry_cache[key] && typeof balloon_positions !== 'undefined' && balloon_positions[key] && balloon_positions[key].latest_data) {
                     aprs_telemetry_cache[key] = balloon_positions[key].latest_data;
                     var cachedPacketMs = parseAprsPacketTimeMs(balloon_positions[key].latest_data);
@@ -791,9 +1411,29 @@ function serverSettingsUpdate(data){
                 updateAprsRowStaleness(key);
             });
         }
+        previousAprsCallsigns.forEach(function(cs) {
+            var key = (cs || '').toString().toUpperCase();
+            if (!key || currentAprsCallsigns.indexOf(key) !== -1) {
+                return;
+            }
+            delete aprs_telemetry_cache[key];
+            delete aprs_last_rx_ms[key];
+            delete aprs_refresh_pending[key];
+            if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(key)) {
+                try {
+                    if (typeof hideBalloon === 'function') {
+                        hideBalloon(key);
+                    }
+                    delete balloon_positions[key];
+                } catch (e) {
+                    console.warn('Error removing stale APRS balloon for', key, e);
+                }
+            }
+        });
         updateAprsFollowIndicators();
             backfillAprsMarkersFromCache();
         $('#aprsPollInterval').val(chase_config.aprs_poll_interval || 30);
+        apply3DMapViewState();
         updateAprsStatusIndicator();
     } catch (e){
         // ignore if not present
@@ -856,6 +1496,10 @@ function clientSettingsUpdate(){
         chase_config.habitat_call = $('#habitatCall').val();
     }
 
+    if (!chase_config.aprs_prediction_overrides || typeof chase_config.aprs_prediction_overrides !== 'object') {
+        chase_config.aprs_prediction_overrides = {};
+    }
+
     var unitSelection = getButtonGroupValue('#unitSelection') || 'metric';
     chase_config.unitselection = unitSelection;
     syncUnitAndTimezoneFromUI();
@@ -903,13 +1547,41 @@ $(document).on('click', '#aprsAddBtn', function(){
     var cs = $('#aprsCallInput').val().trim();
     if (cs === '') return;
     cs = cs.toUpperCase();
-    if (!chase_config.aprs_callsigns) chase_config.aprs_callsigns = [];
-    if (chase_config.aprs_callsigns.indexOf(cs) === -1){
-        chase_config.aprs_callsigns.push(cs);
-        $('#aprsList').append(createAprsListItem(cs, true));
+    var list = getAprsListElement();
+    if (list.length > 0 && list.find('li[data-callsign="' + cs + '"]').length === 0) {
+        list.append(createAprsListItem(cs, true));
+        // Create a placeholder balloon marker so the newly-added APRS callsign
+        // is visible on the map immediately (even before any telemetry arrives).
+        try {
+            if (typeof balloon_positions !== 'undefined' && !balloon_positions.hasOwnProperty(cs) && typeof add_new_balloon === 'function') {
+                var ref = getAprsReferencePosition();
+                if (ref) {
+                    add_new_balloon({
+                        telem: {
+                            callsign: cs,
+                            position: [ref.lat, ref.lon, ref.alt],
+                            vel_v: 0,
+                            speed: 0,
+                            max_alt: 0
+                        },
+                        path: [],
+                        pred_path: [],
+                        pred_landing: [],
+                        burst: [],
+                        abort_path: [],
+                        abort_landing: []
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to create APRS placeholder marker for', cs, e);
+        }
+    }
+    if (typeof socket !== 'undefined' && socket) {
+        socket.emit('aprs_callsign_add', {callsign: cs});
     }
     $('#aprsCallInput').val('');
-    clientSettingsUpdate();
+    updateAprsFollowIndicators();
     updateAprsStatusIndicator();
 });
 
@@ -921,36 +1593,13 @@ $(document).on('keydown', '#aprsCallInput', function(e){
 });
 
 $(document).on('click', '.aprs-remove-btn', function(e){
-    e = e || window.event;
-    if (e.stopPropagation) e.stopPropagation();
-    if (e.preventDefault) e.preventDefault();
+    e.stopPropagation && e.stopPropagation();
+    e.preventDefault && e.preventDefault();
     var cs = ($(this).data('callsign') || '').toString().toUpperCase();
-    chase_config.aprs_callsigns = chase_config.aprs_callsigns.filter(function(x){
-        return (x || '').toString().toUpperCase() !== cs;
-    });
-    delete aprs_telemetry_cache[cs];
-    delete aprs_last_rx_ms[cs];
-    delete aprs_refresh_pending[cs];
-    if (getFollowedCallsign() === cs) {
-        balloon_currently_following = 'none';
-        if (typeof window !== 'undefined' && typeof window.balloon_currently_chased !== 'undefined') {
-            window.balloon_currently_chased = 'none';
-        }
+    handleAprsCallsignRemoved({callsign: cs});
+    if (typeof socket !== 'undefined' && socket) {
+        socket.emit('aprs_callsign_remove', {callsign: cs});
     }
-    // Remove any map markers/paths for this callsign
-    try{
-        if (typeof hideBalloon === 'function'){
-            hideBalloon(cs);
-        }
-        if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(cs)){
-            delete balloon_positions[cs];
-        }
-    }catch(e){ console.warn('Error cleaning up balloon layers for', cs, e); }
-
-    $(this).closest('li').remove();
-    clientSettingsUpdate();
-    updateAprsFollowIndicators();
-    updateAprsStatusIndicator();
 });
 
 $(document).on('click', '.aprs-follow-btn', function(e){
@@ -990,6 +1639,72 @@ $(document).on('click', '.aprs-recovery-btn', function(e){
     markPayloadRecovered(cs);
 });
 
+$(document).on('click', '.aprs-settings-btn', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    openAprsPredictionSettingsModal(cs);
+});
+
+$(document).on('click', '.aprs-view-btn', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    openAprsCallsignSummaryModal(cs);
+});
+
+$(document).on('input change', '#cesiumCameraSliderInput', function(){
+    var pitch = parseFloat($(this).val());
+    if (isNaN(pitch)) {
+        return;
+    }
+    if (typeof setCesiumCameraPitch === 'function') {
+        setCesiumCameraPitch(pitch);
+    }
+});
+
+$(document).on('click', '#cesiumCameraSliderCloseBtn', function(e){
+    e = e || window.event;
+    if (e.preventDefault) e.preventDefault();
+    if (typeof hideCesiumCameraSlider === 'function') {
+        hideCesiumCameraSlider();
+    }
+});
+
+$(document).on('click', '#aprsPredictionModalCancelBtn, [data-aprs-prediction-close="true"]', function(){
+    closeAprsPredictionSettingsModal();
+});
+
+$(document).on('click', '[data-aprs-callsign-close="true"]', function(){
+    closeAprsCallsignSummaryModal();
+});
+
+$(document).on('click', '#aprsPredictionModalSubmitBtn', function(){
+    saveAprsPredictionSettingsModal();
+});
+
+$(document).on('keydown', function(e){
+    if (e.key !== 'Escape') {
+        return;
+    }
+
+    if ($('#aprsPredictionModal').hasClass('is-open')) {
+        closeAprsPredictionSettingsModal();
+    }
+
+    if ($('#aprsCallsignModal').hasClass('is-open')) {
+        closeAprsCallsignSummaryModal();
+    }
+});
+
 function handleAprsRefreshComplete(data) {
     var cs = data && data.callsign ? data.callsign.toString().toUpperCase() : '';
     if (!cs) {
@@ -997,6 +1712,47 @@ function handleAprsRefreshComplete(data) {
     }
     delete aprs_refresh_pending[cs];
     setAprsRefreshPending(cs, false);
+}
+
+function handleAprsCallsignRemoved(data) {
+    var cs = data && data.callsign ? data.callsign.toString().toUpperCase() : '';
+    if (!cs) {
+        return;
+    }
+
+    delete aprs_telemetry_cache[cs];
+    delete aprs_last_rx_ms[cs];
+    delete aprs_refresh_pending[cs];
+    delete aprs_prediction_meta_cache[cs];
+
+    var summaryModal = $('#aprsCallsignModal');
+    var activeCs = (summaryModal.attr('data-callsign') || '').toString().toUpperCase();
+    if (summaryModal.hasClass('is-open') && activeCs === cs) {
+        closeAprsCallsignSummaryModal();
+    }
+
+    if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(cs)) {
+        try {
+            if (typeof hideBalloon === 'function') {
+                hideBalloon(cs);
+            }
+            delete balloon_positions[cs];
+        } catch (e) {
+            console.warn('Error removing balloon layers for', cs, e);
+        }
+    }
+
+    getAprsListElement().find('li[data-callsign="' + cs + '"]').remove();
+
+    if (getFollowedCallsign() === cs) {
+        balloon_currently_following = 'none';
+        if (typeof window !== 'undefined' && typeof window.balloon_currently_chased !== 'undefined') {
+            window.balloon_currently_chased = 'none';
+        }
+    }
+
+    updateAprsFollowIndicators();
+    updateAprsStatusIndicator();
 }
 
 function showAprsPanel(callsign) {
@@ -1031,16 +1787,31 @@ function registerAprsSocketHandlers() {
     }
 
     socket.on('aprs_refresh_complete', handleAprsRefreshComplete);
+    socket.on('aprs_callsign_removed', handleAprsCallsignRemoved);
     socket._chasemapperAprsHandlersRegistered = true;
 }
 
 $(document).on('click', '#unitSelection .button-select-btn', function(){
-    setButtonGroupValue('#unitSelection', $(this).data('value'), 'value');
+    var val = $(this).data('value');
+    setButtonGroupValue('#unitSelection', val, 'value');
+    try { localStorage.setItem('chasemapper_units', val); } catch(e) { /* ignore */ }
     clientSettingsUpdate();
 });
 
 $(document).on('change', '#timezoneSelection', function(){
     clientSettingsUpdate();
+});
+
+$(document).on('click', '#destructiveConfirmModalCancelBtn, [data-destructive-close="true"]', function(){
+    hideDestructiveConfirmModal();
+});
+
+$(document).on('click', '#destructiveConfirmModalSubmitBtn', function(){
+    var callback = _destructiveConfirmCallback;
+    hideDestructiveConfirmModal();
+    if (callback) {
+        callback();
+    }
 });
 
 // Theme selector and use-current-location handler
@@ -1073,6 +1844,24 @@ $(document).on('change', '#mapProviderSelect', function(){
     map_layers[layerName].addTo(map);
 });
 
+$(document).on('change', '#cesiumMapModeSelect', function(){
+    var mode = ($(this).val() || '').toString();
+    if (!mode) {
+        return;
+    }
+
+    chase_config.cesium_map_mode = mode;
+    try {
+        localStorage.setItem('chasemapper_cesium_map_mode', mode);
+    } catch (e) {
+        // ignore storage failures
+    }
+
+    if (typeof window !== 'undefined' && typeof window.applyCesiumMapMode === 'function') {
+        window.applyCesiumMapMode(mode, {persist: false});
+    }
+});
+
 $(document).on('click', '#useCurrentLocation', function(){
     if (navigator && navigator.geolocation){
         navigator.geolocation.getCurrentPosition(function(pos){
@@ -1080,6 +1869,9 @@ $(document).on('click', '#useCurrentLocation', function(){
             chase_config.default_lat = pos.coords.latitude;
             chase_config.default_lon = pos.coords.longitude;
             clientSettingsUpdate();
+            if (typeof window !== 'undefined' && typeof window.syncAllCesiumStateFromStore === 'function') {
+                window.syncAllCesiumStateFromStore();
+            }
         }, function(err){ alert('Unable to get location: '+(err && err.message)); });
     } else {
         alert('Geolocation not available');
@@ -1098,6 +1890,9 @@ $(document).on('click', '#applyLocation', function(){
     chase_config.default_lat = lat;
     chase_config.default_lon = lon;
     clientSettingsUpdate();
+    if (typeof window !== 'undefined' && typeof window.syncAllCesiumStateFromStore === 'function') {
+        window.syncAllCesiumStateFromStore();
+    }
 });
 
 
@@ -1122,6 +1917,14 @@ window.setInterval(function(){
             setAprsRefreshPending(csKey, false);
         }
     });
+
+    var summaryModal = $('#aprsCallsignModal');
+    if (summaryModal.hasClass('is-open')) {
+        var activeCs = (summaryModal.attr('data-callsign') || '').toString().toUpperCase();
+        if (activeCs) {
+            renderAprsCallsignSummaryModal(activeCs);
+        }
+    }
 }, 2000);
 
 // ===== Panel Resizing with Snap Points =====
