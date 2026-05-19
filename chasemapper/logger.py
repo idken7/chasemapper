@@ -52,7 +52,7 @@ class ChaseLogger(object):
 
         # Start queue processing thread.
         self.input_processing_running = True
-        self.log_process_thread = Thread(target=self.process_queue)
+        self.log_process_thread = Thread(target=self.process_queue, daemon=True)
         self.log_process_thread.start()
 
     def add_car_position(self, data):
@@ -157,6 +157,11 @@ class ChaseLogger(object):
             self.f.close()
         except Exception as e:
             self.log_error("Error when closing - %s" % str(e))
+
+        try:
+            self.log_process_thread.join(timeout=2)
+        except Exception:
+            pass
 
         self.log_info("Stopped Telemetry Logger Thread.")
 

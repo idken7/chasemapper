@@ -7,7 +7,6 @@
     <link href="{{ url_for('static', filename='css/leaflet.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/leaflet-sidebar.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/leaflet-control-topcenter.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/Leaflet.PolylineMeasure.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/leaflet-routing-machine.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/easy-button.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/tabulator_simple.css') }}" rel="stylesheet">
@@ -22,20 +21,77 @@
     <script src="{{ url_for('static', filename='js/jquery-ui.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/leaflet.js') }}"></script>
+    <!-- Compatibility shim for older Leaflet plugins that use L.Mixin.Events -->
+    <script>
+        (function(){
+            if (typeof window.L !== 'undefined') {
+                window.L.Mixin = window.L.Mixin || {};
+                // Provide Events alias expected by legacy plugins to avoid deprecation warnings
+                if (!window.L.Mixin.Events && window.L.Evented) {
+                    try { window.L.Mixin.Events = window.L.Evented.prototype; } catch(e) { window.L.Mixin.Events = window.L.Evented; }
+                }
+            }
+        })();
+    </script>
+    <script>
+        // Filter noisy deprecation warnings from legacy Leaflet plugins (non-destructive)
+        (function(){
+            if (!window.console) return;
+            var _oldWarn = console.warn.bind(console);
+            console.warn = function(){
+                try {
+                    var msg = arguments[0] || '';
+                    if (typeof msg === 'string' && msg.indexOf('Deprecated include of L.Mixin.Events') !== -1) {
+                        // swallow this specific deprecation warning
+                        return;
+                    }
+                } catch(e){ /* ignore filter errors */ }
+                _oldWarn.apply(console, arguments);
+            };
+        })();
+    </script>
     <!-- Leaflet plugins... -->
     <script src="{{ url_for('static', filename='js/leaflet.rotatedMarker.js') }}"></script>
     <script src="{{ url_for('static', filename='js/leaflet-control-topcenter.js') }}"></script>
     <script src="{{ url_for('static', filename='js/leaflet-sidebar.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/Leaflet.Control.Custom.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/Leaflet.PolylineMeasure.js') }}"></script>
     <script src="{{ url_for('static', filename='js/easy-button.js') }}"></script>
+
+    <!-- Leaflet Routing Machine (provides L.Routing) -->
+    <script src="{{ url_for('static', filename='js/leaflet-routing-machine.min.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/tabulator.min.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/d3.v3.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/micropolar-v0.2.2.js') }}"></script>
     <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/';</script>
+    <script>
+        // Provide a pre-Cesium global to control Ion token behavior. If no valid token
+        // is configured, set to undefined so Cesium doesn't include an empty token
+        // parameter and avoid 401 requests to the Ion service.
+        try {
+            var _cesium_pre_token = (typeof chase_config !== 'undefined' && chase_config && chase_config.cesium_ion_token) ? chase_config.cesium_ion_token : '';
+            if (!_cesium_pre_token || _cesium_pre_token.toString().trim() === '') {
+                window.__CESIUM_PRESET_ION_TOKEN = undefined;
+            } else {
+                window.__CESIUM_PRESET_ION_TOKEN = _cesium_pre_token;
+            }
+        } catch (e) { window.__CESIUM_PRESET_ION_TOKEN = undefined; }
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/Cesium.js"></script>
+    <script>
+        // After Cesium loads, apply the pre-set token (or undefined) to prevent
+        // accidental empty-token requests.
+        try {
+            if (typeof Cesium !== 'undefined' && Cesium.Ion) {
+                if (typeof window.__CESIUM_PRESET_ION_TOKEN === 'undefined') {
+                    Cesium.Ion.defaultAccessToken = undefined;
+                } else {
+                    Cesium.Ion.defaultAccessToken = window.__CESIUM_PRESET_ION_TOKEN;
+                }
+            }
+        } catch (e) { console.warn('Cesium Ion post-load shim failed', e); }
+    </script>
 
     <!-- Custom scripts -->
     <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
@@ -43,9 +99,11 @@
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260422-aprs-fix"></script>
-    <script src="{{ url_for('static', filename='js/cesium-map.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20260519-ion-fix"></script>
     <script src="{{ url_for('static', filename='js/balloon.js') }}"></script>
     <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/ui_dialogs.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/chase_routing.js') }}"></script>
     <script src="{{ url_for('static', filename='js/car.js') }}"></script>
     <script src="{{ url_for('static', filename='js/bearings.js') }}"></script>
     <script src="{{ url_for('static', filename='js/paho-mqtt.js') }}"></script>
@@ -422,7 +480,11 @@
             if (typeof chase_config !== 'undefined' && chase_config.default_lat && chase_config.default_lon){
                 initialCenter = [chase_config.default_lat, chase_config.default_lon];
             }
-            map = L.map('map').setView(initialCenter, 10);
+            map = L.map('map', {
+                wheelPxPerZoomLevel: 100,  // Smooth continuous zoom instead of discrete levels
+                zoomSnap: 0,
+                zoomDelta: 0.5
+            }).setView(initialCenter, 10);
 
             // Attempt to center on user's current location if available
             if (navigator && navigator.geolocation){
@@ -430,19 +492,28 @@
                     try{
                         var ucoords = [pos.coords.latitude, pos.coords.longitude];
                         map.setView(ucoords, 13);
-                        // add or update a car icon for the user's location
-                        if (typeof window.user_location_marker === 'undefined'){
-                            try{
-                                if (typeof carIcon !== 'undefined'){
-                                    window.user_location_marker = L.marker(ucoords, {icon: carIcon}).addTo(map);
-                                } else {
-                                    window.user_location_marker = L.marker(ucoords).addTo(map);
+                        // add or update a blue-dot current location marker (use circleMarker for reliability)
+                        try{
+                            var circleOptions = { radius: 8, color: '#FFFFFF', weight: 2, opacity: 1, fillColor: '#2E86FF', fillOpacity: 1, interactive: false };
+                            if (typeof window.user_location_marker === 'undefined' || window.user_location_marker === null){
+                                window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
+                            } else {
+                                try {
+                                    if (typeof window.user_location_marker.setLatLng === 'function') {
+                                        window.user_location_marker.setLatLng(ucoords);
+                                        if (typeof window.user_location_marker.setStyle === 'function') window.user_location_marker.setStyle(circleOptions);
+                                    } else {
+                                        window.user_location_marker.remove && window.user_location_marker.remove();
+                                        window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
+                                    }
+                                } catch(e2) {
+                                    window.user_location_marker.remove && window.user_location_marker.remove();
+                                    window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
                                 }
-                            }catch(e){
-                                window.user_location_marker = L.marker(ucoords).addTo(map);
                             }
-                        } else {
-                            window.user_location_marker.setLatLng(ucoords);
+                        }catch(e){
+                            // fallback to simple marker if circleMarker fails
+                            try { window.user_location_marker && window.user_location_marker.remove && window.user_location_marker.remove(); window.user_location_marker = L.marker(ucoords).addTo(map); } catch(err){}
                         }
                     }catch(e){ console.warn('Failed to center on user location', e); }
                 }, function(err){
@@ -526,93 +597,9 @@
                 map_layers['Offline - ' + _layer_name] = L.tileLayer(location.protocol + '//' + document.domain + ':' + location.port + '/tiles/'+_layer_name+'/{z}/{x}/{y}.png');
             }
 
-            // Add measurement control.
-
-            if (chase_config['unitselection'] == "imperial") {
-                L.control.polylineMeasure({
-                    position: 'topright',
-                    unit: 'landmiles',
-                    showClearControl: true,
-                }).addTo(map);
-            }
-
-
-            if (chase_config['unitselection'] == "metric") { 
-                L.control.polylineMeasure({
-                    position: 'topright',
-                    unit: 'metres',
-                    showClearControl: true,
-                }).addTo(map);
-            }
-
-
-            
-            function getActiveMapProviderName(layersObj) {
-                if (!layersObj) {
-                    return 'OSM';
-                }
-
-                for (var layerName in layersObj) {
-                    if (!layersObj.hasOwnProperty(layerName)) {
-                        continue;
-                    }
-                    if (map.hasLayer(layersObj[layerName])) {
-                        return layerName;
-                    }
-                }
-
-                return layersObj['OSM'] ? 'OSM' : Object.keys(layersObj)[0] || 'OSM';
-            }
-
-            function setActiveMapProvider(layerName) {
-                if (!map_layers || !map_layers[layerName]) {
-                    return;
-                }
-
-                for (var name in map_layers) {
-                    if (!map_layers.hasOwnProperty(name)) {
-                        continue;
-                    }
-                    if (map.hasLayer(map_layers[name])) {
-                        map.removeLayer(map_layers[name]);
-                    }
-                }
-
-                map_layers[layerName].addTo(map);
-            }
-
-            function populateMapProviderSelect() {
-                var select = document.getElementById('mapProviderSelect');
-                if (!select || !map_layers) {
-                    return;
-                }
-
-                if (select.options.length === 0) {
-                    for (var name in map_layers) {
-                        if (!map_layers.hasOwnProperty(name)) {
-                            continue;
-                        }
-                        var option = document.createElement('option');
-                        option.value = name;
-                        option.textContent = name;
-                        select.appendChild(option);
-                    }
-                }
-
-                var currentLayerName = getActiveMapProviderName(map_layers);
-                select.value = currentLayerName;
-                select.addEventListener('change', function() {
-                    setActiveMapProvider(select.value);
-                });
-            }
-
-            if (typeof populateMapProviderSelect === 'function') {
-                populateMapProviderSelect();
-            }
-
             // Add map scale.
-            if (chase_config['unitselection'] == "imperial") { L.control.scale({imperial: true, metric: false}).addTo(map) ;}
-            if (chase_config['unitselection'] == "metric") { L.control.scale({imperial: false, metric: true}).addTo(map) ;}
+            if (chase_config['unitselection'] == "imperial") { L.control.scale({position: 'bottomright', imperial: true, metric: false}).addTo(map) ;}
+            if (chase_config['unitselection'] == "metric") { L.control.scale({position: 'bottomright', imperial: false, metric: true}).addTo(map) ;}
 
 
 
@@ -628,22 +615,6 @@
             // Add custom controls, which show various sets of data.
 
             // Telemetry table removed (moved out of UI)
-
-
-            // Data age display - shows how old the various datasets are.
-            L.control.custom({
-                position: 'topleft',
-                content : "<div class='dataAgeHeader'>Data Age</div><div id='payload_age' class='dataAgeOK'></div><div id='car_age' class='dataAgeOK'></div><div id='car_warning' class='dataAgeOK'></div><div id='pred_age' class='dataAgeOK'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'age_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
 
             // Chase Car Speed Display
             L.control.custom({
@@ -749,54 +720,94 @@
 
 
 
-            // Follow buttons - these just set the radio buttons on the settings pane.
-            // TODO: Figure out how to centre the icons under iOS's Safari browser.
-            // Also TODO: Find a decent balloon icon!
-            L.easyButton('fa-car', function(btn, map){
-                $('input:radio[name=autoFollow]').val(['car']);
-                balloon_currently_following = 'none';
-                if (typeof updateAprsFollowIndicators === 'function') {
-                    updateAprsFollowIndicators();
+            // Measure button (standalone, top-right, above Follow Car)
+            L.easyButton(
+                '<svg viewBox="0 0 24 24" width="26" height="26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9zm3 0a.5.5 0 0 0-.5.5v2h1v-2H6zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2zm-11 7h1v2H6v-2zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2z"/></svg>',
+                function(btn, map) {
+                    if (typeof window.toggleCesiumMeasureMode === 'function') {
+                        window.toggleCesiumMeasureMode();
+                        var panel = document.getElementById('cesiumMeasurePanel');
+                        if (panel) {
+                            panel.classList.add('is-open');
+                        }
+                    }
+                },
+                'Measure distance',
+                'measureDistanceButton',
+                {
+                    position: 'topright'
                 }
-            }, 'Follow Chase Car', 'followCarButton', {
-                position: 'topright'
-            }
             ).addTo(map);
+
+            // Follow buttons removed (disabled) — feature unused
 
             // EasyButton: Toggle 3D extrusion markers
             L.easyButton('fa-cube', function(btn, map){
                 try{
-                    var currently = (typeof get3DMapViewEnabled === 'function') ? get3DMapViewEnabled() : (localStorage.getItem('enable_3d_map_view') === '1' || localStorage.getItem('enable_3d_map_view') === 'true');
-                    var next = !currently;
-                    if (typeof set3DMapViewEnabled === 'function') {
-                        set3DMapViewEnabled(next);
-                    } else {
-                        localStorage.setItem('enable_3d_map_view', next ? '1' : '0');
-                        if (typeof chase_config !== 'undefined') {
-                            chase_config.enable_3d_map_view = next;
-                        }
-                    }
-                    if (typeof apply3DMapViewState === 'function') {
-                        apply3DMapViewState();
-                    }
-                    if (typeof syncAllCesiumStateFromStore === 'function') {
-                        syncAllCesiumStateFromStore();
+                    // Toggle between 2D and 3D mode (all within Cesium view)
+                    if (typeof toggle2D3DMode === 'function') {
+                        toggle2D3DMode();
                     }
                 }catch(e){
-                    console.warn('3D toggle failed', e);
+                    console.warn('2D/3D toggle failed', e);
                 }
-            }, 'Toggle 3D view', 'toggle3DButton', { position: 'topright' }).addTo(map);
+            }, 'Toggle 2D/3D view', 'toggle3DButton', { position: 'topright' }).addTo(map);
 
             window.setTimeout(function() {
-                if (typeof update3DButtonVisual === 'function') {
-                    update3DButtonVisual();
+                // Always enable 3D Cesium view as the primary map
+                if (typeof set3DMapViewEnabled === 'function') {
+                    set3DMapViewEnabled(true);
+                } else {
+                    localStorage.setItem('enable_3d_map_view', '1');
+                    if (typeof chase_config !== 'undefined') {
+                        chase_config.enable_3d_map_view = true;
+                    }
                 }
+                
                 if (typeof apply3DMapViewState === 'function') {
                     apply3DMapViewState();
+                }
+                
+                // Apply stored 2D/3D mode preference
+                if (typeof getStored2DMode === 'function') {
+                    var is2D = getStored2DMode();
+                    if (is2D && typeof set2DMode === 'function') {
+                        set2DMode();
+                    } else if (!is2D && typeof set3DMode === 'function') {
+                        set3DMode();
+                    }
+                }
+                
+                if (typeof update3DButtonVisual === 'function') {
+                    update3DButtonVisual();
                 }
             }, 0);
 
             map.zoomControl.setPosition('topright');
+
+            // Add handlers for zoom buttons to also work on Cesium view
+            try {
+                var zoomInBtn = document.querySelector('.leaflet-control-zoom-in');
+                var zoomOutBtn = document.querySelector('.leaflet-control-zoom-out');
+                if (zoomInBtn) {
+                    zoomInBtn.addEventListener('click', function() {
+                        // Always zoom Cesium view (it's always active)
+                        if (typeof window.zoomCesiumViewIn === 'function') {
+                            window.zoomCesiumViewIn();
+                        }
+                    });
+                }
+                if (zoomOutBtn) {
+                    zoomOutBtn.addEventListener('click', function() {
+                        // Always zoom Cesium view (it's always active)
+                        if (typeof window.zoomCesiumViewOut === 'function') {
+                            window.zoomCesiumViewOut();
+                        }
+                    });
+                }
+            } catch (e) {
+                // ignore zoom button setup errors
+            }
 
             // Experimental routing control
             // Currently disabled, as there is currently not enough control around how the map is re-panned
@@ -821,6 +832,13 @@
                 }
             }
             map.on('dragend',mapMovedEvent);
+
+            // Initialize draggable measure panel (allow dragging the Distance Measure window)
+            try {
+                $('#cesiumMeasurePanel').draggable({ handle: '.cesium-measure-header', containment: 'window' });
+            } catch (e) {
+                // jQuery UI may not be available; ignore.
+            }
 
 
             map.on('baselayerchange', function (e) {
@@ -874,6 +892,10 @@
                     return;
                 }
                 handleTelemetry(data);
+                // After telemetry is processed, check if car has moved enough to trigger route recalculation
+                if (typeof window.handleCarMovementForRouting === 'function') {
+                    window.handleCarMovementForRouting();
+                }
             });
 
             socket.on('modem_stats_event', function(data) {
@@ -1121,6 +1143,24 @@
     </div>
 </div>
 
+<div id="cesiumMeasurePanel" class="cesium-measure-panel" aria-hidden="true">
+    <div class="cesium-measure-card">
+        <div class="cesium-measure-header">
+            <div class="cesium-measure-title">Distance Measure</div>
+            <button type="button" class="cesium-measure-close" id="cesiumMeasureCloseBtn" aria-label="Close measurement">&times;</button>
+        </div>
+        <div class="cesium-measure-body">
+            <div class="cesium-measure-row"><span>Points</span><span id="cesiumMeasureCount">0</span></div>
+            <div class="cesium-measure-row"><span>Distance</span><span id="cesiumMeasureDistance">0 m</span></div>
+            <div id="cesiumMeasureStatus" class="cesium-measure-status">Click points on the map. Double-click to finish.</div>
+        </div>
+        <div class="cesium-measure-footer">
+            <button type="button" class="btn btn-sm btn-primary" id="cesiumMeasureToggleBtn">Finish</button>
+            <button type="button" class="btn btn-sm btn-secondary" id="cesiumMeasureClearBtn">Clear</button>
+        </div>
+    </div>
+</div>
+
 <div id="menuDock" class="menu-dock">
     <!-- Floating log panel -->
     <div id="logPanel" class="log-panel">
@@ -1156,72 +1196,93 @@
 
                 <!-- Full Settings (opened from Settings button) -->
                 <div id="otherSection" style="display:none;">
-                    <div class="form-group settings-inline-row">
-                        <label for="themeSelect">Theme</label>
-                        <div id="themeSelect" class="button-select-group button-select-group-compact" role="group" aria-label="Theme selection">
-                            <button type="button" class="btn btn-sm button-select-btn is-active" data-value="light" title="Light theme">Light</button>
-                            <button type="button" class="btn btn-sm button-select-btn" data-value="dark" title="Dark theme">Dark</button>
-                        </div>
-                    </div>
-                    <div class="form-group settings-inline-row">
-                        <label for="unitSelection">Display Units</label>
-                        <div id="unitSelection" class="button-select-group button-select-group-compact" role="group" aria-label="Display units selection">
-                            <button type="button" class="btn btn-sm button-select-btn is-active" data-value="metric" title="Metric units">Metric</button>
-                            <button type="button" class="btn btn-sm button-select-btn" data-value="imperial" title="Imperial units">Imperial</button>
-                        </div>
-                    </div>
-                    <div class="form-group settings-inline-row">
-                        <label for="mapProviderSelect">Map Provider</label>
-                        <select id="mapProviderSelect" class="form-control map-provider-select" aria-label="Map provider selector"></select>
-                    </div>
-                    <div class="form-group settings-inline-row">
-                        <label for="cesiumMapModeSelect">3D Map Mode</label>
-                        <select id="cesiumMapModeSelect" class="form-control map-provider-select" aria-label="3D map mode selector"></select>
-                    </div>
-                    <div class="form-group">
-                        <div class="settings-inline-row">
-                            <label for="timezoneSelection">APRS Timezone</label>
-                            <input id="timezoneSelection" class="form-control settings-inline-input" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
-                        </div>
-                        <small class="text-muted">Use <code>local</code> or any IANA timezone name.</small>
-                    </div>
-                    <div class="form-group settings-inline-row predictor-model-row">
-                        <label for="predictorModelValue">Predictor Model</label>
-                        <div class="predictor-model-value-stack">
-                            <div id="predictorModelValue" class="predictorModelValue">Disabled</div>
-                            <div id="predictorModelTimeValue" class="predictorModelTimeValue">—</div>
-                        </div>
-                    </div>
-                    <div class="form-group recovery-input-row settings-number-row">
-                        <label for="predUpdateRate">Prediction Update Interval</label>
-                        <div class="input-right">
-                            <input id="predUpdateRate" type="number" class="form-control" value="15" min="5">
-                            <span class="recovery-input-units" aria-hidden="true">s</span>
-                        </div>
-                    </div>
-                    <div class="form-group recovery-input-row settings-number-row">
-                        <label for="aprsPollInterval">APRS Poll Interval</label>
-                        <div class="input-right">
-                            <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
-                            <span class="recovery-input-units" aria-hidden="true">s</span>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Current Location</label>
-                        <div class="d-flex align-items-center" style="gap:8px;">
-                            <div id="currentLocationDisplay">Unknown</div>
-                            <button id="useCurrentLocation" type="button" class="btn btn-sm btn-current-location">Use current location</button>
-                        </div>
-                        <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;">
-                            <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
-                            <input id="currentLon" class="form-control" placeholder="Longitude" style="width:120px;" />
-                            <button id="applyLocation" type="button" class="btn btn-sm btn-primary">Apply</button>
-                        </div>
-                    </div>
-                    <h4>Other</h4>
-                    <div class="paramRow">
-                        <button type="button" class="btn btn-secondary" id="clearPayloadData" data-test="clear-payload" style="margin-right:8px;">Clear Payload Data</button>
-                        <button type="button" class="btn btn-secondary" id="clearCarData" data-test="clear-car">Clear Chase-Car Track</button>
+                    <div class="settings-grid">
+                        <section class="settings-group">
+                            <h4>Appearance</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group settings-inline-row">
+                                    <label for="themeSelect">Theme</label>
+                                    <div id="themeSelect" class="button-select-group button-select-group-compact" role="group" aria-label="Theme selection">
+                                        <button type="button" class="btn btn-sm button-select-btn is-active" data-value="light" title="Light theme">Light</button>
+                                        <button type="button" class="btn btn-sm button-select-btn" data-value="dark" title="Dark theme">Dark</button>
+                                    </div>
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="unitSelection">Display Units</label>
+                                    <div id="unitSelection" class="button-select-group button-select-group-compact" role="group" aria-label="Display units selection">
+                                        <button type="button" class="btn btn-sm button-select-btn is-active" data-value="metric" title="Metric units">Metric</button>
+                                        <button type="button" class="btn btn-sm button-select-btn" data-value="imperial" title="Imperial units">Imperial</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group">
+                            <h4>Mapping</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group settings-inline-row">
+                                    <label for="cesiumMapModeSelect">3D Map Mode</label>
+                                    <select id="cesiumMapModeSelect" class="form-control map-provider-select" aria-label="3D map mode selector"></select>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
+                            <h4>Tracking</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group">
+                                    <div class="settings-inline-row settings-inline-wrap">
+                                        <label for="timezoneSelection">APRS Timezone</label>
+                                        <input id="timezoneSelection" class="form-control settings-inline-input" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
+                                    </div>
+                                    <small class="text-muted">Use <code>local</code> or any IANA timezone name.</small>
+                                </div>
+                                <div class="form-group settings-inline-row predictor-model-row">
+                                    <label for="predictorModelValue">Predictor Model</label>
+                                    <div class="predictor-model-value-stack">
+                                        <div id="predictorModelValue" class="predictorModelValue">Disabled</div>
+                                        <div id="predictorModelTimeValue" class="predictorModelTimeValue">—</div>
+                                    </div>
+                                </div>
+                                <div class="form-group recovery-input-row settings-number-row">
+                                    <label for="predUpdateRate">Prediction Update Interval</label>
+                                    <div class="input-right">
+                                        <input id="predUpdateRate" type="number" class="form-control" value="15" min="5">
+                                        <span class="recovery-input-units" aria-hidden="true">s</span>
+                                    </div>
+                                </div>
+                                <div class="form-group recovery-input-row settings-number-row">
+                                    <label for="aprsPollInterval">APRS Poll Interval</label>
+                                    <div class="input-right">
+                                        <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
+                                        <span class="recovery-input-units" aria-hidden="true">s</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
+                            <h4>Current Location</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group">
+                                    <div class="d-flex align-items-center" style="gap:8px;flex-wrap:wrap;">
+                                        <div id="currentLocationDisplay">Unknown</div>
+                                        <button id="useCurrentLocation" type="button" class="btn btn-sm btn-current-location">Use current location</button>
+                                    </div>
+                                    <div class="d-flex align-items-center" style="gap:8px;margin-top:8px;flex-wrap:wrap;">
+                                        <input id="currentLat" class="form-control" placeholder="Latitude" style="width:120px;" />
+                                        <input id="currentLon" class="form-control" placeholder="Longitude" style="width:120px;" />
+                                        <button id="applyLocation" type="button" class="btn btn-sm btn-primary">Apply</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
+                            <h4>Other</h4>
+                            <div class="settings-group-body">
+                                <div class="paramRow">
+                                    <button type="button" class="btn btn-secondary" id="clearPayloadData" data-test="clear-payload">Clear Payload Data</button>
+                                    <button type="button" class="btn btn-secondary" id="clearCarData" data-test="clear-car">Clear Chase-Car Track</button>
+                                </div>
+                            </div>
+                        </section>
                     </div>
                 </div>
 
@@ -1243,6 +1304,7 @@
             <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarLogBtn">Logs</button>
             <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarAprsBtn">APRS</button>
             <button class="btn btn-sm btn-outline-light topbar-action-btn" id="topbarSettingsBtn">Settings</button>
+            <!-- Measure button removed from menuDock (now a standalone top-right control) -->
         </div>
         <div class="d-flex align-items-center topbar-status topbar-status-right">
             <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
@@ -1440,20 +1502,19 @@ function openPanelWithAnimation($panel, animate) {
         if ($panel[0]) {
             $panel[0].offsetHeight; // Force reflow
         }
+        // Schedule opening on next animation frame
         window.requestAnimationFrame(function() {
-            window.requestAnimationFrame(function() {
-                $panel.addClass('panel-open');
-            });
+            $panel.addClass('panel-open');
         });
     } else {
         // Instant open - disable transitions, apply changes, re-enable
         $panel.addClass('no-transitions');
         $panel.removeClass('panel-open panel-closing');
+        // Apply on next frame, then remove the no-transitions flag afterwards
         window.requestAnimationFrame(function() {
             $panel.addClass('panel-open');
-            window.requestAnimationFrame(function() {
-                $panel.removeClass('no-transitions');
-            });
+            // remove no-transitions in the next tick without forcing another frame
+            setTimeout(function(){ $panel.removeClass('no-transitions'); }, 0);
         });
     }
 }
@@ -1462,9 +1523,8 @@ function swapPanelWithoutDockClose($fromPanel, $toPanel) {
     if ($fromPanel && $fromPanel.length > 0) {
         $fromPanel.addClass('no-transitions');
         $fromPanel.removeClass('panel-open panel-closing');
-        window.requestAnimationFrame(function() {
-            $fromPanel.removeClass('no-transitions');
-        });
+        // Remove transitions flag immediately (no heavy layout work)
+        $fromPanel.removeClass('no-transitions');
     }
     openPanelWithAnimation($toPanel, false);
 }
@@ -1522,7 +1582,7 @@ function showSettingsPanel(mode) {
     var isAlreadyOpen = $settingsPanel.hasClass('panel-open');
     var isSameMode = $settingsPanel.attr('data-panel-mode') === mode;
 
-    if (mode === 'aprs') {
+        if (mode === 'aprs') {
         $settingsPanel.attr('data-panel-mode', 'aprs');
         $('#aprsSection').show();
         $('#otherSection').hide();
@@ -1535,7 +1595,13 @@ function showSettingsPanel(mode) {
                 openPanelWithAnimation($settingsPanel);
             }
         }
-        window.setTimeout(function(){ $('#aprsCallInput').focus(); }, 300);
+            // After opening APRS panel, ensure the APRS list is scrolled to top so first item is visible.
+            window.setTimeout(function(){
+                try {
+                    var list = document.getElementById('aprsList');
+                    if (list) list.scrollTop = 0;
+                } catch (e) {}
+            }, 300);
     } else {
         $settingsPanel.attr('data-panel-mode', 'settings');
         $('#otherSection').show();
@@ -1596,6 +1662,22 @@ $(document).on('click', '#topbarSettingsBtn', function(){
 // Open APRS quick panel
 $(document).on('click', '#topbarAprsBtn', function(){
     toggleSettingsPanel('aprs');
+});
+
+// Topbar Measure button removed; measurement toggling is handled by the standalone top-right button.
+
+$(document).on('click', '#cesiumMeasureCloseBtn, #cesiumMeasureClearBtn', function(){
+    if (typeof window.clearCesiumMeasureLine === 'function') {
+        window.clearCesiumMeasureLine();
+    }
+    setTopbarSelection('none');
+});
+
+$(document).on('click', '#cesiumMeasureToggleBtn', function(){
+    if (typeof window.toggleCesiumMeasureMode === 'function') {
+        var active = window.toggleCesiumMeasureMode();
+        setTopbarSelection(active ? 'measure' : 'none');
+    }
 });
 
 $(document).on('click', '.log-panel .log-panel-header', function(e){
@@ -1739,32 +1821,81 @@ $(document).ready(function(){
                         <span class="recovery-label">Last APRS Packet</span>
                         <span class="recovery-value" id="aprsCallsignSummaryPacket">—</span>
                     </div>
-                    <div class="recovery-row">
-                        <span class="recovery-label">Data Freshness</span>
-                        <span class="recovery-value" id="aprsCallsignSummaryFreshness">—</span>
-                    </div>
                     <div class="aprs-callsign-summary-grid">
-                        <div class="recovery-row"><span class="recovery-label">Position</span><span class="recovery-value" id="aprsCallsignSummaryPosition">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Altitude</span><span class="recovery-value" id="aprsCallsignSummaryAlt">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Speed</span><span class="recovery-value" id="aprsCallsignSummarySpeed">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Ascent</span><span class="recovery-value" id="aprsCallsignSummaryAscent">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Azimuth</span><span class="recovery-value" id="aprsCallsignSummaryAz">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Elevation</span><span class="recovery-value" id="aprsCallsignSummaryEl">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Range</span><span class="recovery-value" id="aprsCallsignSummaryRange">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Max Altitude</span><span class="recovery-value" id="aprsCallsignSummaryMaxAlt">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Descent TTL</span><span class="recovery-value" id="aprsCallsignSummaryTTL">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Prediction Age</span><span class="recovery-value" id="aprsCallsignSummaryPredAge">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Last Prediction</span><span class="recovery-value" id="aprsCallsignSummaryPredTime">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Pred Path Points</span><span class="recovery-value" id="aprsCallsignSummaryPredPoints">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Landing Estimate</span><span class="recovery-value" id="aprsCallsignSummaryLanding">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Landing Range</span><span class="recovery-value" id="aprsCallsignSummaryLandingRange">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">ETA To Landing</span><span class="recovery-value" id="aprsCallsignSummaryETA">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Burst Estimate</span><span class="recovery-value" id="aprsCallsignSummaryBurst">—</span></div>
-                        <div class="recovery-row"><span class="recovery-label">Abort Landing</span><span class="recovery-value" id="aprsCallsignSummaryAbort">—</span></div>
+                        <section class="aprs-summary-section">
+                            <h4>Telemetry</h4>
+                            <div class="aprs-summary-pair-grid">
+                                <div class="recovery-row"><span class="recovery-label">Freshness</span><span class="recovery-value" id="aprsCallsignSummaryFreshness">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Position</span><span class="recovery-value" id="aprsCallsignSummaryPosition">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Altitude</span><span class="recovery-value" id="aprsCallsignSummaryAlt">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Speed</span><span class="recovery-value" id="aprsCallsignSummarySpeed">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Ascent</span><span class="recovery-value" id="aprsCallsignSummaryAscent">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Range</span><span class="recovery-value" id="aprsCallsignSummaryRange">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Azimuth</span><span class="recovery-value" id="aprsCallsignSummaryAz">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Elevation</span><span class="recovery-value" id="aprsCallsignSummaryEl">—</span></div>
+                            </div>
+                        </section>
+                        <section class="aprs-summary-section">
+                            <h4>Prediction</h4>
+                            <div class="aprs-summary-pair-grid">
+                                <div class="recovery-row"><span class="recovery-label">Prediction Age</span><span class="recovery-value" id="aprsCallsignSummaryPredAge">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Last Prediction</span><span class="recovery-value" id="aprsCallsignSummaryPredTime">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Pred Path Points</span><span class="recovery-value" id="aprsCallsignSummaryPredPoints">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Max Altitude</span><span class="recovery-value" id="aprsCallsignSummaryMaxAlt">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Descent TTL</span><span class="recovery-value" id="aprsCallsignSummaryTTL">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">ETA To Landing</span><span class="recovery-value" id="aprsCallsignSummaryETA">—</span></div>
+                            </div>
+                        </section>
+                        <section class="aprs-summary-section">
+                            <h4>Landing</h4>
+                            <div class="aprs-summary-pair-grid">
+                                <div class="recovery-row"><span class="recovery-label">Landing Estimate</span><span class="recovery-value" id="aprsCallsignSummaryLanding">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Landing Range</span><span class="recovery-value" id="aprsCallsignSummaryLandingRange">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Burst Estimate</span><span class="recovery-value" id="aprsCallsignSummaryBurst">—</span></div>
+                                <div class="recovery-row"><span class="recovery-label">Abort Landing</span><span class="recovery-value" id="aprsCallsignSummaryAbort">—</span></div>
+                            </div>
+                        </section>
                     </div>
                 </div>
                 <div class="recovery-modal-footer">
                     <button type="button" class="btn btn-secondary" data-aprs-callsign-close="true">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chase Routing Modal (uses same recovery-modal component) -->
+        <div id="chaseRoutingModal" class="recovery-modal chase-routing-modal" aria-hidden="true">
+            <div class="recovery-modal-backdrop" data-chase-routing-close="true"></div>
+            <div class="recovery-modal-card chase-routing-modal-card" role="dialog" aria-modal="true" aria-labelledby="chaseRoutingModalTitle">
+                <div class="recovery-modal-header">
+                    <h3 id="chaseRoutingModalTitle" class="recovery-modal-title">Chase Routing</h3>
+                </div>
+                <div class="recovery-modal-body">
+                    <div class="recovery-input-row">
+                        <label for="chaseCalls">Callsign</label>
+                        <div class="input-right">
+                            <select id="chaseCalls" class="form-control"></select>
+                        </div>
+                    </div>
+                    <div class="recovery-input-row">
+                        <label for="startMode">Start From</label>
+                        <div class="input-right">
+                            <select id="startMode" class="form-control"><option value='chasecar'>Chase Car</option><option value='gps'>My GPS</option><option value='manual'>Manual Lat,Lon</option></select>
+                        </div>
+                    </div>
+                    <div id="manualStartDiv" class="recovery-input-row" style="display:none">
+                        <label>Manual Lat,Lon</label>
+                        <div class="input-right"><input id="manualLat" class="form-control" style="width:120px; display:inline-block;"/> <input id="manualLon" class="form-control" style="width:120px; display:inline-block; margin-left:8px;"/> <button id="setManualStart" class="btn btn-secondary" style="margin-left:8px;">Set</button></div>
+                    </div>
+                    <div class="recovery-input-row">
+                        <label></label>
+                        <div class="input-right"><button id="getGPSBtn" class="btn btn-secondary">Get GPS</button> <span id="gpsStatus" style="margin-left:8px;"></span> <span id="chaseRoutingSpinner" class="inline-spinner" style="display:none; margin-left:8px; vertical-align:middle;"></span></div>
+                    </div>
+                </div>
+                <div class="recovery-modal-footer">
+                    <button type="button" class="btn btn-secondary" id="stopChaseBtn">Stop</button>
+                    <button type="button" class="btn btn-outline-secondary" id="exportRouteBtn">Export Route</button>
+                    <button type="button" class="btn btn-primary" id="startChaseBtn">Start Routing</button>
                 </div>
             </div>
         </div>

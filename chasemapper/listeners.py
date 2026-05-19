@@ -147,12 +147,13 @@ class UDPListener(object):
 
     def start(self):
         if self.listener_thread is None:
-            self.listener_thread = Thread(target=self.udp_rx_thread)
+            self.listener_thread = Thread(target=self.udp_rx_thread, daemon=True)
             self.listener_thread.start()
 
     def close(self):
         self.udp_listener_running = False
-        self.listener_thread.join()
+        if self.listener_thread is not None:
+            self.listener_thread.join(timeout=2)
 
 
 class OziListener(object):
@@ -181,7 +182,7 @@ class OziListener(object):
         """ Start the UDP Listener Thread. """
         self.udp_listener_running = True
 
-        self.t = Thread(target=self.udp_rx_thread)
+        self.t = Thread(target=self.udp_rx_thread, daemon=True)
         self.t.start()
 
     def udp_rx_thread(self):
@@ -223,7 +224,7 @@ class OziListener(object):
         """
         self.udp_listener_running = False
         try:
-            self.t.join()
+            self.t.join(timeout=2)
         except:
             pass
 

@@ -9,23 +9,44 @@
     var cesiumState = {
         viewer: null,
         active: false,
+        is2DMode: false,  // NEW: Track 2D vs 3D mode
+        measureModeActive: false,
+        measurePoints: [],
+        measureEntities: [],
+        measurePolyline: null,
+        measureHoverPoint: null,
         mapMode: 'standard',
         mapModeApplySeq: 0,
         buildingsTileset: null,
+        buildingsDataSource: null,
         camera: {
             heading: 0,
             pitch: -35,
             range: 7500,
             focus: null
         },
+        camera2D: {  // NEW: 2D mode camera state (overhead view)
+            heading: 0,
+            pitch: -90,
+            range: 7500
+        },
+        camera3D: {  // NEW: 3D mode camera state (angled view)
+            heading: 0,
+            pitch: -35,
+            range: 7500
+        },
         balloonEntities: {},
         predictionEntities: {},
         chaseCarEntity: null,
-        homeEntity: null
+        homeEntity: null,
+        resizeTimer: null,
+        resizeListenerBound: false,
     };
 
     var CESIUM_CAMERA_STORAGE_KEY = 'chasemapper_cesium_camera';
     var CESIUM_MAP_MODE_STORAGE_KEY = 'chasemapper_cesium_map_mode';
+    var CESIUM_2D_MODE_STORAGE_KEY = 'chasemapper_cesium_2d_mode';
+    var currentLocationPinImage = null;
     var DEFAULT_CAMERA_STATE = {
         heading: 0,
         pitch: -35,
@@ -112,8 +133,8 @@
         }
 
         if (modeId === 'satellite' || modeId === 'terrain' || modeId === 'buildings') {
-            return new Cesium.ArcGisMapServerImageryProvider({
-                url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+            return new Cesium.UrlTemplateImageryProvider({
+                url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
             });
         }
 
@@ -220,6 +241,360 @@
 
         updateCameraSliderDisplay();
         return cesiumState.camera.pitch;
+    }
+
+    function zoomCesiumViewIn() {
+        if (cesiumState.viewer) {
+            try {
+                var zoomAmount = Math.max(cesiumState.camera.range * 0.2, 500);
+                if (typeof cesiumState.viewer.camera.zoomIn === 'function') {
+                    cesiumState.viewer.camera.zoomIn(zoomAmount);
+                } else {
+                    cesiumState.viewer.camera.moveForward(zoomAmount);
+                }
+            } catch (e) {}
+        }
+        syncCameraStateFromViewer();
+        persistCameraState();
+    }
+
+    function zoomCesiumViewOut() {
+        if (cesiumState.viewer) {
+            try {
+                var zoomAmount = Math.max(cesiumState.camera.range * 0.2, 500);
+                if (typeof cesiumState.viewer.camera.zoomOut === 'function') {
+                    cesiumState.viewer.camera.zoomOut(zoomAmount);
+                } else {
+                    cesiumState.viewer.camera.moveBackward(zoomAmount);
+                }
+            } catch (e) {}
+        }
+        syncCameraStateFromViewer();
+        persistCameraState();
+    }
+
+    function set2DMode() {
+        cesiumState.is2DMode = true;
+        cesiumState.camera.pitch = -90;
+        if (cesiumState.viewer) {
+            try {
+                cesiumState.viewer.camera.flyTo({
+                    destination: cesiumState.viewer.camera.position,
+                    orientation: {
+                        heading: Cesium.Math.toRadians(cesiumState.camera.heading),
+                        pitch: Cesium.Math.toRadians(-90),
+                        roll: 0
+                    },
+                    duration: 0.8
+                });
+            } catch (e) {}
+        }
+        persist2DMode();
+        persistCameraState();
+    }
+
+    function set3DMode() {
+        cesiumState.is2DMode = false;
+        cesiumState.camera.pitch = -35;
+        if (cesiumState.viewer) {
+            try {
+                cesiumState.viewer.camera.flyTo({
+                    destination: cesiumState.viewer.camera.position,
+                    orientation: {
+                        heading: Cesium.Math.toRadians(cesiumState.camera.heading),
+                        pitch: Cesium.Math.toRadians(-35),
+                        roll: 0
+                    },
+                    duration: 0.8
+                });
+            } catch (e) {}
+        }
+        persist2DMode();
+        persistCameraState();
+    }
+
+    function get2DMode() {
+        return cesiumState.is2DMode;
+    }
+
+    function toggle2D3DMode() {
+        if (cesiumState.is2DMode) {
+            set3DMode();
+        } else {
+            set2DMode();
+        }
+    }
+
+    function persist2DMode() {
+        try {
+            localStorage.setItem(CESIUM_2D_MODE_STORAGE_KEY, cesiumState.is2DMode ? '1' : '0');
+        } catch (e) {
+            // ignore storage failures
+        }
+    }
+
+    function getCurrentLocationPinImage() {
+        if (currentLocationPinImage) {
+            return currentLocationPinImage;
+        }
+        try {
+            // Draw a simple filled blue circle on a canvas to mimic Google/Apple blue-dot.
+            var size = 36;
+            var canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            var ctx = canvas.getContext('2d');
+            // Clear
+            ctx.clearRect(0,0,size,size);
+            // Outer halo (subtle)
+            var center = size/2;
+            var haloR = Math.floor(size * 0.33);
+            var borderR = Math.floor(size * 0.22);
+            var innerR = Math.floor(size * 0.16);
+            ctx.beginPath(); ctx.fillStyle = 'rgba(30,134,255,0.12)'; ctx.arc(center, center, haloR, 0, Math.PI*2); ctx.fill();
+            // White border ring (draw as filled slightly larger circle)
+            ctx.beginPath(); ctx.fillStyle = '#FFFFFF'; ctx.arc(center, center, borderR + 2, 0, Math.PI*2); ctx.fill();
+            // Blue center circle
+            ctx.beginPath(); ctx.fillStyle = '#1E86FF'; ctx.arc(center, center, innerR, 0, Math.PI*2); ctx.fill();
+            currentLocationPinImage = canvas.toDataURL('image/png');
+        } catch (e) {
+            currentLocationPinImage = null;
+        }
+
+        return currentLocationPinImage;
+    }
+
+    function getStored2DMode() {
+        try {
+            var stored = localStorage.getItem(CESIUM_2D_MODE_STORAGE_KEY);
+            return stored === '1' || stored === 'true';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function getCesiumViewer() {
+        return cesiumState.viewer;
+    }
+
+    function getCesiumMeasurePanel() {
+        return document.getElementById('cesiumMeasurePanel');
+    }
+
+    function formatMeasureDistance(meters) {
+        if (!isFinite(meters) || meters < 0) {
+            return '0 m';
+        }
+        if (meters >= 1000) {
+            return (meters / 1000).toFixed(meters >= 10000 ? 1 : 2) + ' km';
+        }
+        return Math.round(meters) + ' m';
+    }
+
+    function computeMeasureDistance(points) {
+        if (!Array.isArray(points) || points.length < 2) {
+            return 0;
+        }
+
+        var total = 0;
+        for (var i = 0; i < points.length - 1; i++) {
+            var start = Cesium.Cartographic.fromCartesian(points[i]);
+            var end = Cesium.Cartographic.fromCartesian(points[i + 1]);
+            if (!start || !end) {
+                continue;
+            }
+            var geodesic = new Cesium.EllipsoidGeodesic(start, end);
+            total += geodesic.surfaceDistance || 0;
+        }
+        return total;
+    }
+
+    function updateMeasurePanel() {
+        var panel = getCesiumMeasurePanel();
+        if (!panel) {
+            return;
+        }
+
+        var distanceText = formatMeasureDistance(computeMeasureDistance(cesiumState.measurePoints));
+        var pointCountText = String(cesiumState.measurePoints.length);
+        var statusText = cesiumState.measureModeActive ? 'Click points on the map. Double-click to finish.' : 'Measurement saved.';
+
+        var distanceEl = panel.querySelector('#cesiumMeasureDistance');
+        var pointsEl = panel.querySelector('#cesiumMeasureCount');
+        var statusEl = panel.querySelector('#cesiumMeasureStatus');
+        var toggleBtn = panel.querySelector('#cesiumMeasureToggleBtn');
+
+        if (distanceEl) {
+            distanceEl.textContent = distanceText;
+        }
+        if (pointsEl) {
+            pointsEl.textContent = pointCountText;
+        }
+        if (statusEl) {
+            statusEl.textContent = statusText;
+        }
+        if (toggleBtn) {
+            toggleBtn.textContent = cesiumState.measureModeActive ? 'Finish' : 'Measure again';
+        }
+
+        panel.classList.toggle('is-open', cesiumState.measureModeActive || cesiumState.measurePoints.length > 1);
+        panel.setAttribute('aria-hidden', cesiumState.measureModeActive || cesiumState.measurePoints.length > 1 ? 'false' : 'true');
+    }
+
+    function clearCesiumMeasureEntities() {
+        var viewer = cesiumState.viewer;
+        if (viewer && Array.isArray(cesiumState.measureEntities)) {
+            for (var i = 0; i < cesiumState.measureEntities.length; i++) {
+                try {
+                    viewer.entities.remove(cesiumState.measureEntities[i]);
+                } catch (e) {
+                    // ignore
+                }
+            }
+        }
+        cesiumState.measureEntities = [];
+        cesiumState.measurePolyline = null;
+        cesiumState.measureHoverPoint = null;
+    }
+
+    function clearCesiumMeasureLine(options) {
+        var keepMode = options && options.keepMode === true;
+        clearCesiumMeasureEntities();
+        cesiumState.measurePoints = [];
+
+        if (!keepMode) {
+            cesiumState.measureModeActive = false;
+        }
+
+        updateMeasurePanel();
+        if (cesiumState.viewer && cesiumState.viewer.scene && typeof cesiumState.viewer.scene.requestRender === 'function') {
+            cesiumState.viewer.scene.requestRender();
+        }
+    }
+
+    function addCesiumMeasurePoint(cartesian) {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !cartesian) {
+            return;
+        }
+
+        cesiumState.measurePoints.push(cartesian);
+
+        var pointEntity = viewer.entities.add({
+            position: cartesian,
+            point: {
+                pixelSize: 9,
+                color: Cesium.Color.CYAN,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 1,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY
+            }
+        });
+        cesiumState.measureEntities.push(pointEntity);
+
+        if (!cesiumState.measurePolyline) {
+            cesiumState.measurePolyline = viewer.entities.add({
+                polyline: {
+                    positions: new Cesium.CallbackProperty(function() {
+                        return cesiumState.measurePoints.slice();
+                    }, false),
+                    width: 3,
+                    material: Cesium.Color.CYAN.withAlpha(0.85),
+                    clampToGround: false,
+                    arcType: Cesium.ArcType.GEODESIC
+                }
+            });
+            cesiumState.measureEntities.push(cesiumState.measurePolyline);
+        }
+
+        updateMeasurePanel();
+        if (viewer.scene && typeof viewer.scene.requestRender === 'function') {
+            viewer.scene.requestRender();
+        }
+    }
+
+    function pickCesiumMeasurePosition(windowPosition) {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !windowPosition) {
+            return null;
+        }
+
+        var picked = null;
+        try {
+            if (viewer.scene && viewer.scene.pickPositionSupported && typeof viewer.scene.pickPosition === 'function') {
+                picked = viewer.scene.pickPosition(windowPosition);
+            }
+        } catch (e) {
+            picked = null;
+        }
+
+        if (!picked && viewer.scene && viewer.scene.globe && typeof viewer.camera.getPickRay === 'function' && typeof viewer.scene.globe.pick === 'function') {
+            try {
+                var ray = viewer.camera.getPickRay(windowPosition);
+                picked = ray ? viewer.scene.globe.pick(ray, viewer.scene) : null;
+            } catch (e2) {
+                picked = null;
+            }
+        }
+
+        return picked;
+    }
+
+    function setCesiumMeasureMode(active) {
+        var viewer = ensureViewer();
+        if (!viewer) {
+            return false;
+        }
+
+        var nextActive = !!active;
+        cesiumState.measureModeActive = nextActive;
+
+        if (nextActive) {
+            clearCesiumMeasureLine({keepMode: true});
+            cesiumState.measureModeActive = true;
+            viewer.scene.screenSpaceCameraController.enableInputs = false;
+
+            viewer.screenSpaceEventHandler.setInputAction(function(movement) {
+                var cartesian = pickCesiumMeasurePosition(movement && movement.position);
+                if (cartesian) {
+                    addCesiumMeasurePoint(cartesian);
+                }
+            }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+            viewer.screenSpaceEventHandler.setInputAction(function(movement) {
+                var cartesian = pickCesiumMeasurePosition(movement && movement.endPosition);
+                if (cartesian) {
+                    cesiumState.measureHoverPoint = cartesian;
+                }
+            }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+            viewer.screenSpaceEventHandler.setInputAction(function() {
+                if (cesiumState.measurePoints.length >= 2) {
+                    cesiumState.measureModeActive = false;
+                    viewer.scene.screenSpaceCameraController.enableInputs = true;
+                    viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK);
+                    viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+                    viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+                    updateMeasurePanel();
+                }
+            }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+            updateMeasurePanel();
+            return true;
+        }
+
+        viewer.scene.screenSpaceCameraController.enableInputs = true;
+        viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK);
+        viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+        viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+        updateMeasurePanel();
+        return false;
+    }
+
+    function toggleCesiumMeasureMode() {
+        if (cesiumState.measureModeActive) {
+            return setCesiumMeasureMode(false);
+        }
+        return setCesiumMeasureMode(true);
     }
 
     function syncCameraStateFromViewer() {
@@ -386,6 +761,14 @@
     function clearBuildingsTileset() {
         var viewer = cesiumState.viewer;
         if (!viewer || !cesiumState.buildingsTileset) {
+            if (viewer && cesiumState.buildingsDataSource) {
+                try {
+                    viewer.dataSources.remove(cesiumState.buildingsDataSource, true);
+                } catch (e) {
+                    // ignore remove failures
+                }
+                cesiumState.buildingsDataSource = null;
+            }
             return;
         }
 
@@ -395,6 +778,201 @@
             // ignore remove failures
         }
         cesiumState.buildingsTileset = null;
+
+        if (viewer && cesiumState.buildingsDataSource) {
+            try {
+                viewer.dataSources.remove(cesiumState.buildingsDataSource, true);
+            } catch (e2) {
+                // ignore remove failures
+            }
+            cesiumState.buildingsDataSource = null;
+        }
+    }
+
+    function getBuildingsFallbackBounds() {
+        var lat = 0;
+        var lon = 0;
+
+        try {
+            if (typeof map !== 'undefined' && map && typeof map.getCenter === 'function') {
+                var center = map.getCenter();
+                if (center && typeof center.lat === 'number' && typeof center.lng === 'number') {
+                    lat = center.lat;
+                    lon = center.lng;
+                }
+            }
+        } catch (e) {
+            // ignore map lookup failures
+        }
+
+        try {
+            if ((!lat || !lon) && typeof chase_config !== 'undefined' && chase_config) {
+                if (isFinite(parseFloat(chase_config.default_lat))) {
+                    lat = parseFloat(chase_config.default_lat);
+                }
+                if (isFinite(parseFloat(chase_config.default_lon))) {
+                    lon = parseFloat(chase_config.default_lon);
+                }
+            }
+        } catch (e2) {
+            // ignore config lookup failures
+        }
+
+        return {
+            south: Math.max(-90, lat - 0.025),
+            west: Math.max(-180, lon - 0.03),
+            north: Math.min(90, lat + 0.025),
+            east: Math.min(180, lon + 0.03)
+        };
+    }
+
+    function loadFallbackBuildingsDataSource(viewer) {
+        if (!viewer || typeof Cesium.GeoJsonDataSource !== 'function' || typeof fetch !== 'function') {
+            return Promise.reject(new Error('Fallback buildings source is unavailable.'));
+        }
+
+        var bounds = getBuildingsFallbackBounds();
+        var overpassQuery = [
+            '[out:json][timeout:25];',
+            '(',
+            'way["building"](' + bounds.south + ',' + bounds.west + ',' + bounds.north + ',' + bounds.east + ');',
+            'relation["building"](' + bounds.south + ',' + bounds.west + ',' + bounds.north + ',' + bounds.east + ');',
+            ');',
+            'out body;',
+            '>;',
+            'out skel qt;'
+        ].join(' ');
+
+        var overpassEndpoints = [
+            'https://overpass.kumi.systems/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter'
+        ];
+
+        var requestBody = 'data=' + encodeURIComponent(overpassQuery);
+
+        var requestOverpass = function(endpointIndex) {
+            var endpoint = overpassEndpoints[endpointIndex];
+            if (!endpoint) {
+                return Promise.reject(new Error('No Overpass endpoint available.'));
+            }
+
+            return fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body: requestBody
+            }).then(function(response) {
+            if (!response.ok) {
+                throw new Error('Overpass request failed with status ' + response.status);
+            }
+            return response.json();
+            }).catch(function(err) {
+                if (endpointIndex + 1 < overpassEndpoints.length) {
+                    return requestOverpass(endpointIndex + 1);
+                }
+                throw err;
+            });
+        };
+
+        return requestOverpass(0).then(function(payload) {
+            var nodeIndex = {};
+            var features = [];
+
+            if (!payload || !Array.isArray(payload.elements)) {
+                throw new Error('Invalid Overpass response.');
+            }
+
+            payload.elements.forEach(function(element) {
+                if (element.type === 'node' && typeof element.id !== 'undefined') {
+                    nodeIndex[element.id] = {
+                        lat: element.lat,
+                        lon: element.lon
+                    };
+                }
+            });
+
+            payload.elements.forEach(function(element) {
+                if (element.type !== 'way' || !Array.isArray(element.nodes) || element.nodes.length < 4) {
+                    return;
+                }
+
+                var ring = [];
+                element.nodes.forEach(function(nodeId) {
+                    var node = nodeIndex[nodeId];
+                    if (node && typeof node.lat === 'number' && typeof node.lon === 'number') {
+                        ring.push([node.lon, node.lat]);
+                    }
+                });
+
+                if (ring.length < 4) {
+                    return;
+                }
+
+                var first = ring[0];
+                var last = ring[ring.length - 1];
+                if (first[0] !== last[0] || first[1] !== last[1]) {
+                    ring.push([first[0], first[1]]);
+                }
+
+                var height = 12;
+                if (element.tags && element.tags.height) {
+                    height = parseFloat(element.tags.height) || height;
+                } else if (element.tags && element.tags['building:levels']) {
+                    height = (parseFloat(element.tags['building:levels']) || 4) * 3;
+                }
+
+                features.push({
+                    type: 'Feature',
+                    properties: {
+                        height: height,
+                        name: element.tags && element.tags.name ? element.tags.name : ''
+                    },
+                    geometry: {
+                        type: 'Polygon',
+                        coordinates: [ring]
+                    }
+                });
+            });
+
+            if (features.length === 0) {
+                throw new Error('No building footprints were returned for the current view.');
+            }
+
+            var dataSourcePromise = Cesium.GeoJsonDataSource.load({
+                type: 'FeatureCollection',
+                features: features
+            }, {
+                clampToGround: false
+            });
+
+            return Promise.resolve(dataSourcePromise).then(function(dataSource) {
+                var entities = dataSource.entities.values;
+                for (var i = 0; i < entities.length; i++) {
+                    var entity = entities[i];
+                    if (!entity.polygon) {
+                        continue;
+                    }
+
+                    var extrudedHeight = entity.properties && entity.properties.height ? parseFloat(entity.properties.height.getValue()) : 12;
+                    if (!isFinite(extrudedHeight) || extrudedHeight <= 0) {
+                        extrudedHeight = 12;
+                    }
+
+                    entity.polygon.material = Cesium.Color.fromCssColorString('#cfc4b0').withAlpha(0.78);
+                    entity.polygon.outline = false;
+                    entity.polygon.height = 0;
+                    entity.polygon.extrudedHeight = extrudedHeight;
+                }
+
+                viewer.dataSources.add(dataSource);
+                cesiumState.buildingsDataSource = dataSource;
+                if (typeof viewer.scene.requestRender === 'function') {
+                    viewer.scene.requestRender();
+                }
+                return dataSource;
+            });
+        });
     }
 
     function getTerrainProviderPromise(modeId) {
@@ -403,14 +981,26 @@
         }
 
         try {
+            if (typeof Cesium.ArcGISTiledElevationTerrainProvider === 'function' && typeof Cesium.ArcGISTiledElevationTerrainProvider.fromUrl === 'function') {
+                return Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(
+                    'https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer'
+                );
+            }
             if (typeof Cesium.createWorldTerrainAsync === 'function') {
-                return Cesium.createWorldTerrainAsync();
+                return Cesium.createWorldTerrainAsync({ requestVertexNormals: true, requestWaterMask: true });
             }
             if (typeof Cesium.createWorldTerrain === 'function') {
-                return Promise.resolve(Cesium.createWorldTerrain());
+                return Promise.resolve(Cesium.createWorldTerrain({ requestVertexNormals: true, requestWaterMask: true }));
+            }
+            if (typeof Cesium.CesiumTerrainProvider === 'function') {
+                return Promise.resolve(new Cesium.CesiumTerrainProvider({
+                    url: 'https://assets.agi.com/stk-terrain/world',
+                    requestVertexNormals: true,
+                    requestWaterMask: true
+                }));
             }
         } catch (e) {
-            console.warn('Unable to initialize world terrain, falling back to ellipsoid terrain.', e);
+            console.warn('Unable to initialize terrain provider, falling back to ellipsoid terrain.', e);
         }
 
         return Promise.resolve(new Cesium.EllipsoidTerrainProvider());
@@ -449,7 +1039,7 @@
         }
 
         try {
-            viewer.imageryLayers.removeAll();
+            viewer.imageryLayers.removeAll(false);
             viewer.imageryLayers.addImageryProvider(imageryProvider);
         } catch (imageryApplyErr) {
             console.warn('Failed to apply imagery provider for mode ' + normalized + '.', imageryApplyErr);
@@ -462,6 +1052,10 @@
 
             try {
                 viewer.terrainProvider = terrainProvider || new Cesium.EllipsoidTerrainProvider();
+                try {
+                    viewer.scene.globe.enableLighting = modeUsesTerrain(normalized);
+                    viewer.scene.globe.depthTestAgainstTerrain = modeUsesTerrain(normalized);
+                } catch (e) {}
             } catch (terrainErr) {
                 console.warn('Failed to apply terrain provider, reverting to ellipsoid terrain.', terrainErr);
                 viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
@@ -471,20 +1065,9 @@
 
             if (modeUsesBuildings(normalized)) {
                 try {
-                    if (typeof Cesium.createOsmBuildingsAsync === 'function') {
-                        Cesium.createOsmBuildingsAsync().then(function(tileset) {
-                            if (!cesiumState.viewer || applySeq !== cesiumState.mapModeApplySeq || !tileset) {
-                                return;
-                            }
-                            cesiumState.buildingsTileset = tileset;
-                            viewer.scene.primitives.add(tileset);
-                            if (typeof viewer.scene.requestRender === 'function') {
-                                viewer.scene.requestRender();
-                            }
-                        }).catch(function(tilesErr) {
-                            console.warn('Unable to load 3D buildings tileset for mode ' + normalized + '.', tilesErr);
-                        });
-                    }
+                    loadFallbackBuildingsDataSource(viewer).catch(function(fallbackErr) {
+                        console.warn('Unable to load fallback 3D buildings data for mode ' + normalized + '.', fallbackErr);
+                    });
                 } catch (buildingsErr) {
                     console.warn('Unable to initialize 3D buildings mode.', buildingsErr);
                 }
@@ -530,6 +1113,9 @@
 
         var viewer = new Cesium.Viewer(container, {
             animation: false,
+            // Disable Cesium's default base layer so it does not request Ion world imagery.
+            baseLayer: false,
+            imageryProvider: false,
             baseLayerPicker: false,
             fullscreenButton: false,
             geocoder: false,
@@ -553,8 +1139,6 @@
         }
 
         viewer.scene.globe.depthTestAgainstTerrain = true;
-        viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
-        viewer.scene.screenSpaceCameraController.maximumTiltAngle = Math.PI / 2;
         viewer.scene.skyAtmosphere.show = true;
         viewer.scene.sun.show = false;
         viewer.scene.moon.show = false;
@@ -856,16 +1440,135 @@
 
     function syncChaseCarEntity() {
         var viewer = cesiumState.viewer;
-        if (!viewer || !cesiumState.active || typeof chase_car_position === 'undefined' || !chase_car_position || !Array.isArray(chase_car_position.latest_data) || chase_car_position.latest_data.length < 2) {
+        if (!viewer || !cesiumState.active || typeof chase_car_position === 'undefined' || !chase_car_position) {
             return;
         }
 
-        var carPosition = toCesiumPosition(chase_car_position.latest_data);
-        if (!carPosition) {
+        // Check if we have valid position data
+        var latest = chase_car_position.latest_data;
+        if (!Array.isArray(latest) || latest.length < 2) {
             return;
         }
 
-        var pathPoints = toCesiumPositionList(chase_car_position.path && typeof chase_car_position.path.getLatLngs === 'function' ? chase_car_position.path.getLatLngs() : [chase_car_position.latest_data], {maxSegmentMeters: 10000});
+        var normalized = toCesiumPoint(latest);
+        if (!normalized || !isFinite(normalized[0]) || !isFinite(normalized[1])) {
+            return;
+        }
+
+        // Sample terrain to place the chase car exactly on the ground where possible
+        try {
+            var carto = Cesium.Cartographic.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+            if (viewer && viewer.terrainProvider && typeof Cesium.sampleTerrainMostDetailed === 'function') {
+                Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto]).then(function(updated){
+                    try {
+                        var u = updated && updated[0] ? updated[0] : carto;
+                        var pos = Cesium.Cartesian3.fromRadians(u.longitude, u.latitude, u.height || 0);
+                        // update entity with sampled position
+                        cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
+                            show: true,
+                            position: pos,
+                            billboard: {
+                                image: '/static/img/car-blue.png',
+                                width: 55,
+                                height: 25,
+                                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                                verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                                disableDepthTestDistance: Number.POSITIVE_INFINITY
+                            },
+                            polyline: {
+                                positions: pathPoints,
+                                clampToGround: true,
+                                width: 2,
+                                arcType: Cesium.ArcType.GEODESIC,
+                                material: Cesium.Color.BLACK
+                            }
+                        });
+                    } catch (e) {
+                        // fallback to simple position
+                        var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+                        cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
+                            show: true,
+                            position: fallbackPos,
+                            billboard: {
+                                image: '/static/img/car-blue.png',
+                                width: 55,
+                                height: 25,
+                                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                                verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                                disableDepthTestDistance: Number.POSITIVE_INFINITY
+                            },
+                            polyline: {
+                                positions: pathPoints,
+                                clampToGround: true,
+                                width: 2,
+                                arcType: Cesium.ArcType.GEODESIC,
+                                material: Cesium.Color.BLACK
+                            }
+                        });
+                    }
+                }).catch(function(){
+                    // sample failed - fallback
+                    var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+                    cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
+                        show: true,
+                        position: fallbackPos,
+                        billboard: {
+                            image: '/static/img/car-blue.png',
+                            width: 55,
+                            height: 25,
+                            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                            verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                            disableDepthTestDistance: Number.POSITIVE_INFINITY
+                        },
+                        polyline: {
+                            positions: pathPoints,
+                            clampToGround: true,
+                            width: 2,
+                            arcType: Cesium.ArcType.GEODESIC,
+                            material: Cesium.Color.BLACK
+                        }
+                    });
+                });
+
+            } else {
+                // No terrain available - place at provided altitude
+                var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+                cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
+                    show: true,
+                    position: fallbackPos,
+                    billboard: {
+                        image: '/static/img/car-blue.png',
+                        width: 55,
+                        height: 25,
+                        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                        disableDepthTestDistance: Number.POSITIVE_INFINITY
+                    },
+                    polyline: {
+                        positions: pathPoints,
+                        clampToGround: true,
+                        width: 2,
+                        arcType: Cesium.ArcType.GEODESIC,
+                        material: Cesium.Color.BLACK
+                    }
+                });
+            }
+            return;
+        } catch (e) {
+            // fall through to previous behaviour
+        }
+        // Get path points - handle Leaflet polyline or raw array
+        var pathPoints = [];
+        if (chase_car_position.path && typeof chase_car_position.path.getLatLngs === 'function') {
+            pathPoints = toCesiumPositionList(chase_car_position.path.getLatLngs(), {maxSegmentMeters: 10000});
+        } else if (Array.isArray(chase_car_position.path) && chase_car_position.path.length > 0) {
+            pathPoints = toCesiumPositionList(chase_car_position.path, {maxSegmentMeters: 10000});
+        }
+        
         if (pathPoints.length === 0) {
             pathPoints = [carPosition];
         }
@@ -879,11 +1582,12 @@
                 height: 25,
                 horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
                 verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY
             },
             polyline: {
                 positions: pathPoints,
-                clampToGround: false,
+                clampToGround: true,
                 width: 2,
                 arcType: Cesium.ArcType.GEODESIC,
                 material: Cesium.Color.BLACK
@@ -891,26 +1595,97 @@
         });
     }
 
+    // Show a polyline route on the Cesium map. Expects an array of {lat, lng} objects.
+    function showChaseRouteOnCesium(latlngs) {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !cesiumState.active || !Array.isArray(latlngs) || latlngs.length === 0) {
+            return;
+        }
+        // Prepare cartographics for terrain sampling
+        try {
+            var cartos = latlngs.map(function(ll){ return Cesium.Cartographic.fromDegrees(ll.lng, ll.lat); });
+            if (viewer.terrainProvider && typeof Cesium.sampleTerrainMostDetailed === 'function') {
+                Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartos).then(function(updated){
+                    try {
+                        var positions = updated.map(function(c){ return Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, c.height || 0); });
+                        var id = 'CHASE_ROUTE:route';
+                        var entity = viewer.entities.getById(id);
+                        if (!entity) { entity = viewer.entities.add({ id: id }); }
+                        entity.polyline = {
+                            positions: positions,
+                            width: 4,
+                            material: Cesium.Color.YELLOW.withAlpha(0.9),
+                            clampToGround: false,
+                            arcType: Cesium.ArcType.GEODESIC
+                        };
+                        entity.show = true;
+                        cesiumState.routeEntity = entity;
+                        if (typeof viewer.scene.requestRender === 'function') viewer.scene.requestRender();
+                    } catch (e) {
+                        console.warn('Failed to create sampled route', e);
+                    }
+                }).catch(function(err){
+                    // Fall back to ground-clamped polyline if sampling failed
+                    var positions = toCesiumPositionList(latlngs, {densify: false});
+                    var id = 'CHASE_ROUTE:route';
+                    var entity = viewer.entities.getById(id) || viewer.entities.add({ id: id });
+                    entity.polyline = {
+                        positions: positions,
+                        width: 4,
+                        material: Cesium.Color.YELLOW.withAlpha(0.9),
+                        clampToGround: true,
+                        arcType: Cesium.ArcType.GEODESIC
+                    };
+                    entity.show = true;
+                    cesiumState.routeEntity = entity;
+                    if (typeof viewer.scene.requestRender === 'function') viewer.scene.requestRender();
+                });
+                return;
+            }
+        } catch (e) {
+            // ignore and fall back
+        }
+
+        // Fallback: draw ground-clamped polyline without sampled heights
+        var positions = toCesiumPositionList(latlngs, {densify: false});
+        if (!positions || positions.length === 0) return;
+        var id = 'CHASE_ROUTE:route';
+        var entity = viewer.entities.getById(id);
+        if (!entity) { entity = viewer.entities.add({ id: id }); }
+        entity.polyline = {
+            positions: positions,
+            width: 4,
+            material: Cesium.Color.YELLOW.withAlpha(0.9),
+            clampToGround: true,
+            arcType: Cesium.ArcType.GEODESIC
+        };
+        entity.show = true;
+        cesiumState.routeEntity = entity;
+        if (typeof viewer.scene.requestRender === 'function') viewer.scene.requestRender();
+    }
+
+    function clearChaseRouteOnCesium() {
+        var viewer = cesiumState.viewer;
+        if (!viewer) return;
+        try {
+            if (cesiumState.routeEntity) {
+                try { viewer.entities.remove(cesiumState.routeEntity); } catch (e) {}
+                cesiumState.routeEntity = null;
+            } else {
+                var e = viewer.entities.getById('CHASE_ROUTE:route');
+                if (e) {
+                    try { viewer.entities.remove(e); } catch (ee) {}
+                }
+            }
+            if (typeof viewer.scene.requestRender === 'function') viewer.scene.requestRender();
+        } catch (e) {
+            // ignore
+        }
+    }
+
     function syncHomeEntity() {
         var viewer = cesiumState.viewer;
         if (!viewer || !cesiumState.active || typeof chase_config === 'undefined' || !chase_config) {
-            return;
-        }
-
-        var selectedProfile = (chase_config.selected_profile || '').toString();
-        var isStationProfile = false;
-        try {
-            if (selectedProfile && chase_config.profiles && chase_config.profiles[selectedProfile]) {
-                isStationProfile = chase_config.profiles[selectedProfile].car_source_type === 'station';
-            }
-        } catch (e) {
-            isStationProfile = false;
-        }
-
-        if (!isStationProfile) {
-            if (cesiumState.homeEntity) {
-                cesiumState.homeEntity.show = false;
-            }
             return;
         }
 
@@ -933,23 +1708,18 @@
             show: true,
             position: homePosition,
             billboard: {
-                image: '/static/img/antenna-green.png',
-                width: 26,
-                height: 34,
+                image: getCurrentLocationPinImage() || '/static/img/antenna-green.png',
+                width: 32,
+                height: 48,
                 horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
                 verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY
             },
+            // No label text to keep the marker as a simple blue dot (matches Leaflet circleMarker)
             label: {
-                text: 'Receiver Location',
-                font: '600 12px "Segoe UI", sans-serif',
-                fillColor: Cesium.Color.WHITE,
-                outlineColor: Cesium.Color.BLACK,
-                outlineWidth: 2,
-                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                verticalOrigin: Cesium.VerticalOrigin.TOP,
-                pixelOffset: new Cesium.Cartesian2(0, 10),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY
+                text: '',
+                show: false
             }
         });
     }
@@ -975,10 +1745,61 @@
 
         syncChaseCarEntity();
         syncHomeEntity();
+        resizeCesiumViewer();
+    }
 
-        if (typeof viewer.resize === 'function') {
-            viewer.resize();
+    function cancelCesiumResize() {
+        if (cesiumState.resizeTimer !== null) {
+            window.clearTimeout(cesiumState.resizeTimer);
+            cesiumState.resizeTimer = null;
         }
+    }
+
+    function resizeCesiumViewer() {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !cesiumState.active) {
+            return;
+        }
+
+        cancelCesiumResize();
+
+        try {
+            if (typeof viewer.resize === 'function') {
+                viewer.resize();
+            }
+        } catch (e) {
+            return;
+        }
+
+        try {
+            if (viewer.scene && typeof viewer.scene.requestRender === 'function') {
+                viewer.scene.requestRender();
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function scheduleCesiumResize() {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !cesiumState.active) {
+            return;
+        }
+
+        cancelCesiumResize();
+        cesiumState.resizeTimer = window.setTimeout(function() {
+            cesiumState.resizeTimer = null;
+            resizeCesiumViewer();
+        }, 100);
+    }
+
+    function bindCesiumResizeListener() {
+        if (cesiumState.resizeListenerBound || typeof window === 'undefined') {
+            return;
+        }
+
+        cesiumState.resizeListenerBound = true;
+        window.addEventListener('resize', scheduleCesiumResize);
     }
 
     function flyCesiumToPosition(latlng, panOptions) {
@@ -987,6 +1808,7 @@
             return;
         }
 
+            bindCesiumResizeListener();
         var normalized = toCesiumPoint(latlng);
         if (!normalized) {
             return;
@@ -1056,7 +1878,9 @@
         }
 
         for (var i = 0; i < 3; i++) {
-            var windowPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, targetPosition);
+            var transforms = Cesium.SceneTransforms || {};
+            var windowFn = transforms.wgs84ToWindowCoordinates || transforms.worldToWindowCoordinates;
+            var windowPos = typeof windowFn === 'function' ? windowFn(viewer.scene, targetPosition) : null;
             if (!windowPos) {
                 return;
             }
@@ -1273,11 +2097,20 @@
             var viewer = ensureViewer();
             setContainerVisible(true);
             if (viewer) {
-                if (typeof viewer.resize === 'function') {
-                    viewer.resize();
-                }
+                resizeCesiumViewer();
                 syncCameraStateFromViewer();
                 syncAllCesiumStateFromStore();
+                try {
+                    if (typeof chase_config !== 'undefined' && chase_config && isFinite(parseFloat(chase_config.default_lat)) && isFinite(parseFloat(chase_config.default_lon))) {
+                        flyCesiumToPosition([
+                            parseFloat(chase_config.default_lat),
+                            parseFloat(chase_config.default_lon),
+                            isFinite(parseFloat(chase_config.default_alt)) ? parseFloat(chase_config.default_alt) : 0
+                        ], {duration: 1.2});
+                    }
+                } catch (e) {
+                    // ignore
+                }
                 refocusCesiumCamera();
                 try {
                     viewer.scene.requestRender();
@@ -1340,4 +2173,16 @@
     window.syncCesiumAfterBalloonUpdate = syncCesiumAfterBalloonUpdate;
     window.syncCesiumAfterPredictionUpdate = syncCesiumAfterPredictionUpdate;
     window.syncCesiumAfterCarUpdate = syncCesiumAfterCarUpdate;
+    window.showChaseRouteOnCesium = showChaseRouteOnCesium;
+    window.clearChaseRouteOnCesium = clearChaseRouteOnCesium;
+    window.zoomCesiumViewIn = zoomCesiumViewIn;
+    window.zoomCesiumViewOut = zoomCesiumViewOut;
+    window.set2DMode = set2DMode;
+    window.set3DMode = set3DMode;
+    window.get2DMode = get2DMode;
+    window.toggle2D3DMode = toggle2D3DMode;
+    window.toggleCesiumMeasureMode = toggleCesiumMeasureMode;
+    window.clearCesiumMeasureLine = clearCesiumMeasureLine;
+    window.getCesiumViewer = getCesiumViewer;
+    window.getCesiumMeasurePanel = getCesiumMeasurePanel;
 })();

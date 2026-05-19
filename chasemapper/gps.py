@@ -87,7 +87,7 @@ class SerialGPS(object):
             return
         else:
             self.serial_thread_running = True
-            self.serial_thread = Thread(target=self.gps_thread)
+            self.serial_thread = Thread(target=self.gps_thread, daemon=True)
             self.serial_thread.start()
 
     def close(self):
@@ -95,7 +95,7 @@ class SerialGPS(object):
         self.serial_thread_running = False
         # Wait for the thread to close.
         if self.serial_thread != None:
-            self.serial_thread.join()
+            self.serial_thread.join(timeout=2)
 
     def gps_thread(self):
         """ 

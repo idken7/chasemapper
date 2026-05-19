@@ -16,6 +16,29 @@ except ImportError:
     from configparser import RawConfigParser
 
 
+def _get_optional(config, section, option, getter, fallback):
+    try:
+        return getter(section, option)
+    except Exception:
+        return fallback
+
+
+def _get_optional_bool(config, section, option, fallback):
+    return _get_optional(config, section, option, lambda s, o: config.getboolean(s, o), fallback)
+
+
+def _get_optional_int(config, section, option, fallback):
+    return _get_optional(config, section, option, lambda s, o: config.getint(s, o), fallback)
+
+
+def _get_optional_float(config, section, option, fallback):
+    return _get_optional(config, section, option, lambda s, o: config.getfloat(s, o), fallback)
+
+
+def _get_optional_str(config, section, option, fallback):
+    return _get_optional(config, section, option, lambda s, o: config.get(s, o), fallback)
+
+
 default_config = {
     # Start location for the map (until either a chase car position, or balloon position is available.)
     # Default changed to Ann Arbor, MI (user-requested)
@@ -168,31 +191,17 @@ def parse_config_file(filename):
         for _dir in os.listdir(chase_config["tile_server_path"]):
             if os.path.isdir(os.path.join(chase_config["tile_server_path"], _dir)):
                 chase_config["offline_tile_layers"].append(_dir)
-        logging.info("Found Map Layers: %s" % str(chase_config["offline_tile_layers"]))
+        logging.info("Found Map Layers: %s", chase_config["offline_tile_layers"])
 
-    try:
+    if config.has_section("speedo") and config.has_option("speedo", "chase_car_speed"):
         chase_config["chase_car_speed"] = config.getboolean("speedo", "chase_car_speed")
-    except:
+    else:
         logging.info("Missing Chase Car Speedo Setting, using default (disabled)")
         chase_config["chase_car_speed"] = False
 
-    try:
-        chase_config["default_alt"] = config.getfloat("map", "default_alt")
-    except:
-        logging.info("Missing default_alt setting, using default (0m)")
-        chase_config["default_alt"] = 0
-
-    try:
-        chase_config["stadia_api_key"] = config.get("map", "stadia_api_key")
-    except:
-        logging.info("Missing Stadia API Key setting, using default (none)")
-        chase_config["stadia_api_key"] = "none"
-
-    try:
-        chase_config["openaip_api_key"] = config.get("map", "openaip_api_key")
-    except:
-        logging.info("Missing openAIP API Key setting, using default (none)")
-        chase_config["openaip_api_key"] = "none"
+    chase_config["default_alt"] = _get_optional_float(config, "map", "default_alt", 0)
+    chase_config["stadia_api_key"] = _get_optional_str(config, "map", "stadia_api_key", "none")
+    chase_config["openaip_api_key"] = _get_optional_str(config, "map", "openaip_api_key", "none")
 
     # APRS Settings (optional)
     try:
@@ -207,10 +216,7 @@ def parse_config_file(filename):
     except Exception:
         logging.info("Missing APRS config section or keys, using defaults")
 
-    try:
-        chase_config["aprs_timezone"] = config.get("aprs", "aprs_timezone", fallback="local")
-    except Exception:
-        chase_config["aprs_timezone"] = "local"
+    chase_config["aprs_timezone"] = _get_optional_str(config, "aprs", "aprs_timezone", "local")
 
     try:
         chase_config["turn_rate_threshold"] = config.getfloat("bearings", "turn_rate_threshold")
@@ -286,7 +292,7 @@ def parse_config_file(filename):
                 chase_config["selected_profile"] = _profile_name
 
         except Exception as e:
-            logging.error("Error reading profile section %d - %s" % (i, str(e)))
+            logging.error("Error reading profile section %d - %s", i, str(e))
 
     if len(chase_config["profiles"].keys()) == 0:
         logging.critical("Could not read any profile data!")
@@ -297,10 +303,9 @@ def parse_config_file(filename):
         return None
 
         # History
-
-    chase_config["reload_last_position"] = config.getboolean(
-        "history", "reload_last_position", fallback=False
-    )
+        chase_config["reload_last_position"] = config.getboolean(
+            "history", "reload_last_position", fallback=False
+        )
 
     return chase_config
 

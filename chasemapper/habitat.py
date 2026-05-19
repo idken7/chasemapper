@@ -145,7 +145,7 @@ class HabitatChaseUploader(object):
         self.car_position_lock = Lock()
 
         self.uploader_thread_running = True
-        self.uploader_thread = Thread(target=self.upload_thread)
+        self.uploader_thread = Thread(target=self.upload_thread, daemon=True)
         self.uploader_thread.start()
 
         logging.info("Habitat - Chase-Car Position Uploader Started")
@@ -231,7 +231,7 @@ class HabitatChaseUploader(object):
     def close(self):
         self.uploader_thread_running = False
         try:
-            self.uploader_thread.join()
+            self.uploader_thread.join(timeout=2)
         except:
             pass
         logging.info("Habitat - Chase-Car Position Uploader Closed")

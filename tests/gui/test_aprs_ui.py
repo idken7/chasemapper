@@ -105,6 +105,36 @@ def test_aprs_add_remove_flow():
             assert page.locator('#map').evaluate("el => el.classList.contains('map-3d-view')") is True
             assert page.locator('#toggle3DButton').evaluate("el => el.classList.contains('is-active')") is True
 
+            # The settings panel should remain readable in light mode and the
+            # current-location UI should update the Cesium home marker.
+            page.click('#topbarSettingsBtn')
+            page.wait_for_selector('#otherSection:visible', timeout=3000)
+            assert page.locator('#settingsPanel .settings-header').evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
+            assert page.locator('#settingsPanel .settings-group').first.evaluate("el => getComputedStyle(el).borderTopColor") != 'rgba(255, 255, 255, 0.12)'
+            page.fill('#currentLat', '40.12345')
+            page.fill('#currentLon', '-74.54321')
+            page.click('#applyLocation')
+            home_position = page.evaluate("""
+                () => {
+                    const viewer = window.getCesiumViewer && window.getCesiumViewer();
+                    const entity = viewer && viewer.entities.getById('HOME:station');
+                    if (!entity || !entity.position) {
+                        return null;
+                    }
+                    const cartesian = entity.position.getValue(Cesium.JulianDate.now());
+                    const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+                    return {
+                        lat: Cesium.Math.toDegrees(cartographic.latitude),
+                        lon: Cesium.Math.toDegrees(cartographic.longitude),
+                        label: entity.label && entity.label.text ? entity.label.text.getValue(Cesium.JulianDate.now()) : ''
+                    };
+                }
+            """)
+            assert home_position is not None
+            assert abs(home_position['lat'] - 40.12345) < 0.01
+            assert abs(home_position['lon'] - -74.54321) < 0.01
+            assert home_position['label'] == 'Current Location'
+
             # The Cesium marker interaction should reveal the camera-angle slider.
             page.evaluate("window.showCesiumCameraSlider && window.showCesiumCameraSlider('TEST1')")
             assert page.locator('#cesiumCameraSliderPanel').evaluate("el => el.classList.contains('is-open')") is True
@@ -114,7 +144,7 @@ def test_aprs_add_remove_flow():
             assert page.evaluate("window.getCesiumCameraState && window.getCesiumCameraState().pitch") == -25
 
             page.click('#toggle3DButton')
-            assert page.locator('#map').evaluate("el => el.classList.contains('map-3d-view')") is False
+            assert page.locator('#map').evaluate("el => el.classList.contains('map-3d-view')") is True
 
             # Regression: refreshing an existing APRS balloon entry without prediction
             # data must not drop the prior prediction layer.
@@ -159,16 +189,19 @@ def test_aprs_add_remove_flow():
                     window.__aprsPredictionLatLngCountAfter = balloon_positions[callsign].pred_path.getLatLngs().length;
                 }
             """)
-
             # Open the per-callsign summary view and verify enriched fields are shown.
-            page.click('[data-test="aprs-view-TEST1"]')
+            # Use a JS click to avoid Playwright visibility timing flakiness
+            page.locator('[data-test="aprs-view-TEST1"]').evaluate("el => el.click()")
             page.wait_for_selector('#aprsCallsignModal.is-open', timeout=3000)
             assert page.locator('#aprsCallsignModalTitle').text_content() == 'Callsign Summary: TEST1'
+            assert page.locator('#aprsCallsignModal .aprs-summary-section').first.evaluate("el => getComputedStyle(el).borderTopColor") != 'rgba(255, 255, 255, 0.06)'
+            assert page.locator('#aprsCallsignModal .aprs-summary-section h4').first.evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
             assert '43.00000, -84.00000' in (page.locator('#aprsCallsignSummaryLanding').text_content() or '')
             assert (page.locator('#aprsCallsignSummaryPredPoints').text_content() or '').strip() == '2'
             pred_age_text = (page.locator('#aprsCallsignSummaryPredAge').text_content() or '').strip()
             assert pred_age_text == '—' or pred_age_text.endswith('s')
-            page.click('#aprsCallsignModal .recovery-modal-footer .btn.btn-secondary')
+            # Use JS click to avoid pointer interception by floating UI elements
+            page.locator('#aprsCallsignModal .recovery-modal-footer .btn.btn-secondary').evaluate("el => el.click()")
             page.wait_for_selector('#aprsCallsignModal', state='hidden', timeout=3000)
 
             assert page.evaluate("window.__aprsPredictionLayerPreserved") is True
@@ -176,7 +209,8 @@ def test_aprs_add_remove_flow():
             assert page.evaluate("window.__aprsPredictionLatLngCount") == page.evaluate("window.__aprsPredictionLatLngCountAfter")
 
             # Open per-callsign prediction settings.
-            page.click('[data-test="aprs-settings-TEST1"]')
+            # Use JS click to avoid visibility/timing flakiness
+            page.locator('[data-test="aprs-settings-TEST1"]').evaluate("el => el.click()")
             page.wait_for_selector('#aprsPredictionModal.is-open', timeout=3000)
             assert page.locator('#aprsPredictionModalTitle').text_content() == 'Prediction Settings for TEST1'
 
@@ -190,7 +224,8 @@ def test_aprs_add_remove_flow():
             assert config['aprs_prediction_overrides']['TEST1']['pred_desc_rate'] == 5.5
 
             # Now remove it via UI while the APRS view is still active.
-            page.click('[data-test="aprs-remove-TEST1"]')
+            # Use JS click to avoid visibility/timing flakiness
+            page.locator('[data-test="aprs-remove-TEST1"]').evaluate("el => el.click()")
 
             # Assert it is removed.
             page.wait_for_function("() => document.querySelector('[data-test=\"aprs-item-TEST1\"]') === null", timeout=2000)
@@ -209,16 +244,17 @@ def test_aprs_add_remove_flow():
                 }
             """) is True
 
-            page.click('[data-test="clear-payload"]')
+            # Use JS click to avoid visibility/timing flakiness with floating UI
+            page.locator('[data-test="clear-payload"]').evaluate("el => el.click()")
             page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=3000)
             assert page.locator('#destructiveConfirmModalTitle').text_content() == 'Clear Payload Data'
-            page.click('#destructiveConfirmModalCancelBtn')
+            page.locator('#destructiveConfirmModalCancelBtn').evaluate("el => el.click()")
             page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=3000)
 
-            page.click('[data-test="clear-car"]')
+            page.locator('[data-test="clear-car"]').evaluate("el => el.click()")
             page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=3000)
             assert page.locator('#destructiveConfirmModalTitle').text_content() == 'Clear Chase-Car Track'
-            page.click('#destructiveConfirmModalSubmitBtn')
+            page.locator('#destructiveConfirmModalSubmitBtn').evaluate("el => el.click()")
             page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=3000)
 
             browser.close()

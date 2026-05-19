@@ -73,6 +73,46 @@ The server can be stopped with CTRL+C. Sometimes the server doesn't stop cleanly
 
 You should then be able to access the webpage by visiting http://your_ip_here:5001/
 
+## Routing Backend and Mobile Integration
+Chasemapper routing is not provided by Cesium APIs.
+
+- The web UI uses Leaflet Routing Machine for route presentation.
+- Chasemapper now exposes `POST /api/route` to compute routes server-side via OSRM and return a normalized response (GeoJSON feature, distance, duration).
+- Chasemapper also exposes `GET /api/latest_route` so external/mobile clients can read the most recent route as GeoJSON.
+- Chasemapper exposes `GET /api/mobile_state` to return a compact chase-state bundle for mobile clients:
+  - current car position/state
+  - selected target landing prediction
+  - latest route GeoJSON + route metadata
+  - ETA fields (driving route duration and payload time-to-landing)
+
+By default, route computation uses the public OSRM service. To point to your own OSRM backend, set environment variable `CHASEMAPPER_OSRM_BASE_URL`.
+
+### Endpoint Security (Auth + Rate Limiting)
+For internet-exposed deployments, route/state endpoints are protected with optional API-key auth and per-IP rate limiting.
+
+Guarded endpoints:
+- `POST /api/route`
+- `GET|POST /api/latest_route`
+- `GET /api/mobile_state`
+
+Environment variables:
+- `CHASEMAPPER_API_KEY`: API key value accepted from `X-API-Key` header (or `api_key` query parameter).
+- `CHASEMAPPER_REQUIRE_API_AUTH`:
+  - `auto` (default): require key for non-private client IPs when key is configured.
+  - `true`: require key for all guarded endpoint requests.
+  - `false`: disable key checks.
+- `CHASEMAPPER_API_RATE_LIMIT_ENABLED`: `true` (default) or `false`.
+- `CHASEMAPPER_API_RATE_LIMIT_PER_MIN`: requests per minute per IP for guarded endpoints.
+- `CHASEMAPPER_API_RATE_LIMIT_WINDOW_S`: rate-limit window seconds (default `60`).
+
+Rate-limit responses return HTTP `429` with `Retry-After` and JSON body containing `retry_after_s`.
+
+Mobile integration contract (schemas, cadence, retries): see [doc/mobile-api-contract.md](doc/mobile-api-contract.md).
+
+Minimal native iOS prototype screen: see [mobile-prototype/ios/README.md](mobile-prototype/ios/README.md).
+
+Automotive UI constraints and mapping prototypes (CarPlay + Android Auto): see [mobile-prototype/automotive-ui-constraints.md](mobile-prototype/automotive-ui-constraints.md).
+
 ## Live Predictions
 By default, chasemapper will attempt to request flight-path predictions from the SondeHub instance of the [Tawhiri Predictor](https://github.com/projecthorus/tawhiri), which requires an internet connection. If you have a semi-reliable internet connection during the flight, this might be all you need to get chasing!
 

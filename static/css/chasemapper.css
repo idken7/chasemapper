@@ -10,6 +10,7 @@ body {
 	--theme-rgb: 79,70,229; /* rgb of accent */
 	--glass-alpha: 0.42;
 	--panel-transition-duration: 260ms;
+	--glass-blur: 12px;
 }
 
 body,
@@ -179,6 +180,183 @@ body.dark-theme .cesium-camera-slider-card {
 	}
 }
 
+.cesium-measure-panel {
+	position: fixed;
+	right: 12px;
+	top: 82px;
+	z-index: 9999;
+	pointer-events: none;
+	opacity: 0;
+	transform: translateY(-8px);
+	transition: opacity var(--panel-transition-duration) ease, transform var(--panel-transition-duration) ease;
+}
+
+.cesium-measure-panel.is-open {
+	opacity: 1;
+	transform: translateY(0);
+	pointer-events: auto;
+}
+
+.cesium-measure-card {
+	pointer-events: auto;
+	min-width: 280px;
+	max-width: min(92vw, 360px);
+	padding: 12px 14px;
+	border-radius: 18px;
+	background: rgba(var(--theme-rgb), var(--glass-alpha));
+	backdrop-filter: blur(20px) saturate(1.15);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+	color: #fff;
+}
+
+/* Leaflet measure button styling to match zoom controls */
+.leaflet-control-measure {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	cursor: pointer;
+	color: #fff;
+	text-decoration: none;
+}
+.leaflet-control-measure svg { color: #fff; }
+.leaflet-control-measure:hover { background: rgba(255,255,255,0.06); }
+
+.cesium-measure-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+
+.cesium-measure-title {
+	font-size: 0.92rem;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: #fff;
+}
+
+.cesium-measure-close {
+	border: 0;
+	background: rgba(255, 255, 255, 0.08);
+	color: #fff;
+	width: 28px;
+	height: 28px;
+	border-radius: 999px;
+	line-height: 1;
+	font-size: 20px;
+	padding: 0;
+	flex: 0 0 auto;
+}
+
+.cesium-measure-body {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.cesium-measure-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	font-size: 0.85rem;
+	color: rgba(234, 242, 251, 0.85);
+}
+
+.cesium-measure-status {
+	font-size: 0.8rem;
+	line-height: 1.35;
+	color: rgba(234, 242, 251, 0.76);
+}
+
+.cesium-measure-footer {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 10px;
+}
+
+/* Dialog and form label consistency */
+.ui-dialog .form-group label,
+.settings-panel .form-group label,
+.settings-panel .settings-inline-row label,
+.recovery-modal-card .recovery-input-row label,
+.recovery-modal-card .recovery-row .recovery-label {
+	font-family: inherit;
+	font-size: 0.92rem;
+	font-weight: 600;
+	color: inherit;
+}
+
+/* small inline spinner used in modals */
+.inline-spinner {
+	display: inline-block;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	border: 2px solid rgba(255,255,255,0.18);
+	border-top-color: rgba(255,255,255,0.9);
+	animation: inline-spin 800ms linear infinite;
+}
+@keyframes inline-spin { to { transform: rotate(360deg); } }
+
+/* User location divIcon styling: blue center, white border, circular */
+/* Precise user location dot: wrapper contains an inner element we style explicitly */
+.leaflet-marker-icon.user-location-icon-wrapper {
+	padding: 0 !important;
+	margin: 0 !important;
+	width: 18px !important;
+	height: 18px !important;
+}
+.leaflet-marker-icon.user-location-icon-wrapper img { display:none !important; }
+.leaflet-marker-icon.user-location-icon-wrapper .user-location-icon-inner {
+	width: 18px !important;
+	height: 18px !important;
+	display: block !important;
+	box-sizing: border-box !important;
+	border-radius: 50% !important;
+	background: #2E86FF !important;
+	border: 2px solid #FFFFFF !important;
+	box-shadow: 0 0 6px rgba(46,134,255,0.35) !important;
+	transform: none !important;
+}
+
+/* Smooth transitions for panels and menu dock */
+.menu-dock,
+.settings-panel,
+.log-panel {
+	transition: height var(--panel-transition-duration) ease, max-height var(--panel-transition-duration) ease, opacity var(--panel-transition-duration) ease, transform var(--panel-transition-duration) ease;
+}
+
+/* APRS list padding to separate from input */
+#aprsList {
+	margin-top: 8px;
+	padding-top: 4px;
+}
+
+body.dark-theme .cesium-measure-card {
+	background: rgba(8, 12, 18, 0.86);
+	border-color: rgba(255, 255, 255, 0.1);
+}
+
+@media (max-width: 520px) {
+	.cesium-measure-panel {
+		right: 10px;
+		left: 10px;
+		top: 82px;
+	}
+
+	.cesium-measure-card {
+		min-width: 0;
+		max-width: none;
+		width: 100%;
+	}
+}
+
 /* Moved control container remains fixed and interactive while Cesium is active */
 .leaflet-control-container[data-moved="1"] {
 	position: fixed !important;
@@ -199,8 +377,6 @@ body,
 .topbar-shell,
 .button-select-btn,
 .topbar-action-btn,
-.map-provider-control .mp-btn,
-.map-provider-control .mp-item,
 .leaflet-top.leaflet-right .leaflet-bar a,
 .leaflet-top.leaflet-right .leaflet-control-layers-toggle {
 	transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease, transform 200ms ease, opacity 200ms ease;
@@ -272,6 +448,20 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	align-items: center;
 	row-gap: 4px;
 	overflow: hidden;
+	transition: all var(--panel-transition-duration) cubic-bezier(0.34, 1.56, 0.64, 1), background-color var(--panel-transition-duration) ease;
+	will-change: transform, opacity;
+}
+
+@media (max-width: 840px) {
+	.menu-dock {
+		left: 50%;
+		right: auto;
+		transform: translateX(-50%);
+		width: calc(100vw - 28px);
+		max-width: none;
+		padding-left: 12px;
+		padding-right: 12px;
+	}
 }
 
 /* Apply glass style to settings and log panels too for a subtle liquid-glass feel */
@@ -671,6 +861,46 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	max-width: 240px;
 	margin-left: auto;
 }
+
+.settings-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 14px;
+}
+
+.settings-group {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border-radius: 16px;
+	background: rgba(255,255,255,0.03);
+	border: 1px solid rgba(255,255,255,0.06);
+	box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.settings-group--full {
+	grid-column: auto;
+}
+
+.settings-group h4 {
+	margin: 0;
+	font-size: 0.94rem;
+	font-weight: 700;
+	color: #fff;
+}
+
+.settings-group-body {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.settings-group .paramRow {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
 .button-select-group {
 	display: inline-flex;
 	align-items: center;
@@ -695,6 +925,10 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
+}
+
+.settings-inline-row.settings-inline-wrap {
+	flex-wrap: wrap;
 }
 .settings-inline-row label {
 	margin: 0;
@@ -835,25 +1069,50 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	max-height: calc(82vh - 120px);
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 10px;
 }
 
 .aprs-callsign-summary-grid {
 	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 8px 16px;
-	margin-top: 4px;
+	grid-template-columns: 1fr;
+	gap: 12px;
 }
 
-.aprs-callsign-summary-grid .recovery-row {
+.aprs-summary-section {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border-radius: 16px;
+	background: rgba(255,255,255,0.035);
+	border: 1px solid rgba(255,255,255,0.06);
+	box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+	grid-column: 1 / -1;
+}
+
+.aprs-summary-section h4 {
+	margin: 0;
+	font-size: 0.92rem;
+	font-weight: 700;
+	color: #fff;
+}
+
+.aprs-summary-pair-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 8px;
+}
+
+.aprs-summary-pair-grid .recovery-row {
 	margin: 0;
 	padding: 0;
 }
 
 @media (max-width: 760px) {
-	.aprs-callsign-summary-grid {
+	.settings-grid,
+	.aprs-callsign-summary-grid,
+	.aprs-summary-pair-grid {
 		grid-template-columns: 1fr;
-		gap: 6px;
 	}
 }
 
@@ -861,6 +1120,16 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .aprs-refresh-spinning .fa { animation: aprsRefreshSpin 0.8s linear infinite; }
 .aprs-remove-btn.btn-danger { background:#d9534f; border-color:#d43f3a; }
 .aprs-recovery-btn.btn-warning { background:#f0ad4e; border-color:#eea236; }
+
+.leaflet-bottom.leaflet-right .leaflet-control-scale {
+	margin-right: 10px;
+	margin-left: 0 !important;
+	float: right;
+}
+
+.leaflet-bottom.leaflet-left .leaflet-control-scale {
+	display: none !important;
+}
 
 body.dark-theme .settings-panel .aprs-follow-btn {
 	background: rgba(56, 189, 248, 0.18);
@@ -1123,7 +1392,7 @@ body.dark-theme .settings-panel .form-control {
 	color: #dfe9f3;
 	border-color: rgba(255,255,255,0.1);
 }
-body.dark-theme .settings-panel .list-group-item { border-bottom: 1px solid rgba(255,255,255,0.03); }
+body.dark-theme .settings-panel .list-group-item { border-bottom-color: rgba(255,255,255,0.03); }
 body.dark-theme .settings-panel .aprs-last-time { color: #9fb3c9; }
 body.dark-theme .settings-panel .aprs-detail-label { color: #9fb3c9; }
 body.dark-theme .settings-panel .aprs-detail-value { color: #e6eef6; }
@@ -1141,16 +1410,9 @@ body.dark-theme .settings-panel .list-group-item strong { color: #e6eef6; }
 .settings-panel .aprs-last-time.collecting { font-style: italic; color: #9ab3c9; }
 body.dark-theme .settings-panel .aprs-last-time.collecting { color: #bcd6e8; }
 
-/* Space between APRS poll interval and Other header */
-.settings-panel .form-group { margin-bottom: 18px; }
-.settings-panel .settings-body h4 { margin-top: 8px; }
-
 /* Number input theme adjustments */
 .settings-panel input[type=number] { color: inherit; }
 body.dark-theme .settings-panel input[type=number] { color: #dfe9f3; background: rgba(255,255,255,0.02); }
-
-/* Slightly larger gap before the Other section */
-.settings-panel .settings-body h4 + .paramRow { margin-top: 14px; }
 
 /* Number input spinner color adjustments */
 .settings-panel input[type=number]::-webkit-inner-spin-button, .settings-panel input[type=number]::-webkit-outer-spin-button {
@@ -1362,8 +1624,8 @@ body:not(.dark-theme) .leaflet-container {
 body:not(.dark-theme) .menu-dock {
 	background: linear-gradient(180deg, rgba(250, 252, 255, 0.94), rgba(241, 246, 252, 0.92));
 	color: #0f172a;
-	border: 1px solid rgba(15, 23, 42, 0.16);
-	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+	border: 1px solid rgba(15, 23, 42, 0.12);
+	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.86);
 }
 
 body:not(.dark-theme) .topbar-shell,
@@ -1718,6 +1980,137 @@ body:not(.dark-theme) .recovery-input-units {
 	color: #475569;
 }
 
+body:not(.dark-theme) .settings-panel .settings-header {
+	background: rgba(245, 247, 250, 0.98);
+	color: #0f172a;
+	border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+body:not(.dark-theme) .settings-panel .settings-body {
+	color: #0f172a;
+}
+
+body:not(.dark-theme) .settings-panel .form-control {
+	background: rgba(15, 23, 42, 0.04);
+	color: #0f172a;
+	border-color: rgba(15, 23, 42, 0.12);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+/* Improve visibility of selects/inputs inside recovery modals in light mode */
+body:not(.dark-theme) .recovery-modal-card .form-control,
+body:not(.dark-theme) .recovery-modal-card select.form-control {
+	background: rgba(15, 23, 42, 0.04);
+	color: #0f172a;
+	border-color: rgba(15, 23, 42, 0.12);
+}
+body:not(.dark-theme) .recovery-modal-card select.form-control option {
+	color: #0f172a;
+	background: #fff;
+}
+
+body:not(.dark-theme) .settings-panel .list-group-item {
+	background: rgba(15, 23, 42, 0.03);
+	border-color: rgba(15, 23, 42, 0.12);
+	color: #0f172a;
+}
+
+body:not(.dark-theme) .settings-group,
+body:not(.dark-theme) .aprs-summary-section {
+	background: rgba(255, 255, 255, 0.92);
+	border: 1px solid rgba(15, 23, 42, 0.12);
+	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+body:not(.dark-theme) .settings-group h4,
+body:not(.dark-theme) .aprs-summary-section h4 {
+	color: #0f172a;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-detail-label,
+body:not(.dark-theme) .settings-panel .aprs-detail-value,
+body:not(.dark-theme) .settings-panel .aprs-last-time {
+	color: #334155;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-detail-value {
+	font-weight: 600;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-is-following {
+	box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+
+body:not(.dark-theme) .cesium-measure-card {
+	background: linear-gradient(180deg, rgba(250, 252, 255, 0.96), rgba(241, 246, 252, 0.94));
+	border-color: rgba(15, 23, 42, 0.12);
+	color: #0f172a;
+	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+body:not(.dark-theme) .cesium-measure-title,
+body:not(.dark-theme) .cesium-measure-row,
+body:not(.dark-theme) .cesium-measure-status {
+	color: #0f172a;
+}
+
+/* Liquid Glass UI Enhancements */
+.leaflet-control {
+	background: rgba(255, 255, 255, 0.08) !important;
+	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
+	border: 1px solid rgba(255, 255, 255, 0.12) !important;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+	border-radius: 12px !important;
+}
+
+.leaflet-control a, .leaflet-control button {
+	background: transparent !important;
+	border-radius: 8px !important;
+	color: rgba(255, 255, 255, 0.9) !important;
+	transition: background 200ms ease, color 200ms ease !important;
+}
+
+.leaflet-control a:hover, .leaflet-control button:hover {
+	background: rgba(255, 255, 255, 0.15) !important;
+	color: #fff !important;
+}
+
+.leaflet-control-zoom-in, .leaflet-control-zoom-out {
+	border-radius: 8px !important;
+}
+
+/* Glass effect for panels and overlays */
+.leaflet-popup-content-wrapper {
+	background: rgba(255, 255, 255, 0.08) !important;
+	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
+	border: 1px solid rgba(255, 255, 255, 0.12) !important;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15) !important;
+	border-radius: 12px !important;
+	color: #fff !important;
+}
+
+.leaflet-popup-tip {
+	background: rgba(255, 255, 255, 0.08) !important;
+}
+
+body.dark-theme .leaflet-popup-content-wrapper {
+	background: rgba(8, 12, 18, 0.08) !important;
+	color: #e6eef6 !important;
+}
+
+/* Dialog and modal glass styling for Chase Routing modal */
+/* Chase routing modal uses the default recovery-modal styles for exact parity with other dialogs. */
+
+/* Chase status panel glass styling */
+#chase-status {
+	background: rgba(255, 255, 255, 0.08) !important;
+	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
+	border: 1px solid rgba(255, 255, 255, 0.12) !important;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+	border-radius: 12px !important;
+	color: #fff !important;
+}
+
 @media (max-width: 520px) {
 	.recovery-input-row {
 		flex-direction: column;
@@ -1925,6 +2318,22 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	line-height: 1.3;
 }
 
+/* Remove top-left Leaflet control container entirely as requested */
+.leaflet-top.leaflet-left {
+	display: none !important;
+}
+
+/* APRS summary modal grid layout */
+.aprs-summary-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.5rem 1rem;
+	align-items: start;
+}
+.aprs-summary-grid .recovery-row { display: contents; }
+.aprs-summary-grid .recovery-label { grid-column: auto; font-weight:600; }
+.aprs-summary-grid .recovery-value { grid-column: auto; }
+
 .largeTableRow {
 	font-size:200%;
 }
@@ -1940,19 +2349,29 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	line-height:48px;
 }
 
-#followCarButton {
+
+
+.measureDistanceButton, #measureDistanceButton {
 	width:48px;
 	height:48px;
 	font-size:20px;
 	line-height:48px;
 }
 
-#followCarButton {
-	width:48px;
-	height:48px;
-	font-size:20px;
-	line-height:48px;
+.measureDistanceButton .button-state, #measureDistanceButton .button-state {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
 }
+
+.measureDistanceButton svg, #measureDistanceButton svg {
+	width: 24px;
+	height: 24px;
+}
+
+/* Follow button removed */
 
 #bearingCW10Deg, #bearingCW5Deg, #bearingCW1Deg, #bearingCCW10Deg, #bearingCCW5Deg, #bearingCCW1Deg {
 	width:48px;
@@ -2002,25 +2421,6 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	flex-direction: row-reverse !important;
 	justify-content: space-between !important;
   }
-
-/* Modern map provider control */
-.map-provider-control { font-family: 'Segoe UI', Roboto, Arial, sans-serif; }
-.map-provider-control {
-	font-family: 'Segoe UI', Roboto, Arial, sans-serif;
-	min-width: 140px;
-}
-.map-provider-control .mp-btn {
-    display:flex; align-items:center; gap:10px; padding:10px 12px; background: rgba(255,255,255,0.92); border-radius:14px; border:1px solid rgba(15, 23, 42, 0.12); cursor:pointer; box-shadow:0 10px 24px rgba(0,0,0,0.14); color:#0b2b3a; font-weight:700; backdrop-filter: blur(10px);
-}
-.map-provider-control .mp-btn:hover {
-	transform: translateY(-1px);
-}
-.map-provider-control .mp-btn .fa { margin-left:6px; opacity:0.8 }
-.map-provider-control .mp-dropdown { position:absolute; right:0; top:52px; background: rgba(255,255,255,0.98); border-radius:16px; border:1px solid rgba(15,23,42,0.12); box-shadow:0 18px 42px rgba(0,0,0,0.18); transform-origin: top right; transform: scaleY(0); opacity:0; transition: transform 180ms ease, opacity 180ms ease; pointer-events:none; z-index:10001; min-width:180px; overflow:hidden; }
-.map-provider-control .mp-dropdown.open { transform: scaleY(1); opacity:1; pointer-events:auto; }
-.map-provider-control .mp-dropdown ul { list-style:none; margin:0; padding:8px 0; }
-.map-provider-control .mp-item { padding:10px 14px; cursor:pointer; color:#0b2b3a; font-weight:600; }
-.map-provider-control .mp-item:hover { background: rgba(11,43,58,0.08); }
 
 .leaflet-top.leaflet-right .leaflet-bar {
 	border: 1px solid rgba(15, 23, 42, 0.12);
@@ -2102,10 +2502,6 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 }
 
 /* Dark theme overrides */
-body.dark-theme .map-provider-control .mp-btn { background: rgba(12,16,22,0.88); color:#dfe9f3; border-color: rgba(255,255,255,0.08); box-shadow: 0 10px 24px rgba(0,0,0,0.24); }
-body.dark-theme .map-provider-control .mp-dropdown { background: rgba(12,16,22,0.96); color:#dfe9f3; border-color: rgba(255,255,255,0.08); }
-body.dark-theme .map-provider-control .mp-item { color:#dfe9f3 }
-body.dark-theme .map-provider-control .mp-item:hover { background: rgba(255,255,255,0.04); }
 body.dark-theme .leaflet-top.leaflet-right .leaflet-bar { background: rgba(12,16,22,0.72); border-color: rgba(255,255,255,0.12); }
 body.dark-theme .leaflet-top.leaflet-right .leaflet-bar a,
 body.dark-theme .leaflet-top.leaflet-right .leaflet-control-layers-toggle { color: #dfe9f3; border-bottom: 0; }
@@ -2148,4 +2544,92 @@ body.dark-theme .btn-current-location:focus {
 	background: rgba(255,255,255,0.12);
 	border-color: rgba(255,255,255,0.16);
 	color: #ffffff;
+}
+
+/* Hide Leaflet attribution in the unified Cesium view */
+.leaflet-control-attribution.leaflet-control {
+	display: none !important;
+}
+
+/* Smooth animations for UI interactions */
+.button-select-btn {
+	transition: all 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.button-select-btn.is-active,
+.button-select-btn[aria-pressed="true"] {
+	animation: slideInScale 200ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes slideInScale {
+	from {
+		transform: scale(0.95);
+		opacity: 0.8;
+	}
+	to {
+		transform: scale(1);
+		opacity: 1;
+	}
+}
+
+body:not(.dark-theme) .settings-panel heading,
+body:not(.dark-theme) .settings-panel h4 {
+	color: #0f172a;
+	font-weight: 600;
+}
+
+body:not(.dark-theme) .settings-panel label {
+	color: #334155;
+	font-weight: 500;
+}
+
+body:not(.dark-theme) .settings-panel .list-group-item {
+	background: rgba(15, 23, 42, 0.02);
+	border-color: rgba(15, 23, 42, 0.08);
+	color: #0f172a;
+}
+
+/* Dialog animations - smooth liquid-glass opening/closing */
+.ui-dialog {
+	animation: dialogSlideIn 300ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.ui-dialog.ui-widget-content {
+	transition: all 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+	box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes dialogSlideIn {
+	from {
+		transform: translateY(20px) scale(0.95);
+		opacity: 0;
+	}
+	to {
+		transform: translateY(0) scale(1);
+		opacity: 1;
+	}
+}
+
+/* Settings panel tab switching animations */
+.settings-panel,
+.log-panel {
+	transition: opacity 200ms ease, transform 200ms ease;
+}
+
+/* Smooth transitions for settings group sections */
+.generic [role="tabpanel"],
+.settings-section {
+	transition: all 200ms ease;
+	animation: fadeSlideIn 200ms ease forwards;
+}
+
+@keyframes fadeSlideIn {
+	from {
+		opacity: 0;
+		transform: translateX(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0);
+	}
 }

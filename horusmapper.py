@@ -18,10 +18,12 @@ import flask
 from flask_socketio import SocketIO
 import os.path
 import math
+import ipaddress
 import pytz
 import time
 import traceback
-from threading import Thread
+from threading import Thread, Lock
+from collections import deque
 from datetime import datetime, timedelta
 from dateutil.parser import parse
 import os
@@ -62,6 +64,315 @@ app.jinja_env.auto_reload = True
 
 # SocketIO instance
 socketio = SocketIO(app)
+
+# Store the last computed chase route (GeoJSON) on the server for mobile/native clients
+latest_route_geojson = None
+latest_route_lock = Lock()
+latest_route_meta = {
+    "distance_m": None,
+    "duration_s": None,
+    "provider": None,
+    "provider_base": None,
+    "updated_at": None,
+}
+
+# API security/rate-limit state for internet-exposed route/state endpoints.
+api_rate_limit_lock = Lock()
+api_rate_limit_buckets = {}
+
+
+def _bool_from_env(value, default=False):
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _int_from_env(value, default_value):
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default_value
+    except Exception:
+        return default_value
+
+
+def _get_client_ip():
+    # Prefer proxy-forwarded source when available.
+    fwd = flask.request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return (flask.request.remote_addr or "").strip()
+
+
+def _is_private_ip(ip_text):
+    try:
+        ip_obj = ipaddress.ip_address(ip_text)
+        return bool(ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local)
+    except Exception:
+        # Unknown/invalid addresses are treated as non-private.
+        return False
+
+
+def _get_configured_api_key():
+    # Environment variable has precedence; config fallback for deployments that
+    # prefer file-based settings.
+    env_key = os.environ.get("CHASEMAPPER_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    try:
+        cfg_key = str(chasemapper_config.get("api_access_key", "")).strip()
+    except Exception:
+        cfg_key = ""
+    return cfg_key
+
+
+def _auth_mode():
+    # auto: require auth only for non-private IPs when key is configured.
+    # true: require auth for all route/state endpoint requests.
+    # false: disable API-key checks.
+    return str(os.environ.get("CHASEMAPPER_REQUIRE_API_AUTH", "auto")).strip().lower()
+
+
+def _require_api_auth_for_request(client_ip, api_key):
+    mode = _auth_mode()
+    if mode in ("false", "0", "no", "off"):
+        return False
+    if mode in ("true", "1", "yes", "on"):
+        return bool(api_key)
+    # auto mode
+    if not api_key:
+        return False
+    return not _is_private_ip(client_ip)
+
+
+def _request_api_key():
+    # Header-first, query fallback.
+    header_key = (flask.request.headers.get("X-API-Key", "") or "").strip()
+    if header_key:
+        return header_key
+    query_key = (flask.request.args.get("api_key", "") or "").strip()
+    return query_key
+
+
+def _rate_limit_config_for_endpoint(path, method):
+    # Route computation is more expensive than state reads.
+    if path == "/api/route" and method == "POST":
+        default_limit = 60
+    elif path == "/api/latest_route":
+        default_limit = 240
+    elif path == "/api/mobile_state" and method == "GET":
+        default_limit = 120
+    else:
+        default_limit = 120
+
+    limit = _int_from_env(os.environ.get("CHASEMAPPER_API_RATE_LIMIT_PER_MIN"), default_limit)
+    window_s = _int_from_env(os.environ.get("CHASEMAPPER_API_RATE_LIMIT_WINDOW_S"), 60)
+    enabled = _bool_from_env(os.environ.get("CHASEMAPPER_API_RATE_LIMIT_ENABLED", "true"), default=True)
+    return enabled, limit, window_s
+
+
+def _consume_rate_limit(client_ip, bucket_name, limit, window_s):
+    now = time.time()
+    bucket_key = f"{client_ip}:{bucket_name}"
+
+    with api_rate_limit_lock:
+        dq = api_rate_limit_buckets.get(bucket_key)
+        if dq is None:
+            dq = deque()
+            api_rate_limit_buckets[bucket_key] = dq
+
+        # Drop entries outside window.
+        cutoff = now - float(window_s)
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+
+        if len(dq) >= limit:
+            retry_after = int(max(1, math.ceil((dq[0] + window_s) - now)))
+            return False, retry_after
+
+        dq.append(now)
+        return True, 0
+
+
+@app.before_request
+def enforce_api_endpoint_security():
+    # Guard only external route/state API surfaces.
+    guarded_paths = {
+        "/api/route",
+        "/api/latest_route",
+        "/api/mobile_state",
+    }
+
+    path = flask.request.path or ""
+    method = flask.request.method or ""
+    if path not in guarded_paths:
+        return None
+
+    # Skip auth/rate-limit in testing mode to keep test fixtures simple.
+    if _testing_mode():
+        return None
+
+    client_ip = _get_client_ip() or "unknown"
+
+    # API-key auth (policy driven).
+    configured_key = _get_configured_api_key()
+    if _require_api_auth_for_request(client_ip, configured_key):
+        req_key = _request_api_key()
+        if req_key != configured_key:
+            return flask.jsonify({"error": "unauthorized"}), 401
+
+    # Per-IP rate limiting.
+    rl_enabled, rl_limit, rl_window_s = _rate_limit_config_for_endpoint(path, method)
+    if rl_enabled:
+        ok, retry_after_s = _consume_rate_limit(client_ip, f"{method}:{path}", rl_limit, rl_window_s)
+        if not ok:
+            resp = flask.jsonify({
+                "error": "rate limit exceeded",
+                "retry_after_s": retry_after_s,
+            })
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(retry_after_s)
+            return resp
+
+    return None
+
+
+def _utc_now_iso():
+    return pytz.utc.localize(datetime.utcnow()).isoformat()
+
+
+def _safe_float_or_none(value):
+    try:
+        parsed = float(value)
+        if math.isfinite(parsed):
+            return parsed
+    except Exception:
+        pass
+    return None
+
+
+def _ttl_string_to_seconds(ttl_text):
+    """Convert TTL string formats like MM:SS / HH:MM:SS / LANDED to seconds."""
+    if ttl_text is None:
+        return None
+    text = str(ttl_text).strip().upper()
+    if text == "":
+        return None
+    if text == "LANDED":
+        return 0
+    parts = text.split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except Exception:
+        return None
+
+    if len(nums) == 2:
+        return (nums[0] * 60) + nums[1]
+    if len(nums) == 3:
+        return (nums[0] * 3600) + (nums[1] * 60) + nums[2]
+    return None
+
+
+def _extract_route_metrics(geojson):
+    """Best-effort route metrics extraction from GeoJSON properties."""
+    if not isinstance(geojson, dict):
+        return {
+            "distance_m": None,
+            "duration_s": None,
+            "updated_at": None,
+        }
+
+    props = geojson.get("properties", {}) if isinstance(geojson.get("properties"), dict) else {}
+    distance_m = _safe_float_or_none(props.get("distance_m", props.get("distance")))
+    duration_s = _safe_float_or_none(props.get("duration_s", props.get("duration")))
+    updated_at = props.get("updated_at")
+    return {
+        "distance_m": distance_m,
+        "duration_s": duration_s,
+        "updated_at": updated_at,
+    }
+
+
+def _select_mobile_target(payloads_snapshot):
+    """Choose the most recent payload with a valid predicted landing."""
+    best = None
+    best_time = -1.0
+
+    for callsign, payload in payloads_snapshot.items():
+        if not isinstance(payload, dict):
+            continue
+
+        pred_landing = payload.get("pred_landing", [])
+        if not isinstance(pred_landing, (list, tuple)) or len(pred_landing) < 2:
+            continue
+
+        telem = payload.get("telem", {}) if isinstance(payload.get("telem"), dict) else {}
+        server_time = _safe_float_or_none(telem.get("server_time")) or 0.0
+        if server_time > best_time:
+            best_time = server_time
+            best = (callsign, payload)
+
+    if best is None:
+        return None
+
+    callsign, payload = best
+    telem = payload.get("telem", {}) if isinstance(payload.get("telem"), dict) else {}
+    pred_landing = payload.get("pred_landing", [])
+    ttl_text = telem.get("time_to_landing", "")
+
+    landing_alt = None
+    if len(pred_landing) >= 3:
+        landing_alt = _safe_float_or_none(pred_landing[2])
+
+    return {
+        "callsign": callsign,
+        "landing": {
+            "lat": _safe_float_or_none(pred_landing[0]),
+            "lon": _safe_float_or_none(pred_landing[1]),
+            "alt": landing_alt,
+        },
+        "telemetry": telem,
+        "time_to_landing": ttl_text,
+        "time_to_landing_s": _ttl_string_to_seconds(ttl_text),
+    }
+
+
+def _get_osrm_base_url():
+    """Return OSRM base URL from config/env/default."""
+    try:
+        cfg_url = chasemapper_config.get("osrm_base_url", "")
+    except Exception:
+        cfg_url = ""
+
+    env_url = os.environ.get("CHASEMAPPER_OSRM_BASE_URL", "")
+    base_url = (cfg_url or env_url or "https://router.project-osrm.org").strip().rstrip("/")
+    return base_url
+
+
+def _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon, timeout_s=8.0):
+    """Fetch a driving route from OSRM and return first route object."""
+    base_url = _get_osrm_base_url()
+    url = (
+        f"{base_url}/route/v1/driving/"
+        f"{start_lon},{start_lat};{end_lon},{end_lat}"
+    )
+    params = {
+        "overview": "full",
+        "geometries": "geojson",
+        "annotations": "distance,duration",
+    }
+    resp = requests.get(url, params=params, timeout=timeout_s)
+    resp.raise_for_status()
+    data = resp.json()
+    routes = data.get("routes", []) if isinstance(data, dict) else []
+    if not routes:
+        raise ValueError("No routes returned by OSRM")
+    return routes[0], base_url
 
 
 def create_app():
@@ -301,10 +612,10 @@ def _remove_server_payload_for_callsign(callsign):
     if not key:
         return
 
-    if key in current_payloads:
-        del current_payloads[key]
-    if key in current_payload_tracks:
-        del current_payload_tracks[key]
+    # Remove payload state under lock to avoid races with other threads.
+    with payloads_lock:
+        current_payloads.pop(key, None)
+        current_payload_tracks.pop(key, None)
 
 
 def _start_aprs_tracker_for_callsigns(callsigns):
@@ -358,6 +669,9 @@ current_payloads = {}  #  Archive data which will be passed to the web client
 current_payload_tracks = (
     {}
 )  # Store of payload Track objects which are used to calculate instantaneous parameters.
+
+# Lock protecting access to `current_payloads` and `current_payload_tracks`.
+payloads_lock = Lock()
 
 # Chase car position
 car_track = GenericTrack()
@@ -468,6 +782,189 @@ def flask_server_tiles(filename):
         flask.abort(404)
 
 
+@app.route('/api/latest_route', methods=['GET', 'POST'])
+def api_latest_route():
+    """GET returns the last stored route (GeoJSON). POST stores a route.
+
+    POST expects a GeoJSON Feature (application/json) in the request body.
+    """
+    global latest_route_geojson, latest_route_meta
+    if flask.request.method == 'POST':
+        try:
+            data = flask.request.get_json(force=True)
+            if not data or 'type' not in data:
+                return flask.jsonify({'error': 'invalid geojson'}), 400
+            with latest_route_lock:
+                latest_route_geojson = data
+                metrics = _extract_route_metrics(data)
+                latest_route_meta = {
+                    "distance_m": metrics.get("distance_m"),
+                    "duration_s": metrics.get("duration_s"),
+                    "provider": "client-push",
+                    "provider_base": None,
+                    "updated_at": metrics.get("updated_at") or _utc_now_iso(),
+                }
+            return flask.jsonify({'status': 'ok'}), 200
+        except Exception:
+            logging.exception('Failed to set latest_route')
+            return flask.jsonify({'error': 'server error'}), 500
+
+    # GET
+    with latest_route_lock:
+        if latest_route_geojson is None:
+            return flask.jsonify({'error': 'no route'}), 404
+        return flask.jsonify(latest_route_geojson), 200
+
+
+@app.route('/api/route', methods=['POST'])
+def api_route():
+    """Compute a route via backend OSRM and return normalized response.
+
+    Request JSON:
+    {
+      "start_lat": float,
+      "start_lon": float,
+      "end_lat": float,
+      "end_lon": float
+    }
+
+    Response JSON:
+    {
+      "feature": <GeoJSON Feature>,
+      "distance_m": float,
+      "duration_s": float,
+      "provider": "osrm",
+      "provider_base": "https://..."
+    }
+    """
+    global latest_route_geojson, latest_route_meta
+
+    try:
+        payload = flask.request.get_json(force=True) or {}
+    except Exception:
+        return flask.jsonify({"error": "invalid json"}), 400
+
+    try:
+        start_lat = float(payload.get("start_lat"))
+        start_lon = float(payload.get("start_lon"))
+        end_lat = float(payload.get("end_lat"))
+        end_lon = float(payload.get("end_lon"))
+    except Exception:
+        return flask.jsonify({"error": "invalid coordinates"}), 400
+
+    try:
+        route, provider_base = _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon)
+        geometry = route.get("geometry", {"type": "LineString", "coordinates": []})
+        feature = {
+            "type": "Feature",
+            "geometry": geometry,
+            "properties": {
+                "source": "osrm-backend",
+                "distance_m": route.get("distance", 0.0),
+                "duration_s": route.get("duration", 0.0),
+                "updated_at": _utc_now_iso(),
+            },
+        }
+
+        with latest_route_lock:
+            latest_route_geojson = feature
+            latest_route_meta = {
+                "distance_m": route.get("distance", 0.0),
+                "duration_s": route.get("duration", 0.0),
+                "provider": "osrm",
+                "provider_base": provider_base,
+                "updated_at": feature["properties"]["updated_at"],
+            }
+
+        return flask.jsonify(
+            {
+                "feature": feature,
+                "distance_m": route.get("distance", 0.0),
+                "duration_s": route.get("duration", 0.0),
+                "provider": "osrm",
+                "provider_base": provider_base,
+            }
+        ), 200
+    except requests.RequestException:
+        logging.exception("OSRM request failed")
+        return flask.jsonify({"error": "routing backend unavailable"}), 502
+    except Exception:
+        logging.exception("Route computation failed")
+        return flask.jsonify({"error": "route computation failed"}), 500
+
+
+@app.route('/api/mobile_state', methods=['GET'])
+def api_mobile_state():
+    """Return compact chase state bundle for mobile clients.
+
+    Includes car position, selected target landing, latest route, and ETA fields
+    in a single response to reduce mobile polling fan-out.
+    """
+    # Snapshot shared state under locks for consistency.
+    try:
+        with payloads_lock:
+            payloads_snapshot = dict(current_payloads)
+    except Exception:
+        payloads_snapshot = {}
+
+    with latest_route_lock:
+        route_geojson = latest_route_geojson
+        route_meta_snapshot = dict(latest_route_meta)
+
+    car_state = None
+    try:
+        _state = car_track.get_latest_state()
+        if _state:
+            time_val = _state.get("time")
+            if hasattr(time_val, "isoformat"):
+                time_iso = time_val.isoformat()
+            else:
+                time_iso = None
+
+            car_state = {
+                "lat": _safe_float_or_none(_state.get("lat")),
+                "lon": _safe_float_or_none(_state.get("lon")),
+                "alt": _safe_float_or_none(_state.get("alt")),
+                "speed": _safe_float_or_none(_state.get("speed")),
+                "heading": _safe_float_or_none(_state.get("heading")),
+                "heading_valid": bool(_state.get("heading_valid", False)),
+                "last_update": time_iso,
+            }
+    except Exception:
+        car_state = None
+
+    target = _select_mobile_target(payloads_snapshot)
+
+    # Route ETA for driving is based on latest route duration if known.
+    route_duration_s = _safe_float_or_none(route_meta_snapshot.get("duration_s"))
+    if route_duration_s is None:
+        extracted = _extract_route_metrics(route_geojson)
+        route_duration_s = extracted.get("duration_s")
+        if route_meta_snapshot.get("updated_at") is None:
+            route_meta_snapshot["updated_at"] = extracted.get("updated_at")
+
+    response = {
+        "server_time": _utc_now_iso(),
+        "car": car_state,
+        "target": target,
+        "route": {
+            "geojson": route_geojson,
+            "distance_m": _safe_float_or_none(route_meta_snapshot.get("distance_m")),
+            "duration_s": route_duration_s,
+            "provider": route_meta_snapshot.get("provider"),
+            "provider_base": route_meta_snapshot.get("provider_base"),
+            "updated_at": route_meta_snapshot.get("updated_at"),
+        },
+        "eta": {
+            "route_duration_s": route_duration_s,
+            "payload_time_to_landing_s": target.get("time_to_landing_s") if target else None,
+            "payload_time_to_landing": target.get("time_to_landing") if target else None,
+        },
+    }
+
+    return flask.jsonify(response), 200
+
+
 def flask_emit_event(event_name="none", data={}):
     """ Emit a socketio event to any clients. """
     socketio.emit(event_name, data, namespace="/chasemapper")
@@ -477,7 +974,11 @@ def flask_emit_event(event_name="none", data={}):
 def client_connected(_data):
     """Replay current telemetry state to a newly connected client."""
     try:
-        for payload in list(current_payloads.values()):
+        # Snapshot payloads under lock to avoid concurrent mutation while iterating.
+        with payloads_lock:
+            payloads_snapshot = list(current_payloads.values())
+
+        for payload in payloads_snapshot:
             telem = payload.get("telem")
             if telem:
                 socketio.emit(
@@ -774,31 +1275,33 @@ def handle_new_payload_position(data, log_position=True):
 
     _short_time = _time_dt.strftime("%H:%M:%S")
 
-    if _callsign not in current_payloads:
-        # New callsign! Create entries in data stores.
-        current_payload_tracks[_callsign] = GenericTrack(ascent_averaging=chasemapper_config["ascent_rate_averaging"])
+    # Ensure payload entries exist; protect creation with lock to avoid races.
+    with payloads_lock:
+        if _callsign not in current_payloads:
+            # New callsign! Create entries in data stores.
+            current_payload_tracks[_callsign] = GenericTrack(ascent_averaging=chasemapper_config["ascent_rate_averaging"])
 
-        current_payloads[_callsign] = {
-            "telem": {
-                "callsign": _callsign,
-                "position": [_lat, _lon, _alt],
-                "max_alt": 0.0,
-                "vel_v": 0.0,
-                "speed": 0.0,
-                "short_time": _short_time,
+            current_payloads[_callsign] = {
+                "telem": {
+                    "callsign": _callsign,
+                    "position": [_lat, _lon, _alt],
+                    "max_alt": 0.0,
+                    "vel_v": 0.0,
+                    "speed": 0.0,
+                    "short_time": _short_time,
                     "packet_time": _time_dt.isoformat(),
-                "time_to_landing": "",
-                "server_time": time.time(),
-            },
-            "path": [],
-            "pred_path": [],
-            "pred_landing": [],
-            "burst": [],
-            "abort_path": [],
-            "abort_landing": [],
-            "max_alt": 0.0,
-            "snr": -255.0,
-        }
+                    "time_to_landing": "",
+                    "server_time": time.time(),
+                },
+                "path": [],
+                "pred_path": [],
+                "pred_landing": [],
+                "burst": [],
+                "abort_path": [],
+                "abort_landing": [],
+                "max_alt": 0.0,
+                "snr": -255.0,
+            }
 
     # Add new data into the payload's track, and get the latest ascent rate.
     current_payload_tracks[_callsign].add_telemetry(
@@ -836,19 +1339,20 @@ def handle_new_payload_position(data, log_position=True):
         _vel_v = 0.0
         _ttl = ""
 
-    # Now update the main telemetry store.
-    current_payloads[_callsign]["telem"] = {
-        "callsign": _callsign,
-        "position": [_lat, _lon, _alt],
-        "vel_v": _vel_v,
-        "speed": _safe_finite(_speed, 0.0),
-        "short_time": _short_time,
-        "packet_time": _time_dt.isoformat(),
-        "time_to_landing": _ttl,
-        "server_time": time.time(),
-    }
+    # Now update the main telemetry store. Do writes under lock to avoid races.
+    with payloads_lock:
+        current_payloads[_callsign]["telem"] = {
+            "callsign": _callsign,
+            "position": [_lat, _lon, _alt],
+            "vel_v": _vel_v,
+            "speed": _safe_finite(_speed, 0.0),
+            "short_time": _short_time,
+            "packet_time": _time_dt.isoformat(),
+            "time_to_landing": _ttl,
+            "server_time": time.time(),
+        }
 
-    current_payloads[_callsign]["path"].append([_lat, _lon, _alt])
+        current_payloads[_callsign]["path"].append([_lat, _lon, _alt])
 
     # Copy out any extra fields we may want to pass onto the GUI.
     for _field in EXTRA_FIELDS:
@@ -856,13 +1360,12 @@ def handle_new_payload_position(data, log_position=True):
             current_payloads[_callsign]["telem"][_field] = data[_field]
 
     # Check if the current payload altitude is higher than our previous maximum altitude.
-    if _alt > current_payloads[_callsign]["max_alt"]:
-        current_payloads[_callsign]["max_alt"] = _alt
+    with payloads_lock:
+        if _alt > current_payloads[_callsign]["max_alt"]:
+            current_payloads[_callsign]["max_alt"] = _alt
 
-    # Add the payload maximum altitude into the telemetry snapshot dictionary.
-    current_payloads[_callsign]["telem"]["max_alt"] = current_payloads[_callsign][
-        "max_alt"
-    ]
+        # Add the payload maximum altitude into the telemetry snapshot dictionary.
+        current_payloads[_callsign]["telem"]["max_alt"] = current_payloads[_callsign]["max_alt"]
 
     # Update the web client.
     flask_emit_event("telemetry_event", current_payloads[_callsign]["telem"])
@@ -883,7 +1386,10 @@ def handle_new_payload_position(data, log_position=True):
 def handle_modem_stats(data):
     """ Basic handling of modem statistics data. If it matches a known payload, send the info to the client. """
 
-    if data["source"] in current_payloads:
+    with payloads_lock:
+        exists = data["source"] in current_payloads
+
+    if exists:
         flask_emit_event(
             "modem_stats_event", {"callsign": data["source"], "snr": data["snr"]}
         )
@@ -935,7 +1441,16 @@ def run_prediction():
             # Check the age of the data.
             # If data is slightly stale allow Tawhiri to run by forcing the launch time to now,
             # otherwise skip as before.
-            _pos_age = time.time() - current_payloads[_payload]["telem"]["server_time"]
+            with payloads_lock:
+                _entry = current_payloads.get(_payload)
+            if not _entry:
+                logging.warning("Missing telemetry for %s, skipping prediction.", _payload)
+                continue
+            _telem = _entry.get("telem") if isinstance(_entry, dict) else None
+            if not _telem:
+                logging.warning("Missing telemetry for %s, skipping prediction.", _payload)
+                continue
+            _pos_age = time.time() - float(_telem.get("server_time", time.time()))
             if _pos_age > 30.0:
                 if predictor == "Tawhiri":
                     logging.info("Telemetry for %s is stale (%.1fs); forcing Tawhiri prediction using latest beacon state with current time.", _payload, _pos_age)
@@ -947,7 +1462,13 @@ def run_prediction():
                     logging.debug("Skipping prediction for %s due to old data.", _payload)
                     continue
 
-            _current_pos = current_payload_tracks[_payload].get_latest_state()
+            with payloads_lock:
+                _track = current_payload_tracks.get(_payload)
+            if _track is None:
+                logging.warning("No track for %s, skipping prediction.", _payload)
+                continue
+
+            _current_pos = _track.get_latest_state()
             if _current_pos is None:
                 logging.warning("No current state available for %s, skipping prediction.", _payload)
                 continue
@@ -958,7 +1479,7 @@ def run_prediction():
                 _current_pos["lon"],
                 _current_pos["alt"],
             ]
-            _track_len = current_payload_tracks[_payload].length()
+            _track_len = _track.length()
             if _track_len <= 1:
                 _aprs_calls = set([c.upper() for c in chasemapper_config.get("aprs_callsigns", []) if c])
                 if _payload.upper() in _aprs_calls:
@@ -1107,28 +1628,31 @@ def run_prediction():
                 for _point in _pred_path:
                     _pred_output.append([_point[1], _point[2], _point[3]])
 
-                current_payloads[_payload]["pred_path"] = _pred_output
-                current_payloads[_payload]["pred_landing"] = _pred_output[-1]
+                # Store prediction outputs under lock to avoid races with other threads.
+                with payloads_lock:
+                    current_payloads[_payload]["pred_path"] = _pred_output
+                    current_payloads[_payload]["pred_landing"] = _pred_output[-1]
 
-                if _current_pos["is_descending"]:
-                    current_payloads[_payload]["burst"] = []
-                else:
-                    # Determine the burst position.
-                    _cur_alt = 0.0
-                    _cur_idx = 0
-                    for i in range(len(_pred_output)):
-                        if _pred_output[i][2] > _cur_alt:
-                            _cur_alt = _pred_output[i][2]
-                            _cur_idx = i
+                    if _current_pos["is_descending"]:
+                        current_payloads[_payload]["burst"] = []
+                    else:
+                        # Determine the burst position.
+                        _cur_alt = 0.0
+                        _cur_idx = 0
+                        for i in range(len(_pred_output)):
+                            if _pred_output[i][2] > _cur_alt:
+                                _cur_alt = _pred_output[i][2]
+                                _cur_idx = i
 
-                    current_payloads[_payload]["burst"] = _pred_output[_cur_idx]
+                        current_payloads[_payload]["burst"] = _pred_output[_cur_idx]
 
                 _pred_ok = True
                 logging.info("Prediction Updated, %d data points." % len(_pred_path))
             else:
-                current_payloads[_payload]["pred_path"] = []
-                current_payloads[_payload]["pred_landing"] = []
-                current_payloads[_payload]["burst"] = []
+                with payloads_lock:
+                    current_payloads[_payload]["pred_path"] = []
+                    current_payloads[_payload]["pred_landing"] = []
+                    current_payloads[_payload]["burst"] = []
                 logging.error("Prediction Failed, possible invalid or missing dataset.")
                 flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
 
@@ -1342,8 +1866,10 @@ def clear_payload_data(data):
     while predictor_semaphore:
         time.sleep(0.1)
 
-    current_payloads = {}
-    current_payload_tracks = {}
+    # Clear the existing dicts under lock to avoid races with other threads.
+    with payloads_lock:
+        current_payloads.clear()
+        current_payload_tracks.clear()
 
 
 @socketio.on("car_data_clear", namespace="/chasemapper")
@@ -1843,26 +2369,43 @@ data_monitor_thread_running = True
 
 def check_data_age():
     """ Regularly check the age of the payload data, and clear if latest position is older than X minutes."""
-    global current_payloads, chasemapper_config, predictor_semaphore
+    global current_payloads, current_payload_tracks, chasemapper_config, predictor_semaphore
 
     while data_monitor_thread_running:
         _now = time.time()
-        _callsigns = list(current_payloads.keys())
+        # Snapshot callsigns under lock to avoid races while iterating.
+        with payloads_lock:
+            _callsigns = list(current_payloads.keys())
 
         for _call in _callsigns:
             try:
-                _latest_time = current_payloads[_call]["telem"]["server_time"]
-                if (_now - _latest_time) > (
+                with payloads_lock:
+                    _payload = current_payloads.get(_call)
+                if not isinstance(_payload, dict):
+                    continue
+
+                _telem = _payload.get("telem")
+                if not isinstance(_telem, dict):
+                    continue
+
+                _latest_time = _telem.get("server_time")
+                if _latest_time is None:
+                    continue
+
+                if (_now - float(_latest_time)) > (
                     chasemapper_config["payload_max_age"] * 60.0
                 ):
-                    current_payload_tracks.pop(_call)
+                    # Remove stale entries under lock.
+                    with payloads_lock:
+                        current_payloads.pop(_call, None)
+                        current_payload_tracks.pop(_call, None)
 
                     logging.info(
                         "Payload %s telemetry older than maximum age - removed from data store."
                         % _call
                     )
-            except Exception as e:
-                logging.error("Error checking payload data age - %s" % str(e))
+            except Exception:
+                logging.exception("Exception while checking payload data age for %s", _call)
 
         time.sleep(2)
 

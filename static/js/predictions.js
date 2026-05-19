@@ -235,6 +235,10 @@ function handlePrediction(data){
     try{
         if ((typeof window !== 'undefined') && (window.balloon_currently_chased === data.callsign) && (typeof window.updateChaseRouteIfActive === 'function')){
             window.updateChaseRouteIfActive(data.callsign, data.pred_landing);
+            // Sync the position tracking for car movement detection
+            if (typeof window.chase_car_position !== 'undefined' && window.chase_car_position.latest_data && window.chase_car_position.latest_data.length >= 2) {
+                window.last_route_calc_position = [window.chase_car_position.latest_data[0], window.chase_car_position.latest_data[1]];
+            }
         }
     }catch(e){ /* ignore */ }
 

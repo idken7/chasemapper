@@ -358,22 +358,12 @@ function apply3DMapViewState() {
 
     update3DButtonVisual();
 
-    // Disable map-provider switching while in 3D mode (irrelevant)
     try {
-        var $provider = $('#mapProviderSelect');
-        if ($provider && $provider.length) {
-            $provider.prop('disabled', !!active);
-            $provider.attr('aria-disabled', !!active);
-        }
-
         var $cesiumMode = $('#cesiumMapModeSelect');
         if ($cesiumMode && $cesiumMode.length) {
             $cesiumMode.prop('disabled', !active);
             $cesiumMode.attr('aria-disabled', !active);
         }
-
-        // Also disable any custom provider controls
-        $('.map-provider-control .mp-btn, .map-provider-control .mp-item').toggleClass('disabled', !!active).attr('aria-disabled', !!active);
     } catch (e) {
         // ignore
     }
@@ -679,41 +669,6 @@ function toggleFollowedCallsign(callsign) {
     }
 
     updateAprsFollowIndicators();
-}
-
-function populateMapProviderSelect() {
-    var select = $('#mapProviderSelect');
-    if (select.length === 0 || typeof map_layers === 'undefined' || !map_layers) {
-        return;
-    }
-
-    if (select.children().length === 0) {
-        for (var name in map_layers) {
-            if (!map_layers.hasOwnProperty(name)) {
-                continue;
-            }
-            select.append($('<option>').attr('value', name).text(name));
-        }
-    }
-
-    var current = null;
-    if (typeof map !== 'undefined') {
-        for (var layerName in map_layers) {
-            if (!map_layers.hasOwnProperty(layerName)) {
-                continue;
-            }
-            if (map.hasLayer(map_layers[layerName])) {
-                current = layerName;
-                break;
-            }
-        }
-    }
-
-    if (current === null) {
-        current = select.children().first().val() || 'OSM';
-    }
-
-    select.val(current);
 }
 
 function populateCesiumMapModeSelect() {
@@ -1143,14 +1098,18 @@ function renderAprsCallsignSummaryModal(csKey) {
 }
 
 function openAprsCallsignSummaryModal(csKey) {
-    var key = (csKey || '').toString().toUpperCase();
+    var key = normalizeCallsign(csKey);
     if (!key) {
         return;
     }
 
     var $modal = $('#aprsCallsignModal');
+    var $card = $modal.find('.recovery-modal-card');
     $modal.attr('data-callsign', key).addClass('is-open').attr('aria-hidden', 'false');
-    $modal.find('.recovery-modal-card').addClass('modal-opened').removeClass('modal-closing');
+    $card.removeClass('modal-closing modal-opened').addClass('modal-opening');
+    window.requestAnimationFrame(function() {
+        $card.removeClass('modal-opening').addClass('modal-opened');
+    });
     renderAprsCallsignSummaryModal(key);
 }
 
@@ -1377,9 +1336,6 @@ function serverSettingsUpdate(data){
     $('#timezoneSelection').val(chase_config.aprs_timezone || 'local');
     populateTimezoneOptions();
     setButtonGroupValue('#themeSelect', localStorage.getItem('chasemapper_theme') || 'light', 'value');
-    if (typeof populateMapProviderSelect === 'function') {
-        populateMapProviderSelect();
-    }
     if (typeof populateCesiumMapModeSelect === 'function') {
         populateCesiumMapModeSelect();
     }
@@ -1824,24 +1780,6 @@ $(document).on('click', '#themeSelect .button-select-btn', function(){
 
 $(document).on('click', '#timezoneOptions option', function(){
     clientSettingsUpdate();
-});
-
-$(document).on('change', '#mapProviderSelect', function(){
-    var layerName = ($(this).val() || '').toString();
-    if (!layerName || typeof map_layers === 'undefined' || !map_layers[layerName] || typeof map === 'undefined') {
-        return;
-    }
-
-    for (var name in map_layers) {
-        if (!map_layers.hasOwnProperty(name)) {
-            continue;
-        }
-        if (map.hasLayer(map_layers[name])) {
-            map.removeLayer(map_layers[name]);
-        }
-    }
-
-    map_layers[layerName].addTo(map);
 });
 
 $(document).on('change', '#cesiumMapModeSelect', function(){
