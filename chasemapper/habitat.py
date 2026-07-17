@@ -232,6 +232,6 @@ class HabitatChaseUploader(object):
         self.uploader_thread_running = False
         try:
             self.uploader_thread.join(timeout=2)
-        except:
+        except Exception:
             pass
         logging.info("Habitat - Chase-Car Position Uploader Closed")

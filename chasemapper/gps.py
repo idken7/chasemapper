@@ -9,7 +9,6 @@
 import logging
 import re
 import time
-import traceback
 from datetime import datetime
 from threading import Thread
 
@@ -135,7 +134,7 @@ class SerialGPS(object):
             # Read a line of (hopefully) NMEA from the serial port.
             try:
                 data = self.ser.readline()
-            except:
+            except Exception:
                 # If we hit a serial read error, attempt to reconnect.
                 logging.error(
                     "SerialGPS - Error reading from serial device! Attempting to reconnect."
@@ -150,14 +149,13 @@ class SerialGPS(object):
                 logging.debug(
                     "SerialGPS - ValueError when attempting to parse data. GPS may not have lock"
                 )
-            except:
-                traceback.print_exc()
-                pass
+            except Exception:
+                logging.exception("SerialGPS - Error parsing NMEA data.")
 
         # Clean up before exiting thread.
         try:
             self.ser.close()
-        except:
+        except Exception:
             pass
         logging.info("SerialGPS - Closing Thread.")
 
@@ -173,7 +171,7 @@ class SerialGPS(object):
             return 0.0
         try:
             d, m = re.match(r"^(\d+)(\d\d\.\d+)$", dm).groups()
-        except:
+        except Exception:
             return 0.0
             
         return float(d) + float(m) / 60
@@ -272,7 +270,7 @@ class SerialGPS(object):
                 if self.gps_state["fix_status"] != 0:
                     self.send_to_callback()
 
-            except:
+            except Exception:
                 # Failed to parse field, which probably means an invalid heading.
                 logging.debug(f"Failed to parse GNTHS: {data}")
                 # Invalidate the heading data, and revert to emitting messages on GGA strings.
@@ -298,11 +296,8 @@ class SerialGPS(object):
         if self.callback != None:
             try:
                 self.callback(_state)
-            except Exception as e:
-                traceback.print_exc()
-                logging.error(
-                    "SerialGPS - Error Passing data to callback - %s" % str(e)
-                )
+            except Exception:
+                logging.exception("SerialGPS - Error Passing data to callback")
 
 
 class GPSDGPS(object):

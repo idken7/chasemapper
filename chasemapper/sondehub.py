@@ -235,7 +235,7 @@ class SondehubChaseUploader(object):
                 try:
                     _resp = json.loads(_req.text)
                     logging.info(f"Sondehub - {_resp['message']}")
-                except:
+                except Exception:
                     logging.info(f"Sondehub - Got code 400 from Sondehub.")
 
                 _upload_success = True
@@ -266,6 +266,6 @@ class SondehubChaseUploader(object):
         self.uploader_thread_running = False
         try:
             self.uploader_thread.join(timeout=2)
-        except:
+        except Exception:
             pass
         logging.info("Sondehub - Chase-Car Position Uploader Closed")

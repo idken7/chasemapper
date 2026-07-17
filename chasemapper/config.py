@@ -220,25 +220,25 @@ def parse_config_file(filename):
 
     try:
         chase_config["turn_rate_threshold"] = config.getfloat("bearings", "turn_rate_threshold")
-    except:
+    except Exception:
         logging.info("Missing turn rate gate setting, using default (4m/s)")
         chase_config["turn_rate_threshold"] = 4.0
 
     try:
         chase_config["ascent_rate_averaging"] = config.getint("predictor", "ascent_rate_averaging")
-    except:
+    except Exception:
         logging.info("Missing ascent_rate_averaging setting, using default (10)")
         chase_config["ascent_rate_averaging"] = 10
 
     try:
         chase_config["bearings_only_mode"] = config.getboolean("bearings", "bearings_only_mode")
-    except:
+    except Exception:
         logging.info("Missing bearing_only_mode setting, using default (False)")
         chase_config["bearings_only_mode"] = False
 
     try:
         chase_config["doa_confidence_threshold"] = config.getfloat("bearings", "doa_confidence_threshold")
-    except:
+    except Exception:
         logging.info("Missing DoA Confidence Threshold Setting, using default (4.0)")
         chase_config["doa_confidence_threshold"] = 4.0
 

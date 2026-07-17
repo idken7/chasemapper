@@ -22,11 +22,12 @@ import ipaddress
 import pytz
 import time
 import traceback
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 from collections import deque
 from datetime import datetime, timedelta
 from dateutil.parser import parse
 import os
+import secrets
 
 # Ensure application logs (INFO+) are sent to stdout so container logs show APRS activity
 import logging as _logging
@@ -58,7 +59,11 @@ from dateutil.parser import parse as parse_dt
 
 # Define Flask Application, and allow automatic reloading of templates for dev work
 app = flask.Flask(__name__)
-app.config["SECRET_KEY"] = "secret!"
+# Flask/SocketIO session signing key. Prefer an explicit value from the
+# environment (CHASEMAPPER_SECRET_KEY) so it can be pinned across restarts for a
+# deployment; otherwise fall back to a random per-process key rather than a
+# hard-coded, publicly-known value.
+app.config["SECRET_KEY"] = os.environ.get("CHASEMAPPER_SECRET_KEY", "").strip() or secrets.token_hex(32)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
@@ -100,11 +105,25 @@ def _int_from_env(value, default_value):
         return default_value
 
 
+def _trust_proxy_headers():
+    # Only honour X-Forwarded-For when explicitly enabled (i.e. the server is
+    # actually behind a trusted reverse proxy). Otherwise a client can spoof the
+    # header to appear on a private network (bypassing auth) or to evade the
+    # per-IP rate limiter.
+    return str(os.environ.get("CHASEMAPPER_TRUST_PROXY", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _get_client_ip():
-    # Prefer proxy-forwarded source when available.
-    fwd = flask.request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # Prefer the proxy-forwarded source only when proxy headers are trusted.
+    if _trust_proxy_headers():
+        fwd = flask.request.headers.get("X-Forwarded-For", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return (flask.request.remote_addr or "").strip()
 
 
@@ -1038,6 +1057,57 @@ def aprs_refresh_request(data):
     thread.start()
 
 
+# Config keys the browser UI is actually allowed to change via
+# client_settings_update. The client emits its whole local `chase_config`
+# object (not a delta), so a naive `chasemapper_config.update(data)` would let
+# any connected client overwrite server-only settings it happens to be
+# carrying (file paths, GPSD/serial ports, API keys, the network bind
+# address, ...) or inject arbitrary new keys. Restricting the merge to this
+# allow-list keeps client_settings_update limited to the toggles the Settings
+# UI exposes. aprs_callsigns/aprs_prediction_overrides are handled separately
+# below (server-owned); selected_profile has its own "profile_change" event.
+CLIENT_SETTABLE_CONFIG_KEYS = frozenset((
+    "aprs_enabled",
+    "aprs_poll_interval",
+    "aprs_timezone",
+    "bearing_color",
+    "bearing_custom_color",
+    "bearing_length",
+    "bearing_weight",
+    "bearings_only_mode",
+    "cesium_map_mode",
+    "chase_car_speed",
+    "default_alt",
+    "default_lat",
+    "default_lon",
+    "doa_confidence_threshold",
+    "enable_3d_map_view",
+    "habitat_call",
+    "habitat_update_rate",
+    "habitat_upload_enabled",
+    "max_bearing_age",
+    "pred_burst",
+    "pred_desc_rate",
+    "pred_enabled",
+    "pred_model",
+    "pred_model_time",
+    "pred_update_rate",
+    "range_ring_color",
+    "range_ring_custom_color",
+    "range_ring_quantity",
+    "range_ring_spacing",
+    "range_ring_weight",
+    "range_rings_enabled",
+    "show_abort",
+    "switch_miles_feet",
+    "time_seq_active",
+    "time_seq_cycle",
+    "time_seq_enabled",
+    "time_seq_times",
+    "unitselection",
+))
+
+
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
     global chasemapper_config, online_uploader
@@ -1074,21 +1144,24 @@ def client_settings_update(data):
     _server_aprs_callsigns = list(chasemapper_config.get("aprs_callsigns", []))
     _server_aprs_overrides = _sanitize_aprs_prediction_overrides(chasemapper_config.get("aprs_prediction_overrides", {}))
 
-    # Overwrite local config data with data from the client, but preserve server-owned APRS state.
-    chasemapper_config.update(data)
+    # Apply only the known client-settable keys from the client payload, rather
+    # than blindly merging the whole object (see CLIENT_SETTABLE_CONFIG_KEYS).
+    for _key in CLIENT_SETTABLE_CONFIG_KEYS:
+        if isinstance(data, dict) and _key in data:
+            chasemapper_config[_key] = data[_key]
+    # APRS state is server-owned; ignore any client-supplied values for it.
     chasemapper_config["aprs_callsigns"] = _server_aprs_callsigns
     chasemapper_config["aprs_prediction_overrides"] = _server_aprs_overrides
 
     if _predictor_change == "restart":
-        # Wait until any current predictions have finished.
-        while predictor_semaphore:
-            time.sleep(0.1)
+        # Wait until any current prediction has finished (bounded, rather than
+        # polling indefinitely) before touching the predictor object.
+        predictor_idle_event.wait(timeout=10.0)
         # Attempt to start the predictor.
         initPredictor()
     elif _predictor_change == "stop":
-        # Wait until any current predictions have finished.
-        while predictor_semaphore:
-            time.sleep(0.1)
+        # Wait until any current prediction has finished.
+        predictor_idle_event.wait(timeout=10.0)
 
         predictor = None
 
@@ -1304,10 +1377,13 @@ def handle_new_payload_position(data, log_position=True):
             }
 
     # Add new data into the payload's track, and get the latest ascent rate.
-    current_payload_tracks[_callsign].add_telemetry(
-        {"time": _time_dt, "lat": _lat, "lon": _lon, "alt": _alt, "comment": _callsign}
-    )
-    _state = current_payload_tracks[_callsign].get_latest_state()
+    # current_payload_tracks is shared with other listener threads (UDP/APRS),
+    # so mutate/read it under the same lock used for current_payloads.
+    with payloads_lock:
+        current_payload_tracks[_callsign].add_telemetry(
+            {"time": _time_dt, "lat": _lat, "lon": _lon, "alt": _alt, "comment": _callsign}
+        )
+        _state = current_payload_tracks[_callsign].get_latest_state()
     _speed = 0.0
     if _state != None:
         _vel_v = _safe_finite(_state.get("ascent_rate"), 0.0)
@@ -1355,9 +1431,10 @@ def handle_new_payload_position(data, log_position=True):
         current_payloads[_callsign]["path"].append([_lat, _lon, _alt])
 
     # Copy out any extra fields we may want to pass onto the GUI.
-    for _field in EXTRA_FIELDS:
-        if _field in data:
-            current_payloads[_callsign]["telem"][_field] = data[_field]
+    with payloads_lock:
+        for _field in EXTRA_FIELDS:
+            if _field in data:
+                current_payloads[_callsign]["telem"][_field] = data[_field]
 
     # Check if the current payload altitude is higher than our previous maximum altitude.
     with payloads_lock:
@@ -1379,7 +1456,8 @@ def handle_new_payload_position(data, log_position=True):
     # Trigger immediate prediction bootstrap for new payloads or small tracks
     # (unless this is APRS bootstrap data, which gets special handling)
     if not data.get("aprs_bootstrap", False):
-        _track_len = current_payload_tracks[_callsign].length()
+        with payloads_lock:
+            _track_len = current_payload_tracks[_callsign].length()
         if _track_len > 0 and _track_len <= 2:
             trigger_prediction_async("Bootstrap prediction for %s" % _callsign)
 
@@ -1399,7 +1477,13 @@ def handle_modem_stats(data):
 #   Predictor Code
 #
 predictor = None
-predictor_semaphore = False
+# Set (idle) when no prediction is running, cleared while run_prediction() is
+# executing. Callers that need to wait for the predictor to be idle (e.g.
+# before restarting/stopping it) block on predictor_idle_event.wait(timeout=...)
+# instead of polling in a sleep loop. A timeout is used so a caller can't hang
+# forever if a prediction run never completes.
+predictor_idle_event = Event()
+predictor_idle_event.set()
 
 predictor_thread_running = True
 predictor_thread = None
@@ -1424,7 +1508,7 @@ def predictorThread():
 
 def run_prediction():
     """ Run a Flight Path prediction """
-    global chasemapper_config, current_payloads, current_payload_tracks, predictor, predictor_semaphore
+    global chasemapper_config, current_payloads, current_payload_tracks, predictor
 
     if chasemapper_config["pred_enabled"] == False:
         return
@@ -1432,8 +1516,8 @@ def run_prediction():
     if (chasemapper_config["offline_predictions"] == True) and (predictor == None):
         return
 
-    # Set the semaphore so we don't accidentally kill the predictor object while it's running.
-    predictor_semaphore = True
+    # Clear the idle event so we don't accidentally kill the predictor object while it's running.
+    predictor_idle_event.clear()
     try:
         _payload_list = list(current_payload_tracks.keys())
         for _payload in _payload_list:
@@ -1744,8 +1828,8 @@ def run_prediction():
                     chase_logger.add_balloon_prediction(_client_data)
 
     finally:
-        # Clear the predictor-running semaphore
-        predictor_semaphore = False
+        # Mark the predictor idle again.
+        predictor_idle_event.set()
 
 
 def initPredictor():
@@ -1782,7 +1866,7 @@ def initPredictor():
 
                     # Start up the predictor thread if it is not running.
                     if predictor_thread == None:
-                        predictor_thread = Thread(target=predictorThread)
+                        predictor_thread = Thread(target=predictorThread, daemon=True)
                         predictor_thread.start()
 
                     # Set the predictor to enabled, and update the clients.
@@ -1802,7 +1886,7 @@ def initPredictor():
 
         # Start up the predictor thread if it is not running.
         if predictor_thread == None:
-            predictor_thread = Thread(target=predictorThread)
+            predictor_thread = Thread(target=predictorThread, daemon=True)
             predictor_thread.start()
 
     flask_emit_event("server_settings_update", chasemapper_config)
@@ -1860,11 +1944,10 @@ def download_new_model_2():
 @socketio.on("payload_data_clear", namespace="/chasemapper")
 def clear_payload_data(data):
     """ Clear the payload data store """
-    global predictor_semaphore, current_payloads, current_payload_tracks
+    global current_payloads, current_payload_tracks
     logging.warning("Client requested all payload data be cleared.")
-    # Wait until any current predictions have finished running.
-    while predictor_semaphore:
-        time.sleep(0.1)
+    # Wait until any current prediction has finished running.
+    predictor_idle_event.wait(timeout=10.0)
 
     # Clear the existing dicts under lock to avoid races with other threads.
     with payloads_lock:
@@ -1973,7 +2056,7 @@ def trigger_prediction_async(reason="manual trigger"):
 
     def _run_once():
         try:
-            if predictor_semaphore:
+            if not predictor_idle_event.is_set():
                 logging.info("Skipping immediate prediction (%s): predictor is busy.", reason)
                 return
             logging.info("Running immediate prediction (%s).", reason)
@@ -2272,7 +2355,7 @@ def udp_listener_car_callback(data):
     # Handle when GPSD and/or other GPS data sources return a n/a for altitude.
     try:
         _alt = float(data["altitude"])
-    except:
+    except Exception:
         _alt = 0.0
 
     _comment = "CAR"
@@ -2369,7 +2452,7 @@ data_monitor_thread_running = True
 
 def check_data_age():
     """ Regularly check the age of the payload data, and clear if latest position is older than X minutes."""
-    global current_payloads, current_payload_tracks, chasemapper_config, predictor_semaphore
+    global current_payloads, current_payload_tracks, chasemapper_config
 
     while data_monitor_thread_running:
         _now = time.time()
@@ -2577,8 +2660,8 @@ def device_position_update(data):
     """ Accept a device position update from a client and process it as if it was a chase car position """
     try:
         udp_listener_car_callback(data)
-    except:
-        pass
+    except Exception:
+        logging.exception("Error handling device_position update")
 
 
 class WebHandler(logging.Handler):

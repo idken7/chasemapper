@@ -9,7 +9,8 @@
 # 	These classes have been pulled in from the horuslib library, to avoid
 # 	requiring horuslib (hopefully soon-to-be retired) as a dependency.
 
-import socket, json, sys, traceback
+import logging
+import socket, json
 from threading import Thread
 from dateutil.parser import parse
 from datetime import datetime, timedelta
@@ -113,9 +114,8 @@ class UDPListener(object):
                 if self.summary_callback is not None:
                     self.summary_callback(packet_dict)
 
-        except Exception as e:
-            print("Could not parse packet: %s" % str(e))
-            traceback.print_exc()
+        except Exception:
+            logging.exception("Could not parse UDP packet")
 
     def udp_rx_thread(self):
         """ Listen for Broadcast UDP packets """
@@ -125,10 +125,10 @@ class UDPListener(object):
         self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except:
+        except Exception:
             pass
         self.s.bind(("", self.udp_port))
-        print("Started UDP Listener Thread.")
+        logging.info("Started UDP Listener Thread.")
         self.udp_listener_running = True
 
         while self.udp_listener_running:
@@ -136,13 +136,16 @@ class UDPListener(object):
                 m = self.s.recvfrom(MAX_JSON_LEN)
             except socket.timeout:
                 m = None
-            except:
-                traceback.print_exc()
+            except Exception:
+                # Reset m so a receive error doesn't cause the previous
+                # iteration's packet to be silently reprocessed below.
+                logging.exception("UDP Listener receive error")
+                m = None
 
             if m != None:
                 self.handle_udp_packet(m[0])
 
-        print("Closing UDP Listener")
+        logging.info("Closing UDP Listener")
         self.s.close()
 
     def start(self):
@@ -195,7 +198,7 @@ class OziListener(object):
         self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except:
+        except Exception:
             pass
         self.s.bind((self.input_host, self.input_port))
 
@@ -204,18 +207,19 @@ class OziListener(object):
                 m = self.s.recvfrom(1024)
             except socket.timeout:
                 m = None
-            except:
-                traceback.print_exc()
+            except Exception:
+                # Reset m so a receive error doesn't cause the previous
+                # iteration's packet to be silently reprocessed below.
+                logging.exception("OziListener receive error")
+                m = None
 
             if m != None:
                 try:
                     self.handle_packet(m[0])
-                except:
-                    traceback.print_exc()
-                    print("ERROR: Couldn't handle packet correctly.")
-                    pass
+                except Exception:
+                    logging.exception("OziListener - Couldn't handle packet correctly.")
 
-        print("INFO: Closing UDP Listener Thread")
+        logging.info("Closing OziListener UDP Listener Thread")
         self.s.close()
 
     def close(self):
@@ -225,7 +229,7 @@ class OziListener(object):
         self.udp_listener_running = False
         try:
             self.t.join(timeout=2)
-        except:
+        except Exception:
             pass
 
     def handle_telemetry_packet(self, packet):
@@ -285,7 +289,7 @@ class OziListener(object):
         packet_type = packet.split(",")[0]
 
         if packet_type not in self.allowed_sentences:
-            print("ERROR: Got unknown packet: %s" % packet)
+            logging.error("OziListener - Got unknown packet: %s" % packet)
             return
 
         try:
@@ -297,6 +301,5 @@ class OziListener(object):
             if packet_type == "WAYPOINT" and (self.waypoint_callback != None):
                 self.handle_waypoint_packet(packet)
 
-        except:
-            print("ERROR: Error when handling packet.")
-            traceback.print_exc()
+        except Exception:
+            logging.exception("OziListener - Error when handling packet.")
