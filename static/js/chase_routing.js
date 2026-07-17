@@ -307,7 +307,6 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         // record last attempted legs for potential fallback
         window._last_route_attempt = {startLat: startLat, startLon: startLon, endLat: predLatLng.lat, endLon: predLatLng.lng};
         try{
-            console.debug('[chase_routing] setRouteToPrediction: setting waypoints', startLat, startLon, predLatLng.lat, predLatLng.lng);
             window.router.setWaypoints([L.latLng(startLat, startLon), L.latLng(predLatLng.lat, predLatLng.lng)]);
             // Initialize position tracking for car movement detection
             window.last_route_calc_position = [startLat, startLon];
@@ -390,7 +389,6 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             console.warn('Backend routing failed, trying direct OSRM', backendErr);
             var base = window.osrm_base || 'https://router.project-osrm.org/route/v1/driving/';
             var url = base + startLon + ',' + startLat + ';' + endLon + ',' + endLat + '?overview=full&geometries=geojson&annotations=distance,duration';
-            console.debug('[chase_routing] fetchOsrmRoute direct', url);
             fetch(url).then(function(resp){ return resp.json(); }).then(function(j){
                 if (!j || !j.routes || j.routes.length === 0) { throw new Error('No routes'); }
                 applyFetchedRoute(j.routes[0], 'osrm-fallback');
@@ -534,12 +532,11 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
                     }
                 }
             }catch(err){ console.error('attachRouterEvents error', err); }
-        });
 
-        // Additional UI handling: when any route is found, hide spinner and close modal if open
-        r.on('routesfound', function(e){
+            // UI handling: when a route is found, clear the pending timeout,
+            // hide the spinner and re-enable the start button. Kept in this single
+            // routesfound listener (previously a second, duplicate listener).
             try {
-                // Clear any pending timeout for route calculation
                 if (window._chase_route_timer) { clearTimeout(window._chase_route_timer); window._chase_route_timer = null; }
                 $('#chaseRoutingSpinner').hide();
                 $('#startChaseBtn').prop('disabled', false);
@@ -579,15 +576,14 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     // Add easy button on map once available
     function addMapButton(){
         try {
-            if (typeof L === 'undefined') { console.debug('[chase_routing] L (Leaflet) undefined'); return false; }
-            if (typeof map === 'undefined') { console.debug('[chase_routing] map undefined'); return false; }
+            if (typeof L === 'undefined') { return false; }
+            if (typeof map === 'undefined') { return false; }
 
             // Ensure dialog created
             ensureDialog();
 
             // Use the same icon shorthand used elsewhere (e.g. 'fa-car')
             var btn = L.easyButton('fa-location-arrow', function(btnLocal, mapLocal){
-                console.debug('[chase_routing] Chase Routing button clicked');
                 populateCalls();
                 if (typeof window.openChaseRoutingModal === 'function') {
                     window.openChaseRoutingModal();
@@ -597,7 +593,6 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
                 }
             }, 'Chase Routing', 'chaseRoutingButton', { position: 'topright' });
             btn.addTo(map);
-            console.debug('[chase_routing] Chase Routing button added to map');
             return true;
         } catch (err) {
             console.error('[chase_routing] addMapButton error', err);

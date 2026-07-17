@@ -1270,9 +1270,6 @@ function refreshDerivedDisplaysForSettings() {
         if (typeof updateTelemetryTable === 'function') {
             updateTelemetryTable();
         }
-        if (typeof updateSummaryDisplay === 'function') {
-            updateSummaryDisplay();
-        }
     }
 
     if ($('#timezoneSelection').length > 0 && typeof refreshAprsTelemetryRows === 'function') {

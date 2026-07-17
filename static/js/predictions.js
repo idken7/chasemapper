@@ -117,8 +117,6 @@ function handlePrediction(data){
     var _abort_path = normalizeMapPointList(data.abort_path);
     var _abort_landing = validMapPoint(data.abort_landing) ? normalizeMapPoint(data.abort_landing) : [];
 
-    console.log('handlePrediction called for', _callsign, '- pred_path points:', _pred_path.length, '- burst:', _burst, '- pred_landing:', _pred_landing);
-
     if (!_callsign) {
         return;
     }

@@ -95,17 +95,17 @@
 
     <!-- Custom scripts -->
     <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/sondehub.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20260717-reliability"></script>
+    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260422-aprs-fix"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20260519-ion-fix"></script>
-    <script src="{{ url_for('static', filename='js/balloon.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/predictions.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20260717-reliability"></script>
+    <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/ui_dialogs.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/chase_routing.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/car.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/bearings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/chase_routing.js') }}?v=20260717-reliability"></script>
+    <script src="{{ url_for('static', filename='js/car.js') }}?v=20260717-reliability"></script>
+    <script src="{{ url_for('static', filename='js/bearings.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/paho-mqtt.js') }}"></script>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
@@ -456,17 +456,6 @@
                 logEntries.push(entry);
                 if (logLevelFilter.indexOf(normalizeLogLevel(entry.level)) !== -1) {
                     $('#logPanelBody').prepend(buildLogLine(entry));
-                }
-            });
-
-            // Update APRS callsign last-beacon timestamps when telemetry arrives
-            socket.on('telemetry_event', function(telem) {
-                try {
-                    if (typeof updateAprsTelemetryRow === 'function') {
-                        updateAprsTelemetryRow(telem);
-                    }
-                } catch (e) {
-                    // ignore
                 }
             });
 
@@ -887,6 +876,16 @@
             // Telemetry event handler.
             // We will get one of these mesages with every new balloon position
             socket.on('telemetry_event', function(data) {
+                // Update APRS callsign last-beacon timestamps. Done before the
+                // initial-load guard so APRS rows stay current even while the
+                // archive is still loading.
+                try {
+                    if (typeof updateAprsTelemetryRow === 'function') {
+                        updateAprsTelemetryRow(data);
+                    }
+                } catch (e) {
+                    // ignore
+                }
                 if (initial_load_complete == false) {
                     queuePendingTelemetry(data);
                     return;
@@ -913,7 +912,6 @@
             });
         
             socket.on('predictor_update', function(data){
-                console.log('Received predictor_update:', data);
                 handlePrediction(data);
             });
 
@@ -960,7 +958,6 @@
                             balloon_positions = {};
                             balloon_currently_following = "none";
                             updateTelemetryTable();
-                            updateSummaryDisplay();
                             $('#time_to_landing').text("");
                         }
                     );
@@ -990,10 +987,13 @@
 
             // Function to show/hide chase car track tail.
             setChaseCarTrack = function(){
-                // Read state of checkbox
-                var _car_track_enabled = document.getElementById("chaseCarTrack").checked;
-                // Only continue if we have chase car data to show/hide.
-                if (chase_car_position !== "NONE"){
+                // Read state of checkbox (may be absent from the current UI, in
+                // which case default to showing the track).
+                var _car_track_enabled = getCheckboxState("chaseCarTrack", true);
+                // Only continue if we actually have a chase car track polyline to
+                // show/hide. Until the first car fix arrives, chase_car_position.path
+                // is the sentinel string 'NONE' (not a Leaflet layer), so guard on it.
+                if (chase_car_position && chase_car_position.path && chase_car_position.path !== "NONE"){
                     if (_car_track_enabled == false){
                         chase_car_position.path.remove();
                     }else{

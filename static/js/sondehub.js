@@ -177,7 +177,11 @@ function onMessageArrived(message) {
             handleSondeHubWebSocketPacket(frame);
         }
     }
-    catch(err) {}
+    catch(err) {
+        // Malformed frame or handler error - log at debug so it's discoverable
+        // without spamming the console for every dropped/garbled packet.
+        console.debug('SondeHub message parse/handle error', err);
+    }
 };
 
 function startSondeHubWebsockets() {

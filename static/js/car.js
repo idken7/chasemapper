@@ -63,7 +63,7 @@ function createRangeRings(position){
 
 function recenterRangeRings(position){
 
-	if ((document.getElementById("rangeRingsEnabled").checked == true) && (range_rings_on == false)){
+	if ((getCheckboxState("rangeRingsEnabled", false) == true) && (range_rings_on == false)){
 		// We have rings enabled, but haven't been able to create them yet.
 		// Create them.
 		updateRangeRings();
@@ -80,7 +80,7 @@ function recenterRangeRings(position){
 function updateRangeRings(){
 
 	// Grab the range ring settings.
-	var _ring_enabled = document.getElementById("rangeRingsEnabled").checked;
+	var _ring_enabled = getCheckboxState("rangeRingsEnabled", false);
 
 	// Check if we actually have a chase car position to work with.
 	var _position = chase_car_position.latest_data;

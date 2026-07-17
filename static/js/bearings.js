@@ -97,7 +97,7 @@ function bearingValid(bearing){
 
 		if (bearing.heading_valid == false) {
 			// Only show bearings which have an invalid associated hearing if the user wants them.
-			_show_bearing = document.getElementById("showStationaryBearings").checked;
+			_show_bearing = getCheckboxState("showStationaryBearings", false);
 
 		} else {
 			_show_bearing = true;
@@ -176,11 +176,11 @@ function addBearing(timestamp, bearing, live){
 		});
 
 	_bearing_valid = bearingValid(bearing_store[timestamp]);
-	if ( (_bearing_valid == true) && (document.getElementById("bearingsEnabled").checked == true) ){
+	if ( (_bearing_valid == true) && (getCheckboxState("bearingsEnabled", true) == true) ){
 		bearing_store[timestamp].line.addTo(map);
 	}
 
-	if ( (live == true) && (document.getElementById("bearingsEnabled").checked == true) ){
+	if ( (live == true) && (getCheckboxState("bearingsEnabled", true) == true) ){
 		
 		if(_raw_bearing_angles.length > 0){
 			if (bearing_store[timestamp].confidence > bearing_confidence_threshold){
@@ -191,7 +191,7 @@ function addBearing(timestamp, bearing, live){
 			$("#bearing_table").tabulator("setData", [{id:1, valid_bearing:_valid_text, bearing: bearing_store[timestamp].raw_bearing.toFixed(0), confidence: bearing_store[timestamp].confidence.toFixed(1), power: bearing_store[timestamp].power.toFixed(0)}]);
 			$("#bearing_table").show();
 
-			if(document.getElementById("tdoaEnabled").checked == true){
+			if(getCheckboxState("tdoaEnabled", true) == true){
 				_valid_tdoa = bearing_store[timestamp].confidence > bearing_confidence_threshold;
 				bearingPlotRender(_raw_bearing_angles, _raw_doa, _valid_tdoa);
 				$('#bearing_plot').show();
@@ -278,7 +278,7 @@ function redrawBearings(){
 				opacity: _opacity
 			});
 
-		if ( (bearingValid(bearing_store[key]) == true) && (document.getElementById("bearingsEnabled").checked == true)){
+		if ( (bearingValid(bearing_store[key]) == true) && (getCheckboxState("bearingsEnabled", true) == true)){
 			bearing_store[key].line.addTo(map);
 		}
 
@@ -321,7 +321,7 @@ function toggleBearingsEnabled(){
 	// Enable-disable bearing only mode, which hides the summary and telemetry displays
 
 	// Grab the bearing-only-mode settings.
-	var _bearings_enabled = document.getElementById("bearingsEnabled").checked;
+	var _bearings_enabled = getCheckboxState("bearingsEnabled", true);
 
 
 	if ((_bearings_enabled == true) && (bearings_on == false)){
@@ -405,7 +405,7 @@ function bearingPlotRender(angles, doa, data_valid){
 		_stroke_color = "#D41159";
 	}
 
-	if(document.getElementById("bigTDOAEnabled").checked){
+	if(getCheckboxState("bigTDOAEnabled", false)){
 		_plot_dim = 400;
 	}else{
 		_plot_dim = 250;
@@ -644,7 +644,7 @@ function setTimeSeq(num){
 
 function toggleTimeSeqEnabled(){
 	// Enable-disable time sequenced transmitters.
-	var _time_seq_enabled = document.getElementById("timeSeqEnabled").checked;
+	var _time_seq_enabled = getCheckboxState("timeSeqEnabled", false);
 
 	if (_time_seq_enabled == true){
 		// Enable time-sequenced transmitters.

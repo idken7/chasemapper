@@ -94,6 +94,20 @@ for (_col in car_colour_values){
 }
 
 
+// Safely read the checked state of a checkbox that may have been removed from
+// the current UI. Several settings toggles (chaseCarTrack, showCarSpeed,
+// rangeRingsEnabled, bearingsEnabled, ...) were removed from the page during
+// GUI refactors while the code still reads their state; a missing element made
+// `getElementById(id).checked` throw "Cannot read properties of null". This
+// returns `defaultValue` (false unless specified) when the element is absent.
+function getCheckboxState(id, defaultValue) {
+    var el = document.getElementById(id);
+    if (!el) {
+        return (typeof defaultValue === 'undefined') ? false : defaultValue;
+    }
+    return !!el.checked;
+}
+
 // calculates look angles between two points
 // format of a and b should be {lon: 0, lat: 0, alt: 0}
 // returns {elevention: 0, azimut: 0, bearing: "", range: 0}

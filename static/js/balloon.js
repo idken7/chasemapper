@@ -429,124 +429,6 @@ function add_new_balloon(data){
 
 }
 
-function updateSummaryDisplay(){
-    if ($("#summary_table").length === 0) {
-        return;
-    }
-    
-    if (chase_config['unitselection'] == "imperial") {updateSummaryDisplayImperial() ; return ; } // else do everything in metric
-    // Update the 'Payload Summary' display.
-    var _summary_update = {id:1};
-    // See if there is any payload data.
-    if (balloon_positions.hasOwnProperty(balloon_currently_following) == true){
-        // There is balloon data!
-        var _latest_telem = balloon_positions[balloon_currently_following].latest_data;
-        
-        _summary_update.alt = _latest_telem.position[2].toFixed(0) + "m (" + _latest_telem.max_alt.toFixed(0) + ")";
-        var _speed = _latest_telem.speed*3.6;
-        _summary_update.speed = _speed.toFixed(0) + " kph";
-        _summary_update.vel_v = _latest_telem.vel_v.toFixed(1) + " m/s";
-
-
-        // Work out if we have data to calculate look-angles from.
-        if (chase_car_position.latest_data.length == 3){
-            // Chase car position available - use that.
-            var _car = {lat:chase_car_position.latest_data[0], lon:chase_car_position.latest_data[1], alt:chase_car_position.latest_data[2]};
-        } else if (home_marker !== "NONE") {
-            // Home marker is on the map - use the home marker position
-            var _car = {lat:chase_config.default_lat, lon:chase_config.default_lon, alt:chase_config.default_alt};
-        } else {
-            // Otherwise, nothing we can use 
-            var _car = null;
-        }
-
-        if(_car !== null){
-            var _bal = {lat:_latest_telem.position[0], lon:_latest_telem.position[1], alt:_latest_telem.position[2]};
-            var _look_angles = calculate_lookangles(_car, _bal);
-            _summary_update.elevation = _look_angles.elevation.toFixed(0) + "°";
-            _summary_update.azimuth = _look_angles.azimuth.toFixed(0) + "°";
-            _summary_update.range = (_look_angles.range/1000).toFixed(1) + "km";
-        }else{
-            // No Chase car position data - insert dummy values
-            _summary_update.azimuth = "---°";
-            _summary_update.elevation = "--°";
-            _summary_update.range = "----m";
-        }
-
-    }else{
-        // No balloon data!
-        _summary_update = {id: 1, alt:'-----m', speed:'---kph', vel_v:'-.-m/s', azimuth:'---°', elevation:'--°', range:'----m'}
-    }
-    // Update table
-    $("#summary_table").tabulator("setData", [_summary_update]);
-    if (summary_enlarged == true){
-        var row = $("#summary_table").tabulator("getRow", 1);
-        row.getElement().addClass("largeTableRow");
-        $("#summary_table").tabulator("redraw", true);
-    }
-}
-function updateSummaryDisplayImperial(){
-    if ($("#summary_table").length === 0) {
-        return;
-    }
-    
-    // Update the 'Payload Summary' display.
-    var _summary_update = {id:1};
-    // See if there is any payload data.
-    if (balloon_positions.hasOwnProperty(balloon_currently_following) == true){
-        // There is balloon data!
-        var _latest_telem = balloon_positions[balloon_currently_following].latest_data;
-        
-        _summary_update.alt = (_latest_telem.position[2]*3.28084).toFixed(0) + "ft (" + (_latest_telem.max_alt*3.28084).toFixed(0) + "ft)";
-        var _speed = _latest_telem.speed*3.6 ;
-        _summary_update.speed = (_speed*0.621371).toFixed(0) + " mph";
-        _summary_update.vel_v = (_latest_telem.vel_v*3.28084*60).toFixed(0) + " ft/min";
-
-
-        // Work out if we have data to calculate look-angles from.
-        if (chase_car_position.latest_data.length == 3){
-            // Chase car position available - use that.
-            var _car = {lat:chase_car_position.latest_data[0], lon:chase_car_position.latest_data[1], alt:chase_car_position.latest_data[2]};
-        } else if (home_marker !== "NONE") {
-            // Home marker is on the map - use the home marker position
-            var _car = {lat:chase_config.default_lat, lon:chase_config.default_lon, alt:chase_config.default_alt};
-        } else {
-            // Otherwise, nothing we can use 
-            var _car = null;
-        }
-
-        if(_car !== null){
-            // We have a chase car position! Calculate relative position.
-            var _bal = {lat:_latest_telem.position[0], lon:_latest_telem.position[1], alt:_latest_telem.position[2]};
-            var _look_angles = calculate_lookangles(_car, _bal);
-
-            _summary_update.elevation = _look_angles.elevation.toFixed(0) + "°";
-            _summary_update.azimuth = _look_angles.azimuth.toFixed(0) + "°";
-            if (_look_angles.range > chase_config['switch_miles_feet']) {
-              _summary_update.range = (_look_angles.range*0.621371/1000).toFixed(1) + " miles";
-            } else {
-              _summary_update.range = (_look_angles.range*3.28084).toFixed(1) + "ft";
-            }
-        }else{
-            // No Chase car position data - insert dummy values
-            _summary_update.azimuth = "---°";
-            _summary_update.elevation = "--°";
-            _summary_update.range = "----m";
-        }
-
-    }else{
-        // No balloon data!
-        _summary_update = {id: 1, alt:'-----m', speed:'---kph', vel_v:'-.-m/s', azimuth:'---°', elevation:'--°', range:'----m'}
-    }
-    // Update table
-    $("#summary_table").tabulator("setData", [_summary_update]);
-    if (summary_enlarged == true){
-        var row = $("#summary_table").tabulator("getRow", 1);
-        row.getElement().addClass("largeTableRow");
-        $("#summary_table").tabulator("redraw", true);
-    }
-}
-
 function handleTelemetry(data){
     // Telemetry Event messages contain a dictionary of position data.
     // It should have the fields:
@@ -612,7 +494,7 @@ function handleTelemetry(data){
         //console.log(data);
 
         // Update Chase Car Speed
-        if (document.getElementById("showCarSpeed").checked){
+        if (getCheckboxState("showCarSpeed", false)){
             if (chase_config['unitselection'] == "imperial") {
 		$("#chase_car_speed").text( (chase_car_position.speed*3.6*0.621371).toFixed(0) + " mph");
                 } else {
@@ -629,8 +511,10 @@ function handleTelemetry(data){
             $("#log_time").text(data.replay_time);
         }
 
-        // Update heading information
-        if (document.getElementById("showCarHeading").checked){
+        // Update heading information. The showCarHeading control may not be
+        // present in the current UI, so guard against a missing element
+        // (defaults to hiding the heading text).
+        if (getCheckboxState("showCarHeading", false)){
             $("#chase_car_heading").text(chase_car_position.heading.toFixed(0) + "˚");
             $("#chase_car_heading_header").text("Heading");
         } else {
@@ -643,8 +527,10 @@ function handleTelemetry(data){
             chase_car_position.marker = L.marker(chase_car_position.latest_data,{title:"Chase Car", icon: carIcon, rotationOrigin: "center center"})
                     .addTo(map);
             chase_car_position.path = L.polyline([chase_car_position.latest_data],{title:"Chase Car", color:'black', weight:1.5});
-            // If the user wants the chase car tail, add it to the map.
-            if (document.getElementById("chaseCarTrack").checked == true){
+            // Add the chase-car breadcrumb tail to the map. The chaseCarTrack
+            // control may not be present in the current UI; when it's absent we
+            // default to showing the tail.
+            if (getCheckboxState("chaseCarTrack", true)){
                 chase_car_position.path.addTo(map);
             }
         } else {
@@ -752,9 +638,6 @@ function handleTelemetry(data){
     }else{
         // Don't pan to anything.
     }
-
-    // Update the summary display.
-    updateSummaryDisplay();
 }
 
 function handleModemStats(data){
