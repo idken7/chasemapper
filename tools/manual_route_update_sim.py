@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Test script to inject fake balloon telemetry and chase car positions
-for testing real-time route updates on localhost.
+Manual/interactive dev tool: inject fake balloon telemetry and chase car
+positions over UDP to a locally-running ChaseMapper server, to exercise
+real-time chase-route recalculation while watching the browser console.
+
+This is NOT part of the automated test suite - it has no assertions, it has
+side effects (sends real UDP packets), and it requires a running server plus
+a human watching the browser DevTools console to interpret the results.
+Run it directly, e.g.:
+
+    python3 tools/manual_route_update_sim.py scenario1
 """
 
 import json
@@ -53,7 +61,7 @@ def send_car_gps(lat, lon, alt=0, speed=0, heading=0):
     }
     send_udp("localhost", 55672, msg)
 
-def test_scenario_1_basic():
+def scenario_1_basic():
     """
     Scenario 1: Basic test
     - Launch a balloon near Golden, Colorado
@@ -61,21 +69,21 @@ def test_scenario_1_basic():
     - Trigger routing and monitor console for distance calculations
     """
     print("\n=== Scenario 1: Basic Route Tracking ===\n")
-    
+
     # Golden, CO (balloon landing location)
     balloon_lat, balloon_lon, balloon_alt = 39.7392, -104.9903, 25000
-    
+
     # Boulder, CO (chase car starting position)
     car_lat, car_lon = 40.0150, -105.2705
-    
+
     print("Sending initial balloon telemetry (landing at Golden, CO)...")
     send_payload_summary("W5TEST", balloon_lat, balloon_lon, balloon_alt, ascent_rate=5.0)
-    
+
     time.sleep(1)
-    
+
     print("Sending initial car position (Boulder, CO)...")
     send_car_gps(car_lat, car_lon, alt=1650)
-    
+
     print("\n✓ Initial data sent. Go to web UI and:")
     print("  1. Click the 'Chase Routing' button (compass icon top-right)")
     print("  2. Select 'W5TEST' as the callsign")
@@ -83,7 +91,7 @@ def test_scenario_1_basic():
     print("  4. Watch the browser console for distance calculations")
     print("\nThen run Scenario 2 to simulate car movement...")
 
-def test_scenario_2_car_movement():
+def scenario_2_car_movement():
     """
     Scenario 2: Simulate car moving towards balloon
     - Car starts near Boulder
@@ -92,16 +100,16 @@ def test_scenario_2_car_movement():
     - Show that routes recalculate as car moves
     """
     print("\n=== Scenario 2: Car Movement & Route Updates ===\n")
-    
+
     balloon_lat, balloon_lon = 39.7392, -104.9903
-    
+
     # Boulder starting position
     car_lat, car_lon = 40.0150, -105.2705
-    
+
     print("Initial state: Car at Boulder, CO")
     send_car_gps(car_lat, car_lon, alt=1650)
     time.sleep(2)
-    
+
     # Move car south by approximately 100 meters
     # 1 degree latitude ≈ 111 km, so 100m ≈ 0.0009 degrees
     car_lat_2 = car_lat - 0.0009  # Move ~100m south
@@ -109,7 +117,7 @@ def test_scenario_2_car_movement():
     print("Expected: Route should NOT update (distance < 100m)")
     send_car_gps(car_lat_2, car_lon, alt=1650)
     time.sleep(3)
-    
+
     # Move car another ~110 meters south (total ~210m from start)
     car_lat_3 = car_lat_2 - 0.001  # Move another ~110m south
     print(f"\n[STEP 2] Moving car another ~110m south to {car_lat_3:.6f}, {car_lon:.6f}")
@@ -117,40 +125,40 @@ def test_scenario_2_car_movement():
     print("         Watch console for 'handleCarMovementForRouting' execution")
     send_car_gps(car_lat_3, car_lon, alt=1650)
     time.sleep(3)
-    
+
     # Move 50m more (should not trigger yet)
     car_lat_4 = car_lat_3 - 0.00045
     print(f"\n[STEP 3] Moving car another ~50m south to {car_lat_4:.6f}, {car_lon:.6f}")
     print("Expected: Route should NOT update (distance < 100m from last calc)")
     send_car_gps(car_lat_4, car_lon, alt=1650)
     time.sleep(3)
-    
+
     # Move 100m more (should trigger)
     car_lat_5 = car_lat_4 - 0.0009
     print(f"\n[STEP 4] Moving car another ~100m south to {car_lat_5:.6f}, {car_lon:.6f}")
     print("Expected: Route SHOULD update again (distance > 100m from last calc)")
     send_car_gps(car_lat_5, car_lon, alt=1650)
-    
+
     print("\n✓ Scenario 2 complete. Check browser console for distance logs.")
 
-def test_scenario_3_prediction_update():
+def scenario_3_prediction_update():
     """
     Scenario 3: Test prediction update triggering route recalc
     - Update landing location while car is stationary
     - Route should recalculate with new prediction
     """
     print("\n=== Scenario 3: Prediction Update Routes ===\n")
-    
+
     # Move balloon landing location
     balloon_lat, balloon_lon, balloon_alt = 39.7500, -104.9800, 25000
-    
+
     print("Updating balloon landing location...")
     send_payload_summary("W5TEST", balloon_lat, balloon_lon, balloon_alt, ascent_rate=5.0)
-    
+
     print("Car position remains the same (stationary)")
     car_lat, car_lon = 40.0150, -105.2705
     send_car_gps(car_lat, car_lon, alt=1650)
-    
+
     print("\n✓ Prediction updated. Route should recalculate even though car didn't move.")
     print("  Check browser console for handlePrediction execution.")
 
@@ -169,30 +177,30 @@ SETUP:
 
 SCENARIOS:
 """)
-    
+
     print("Usage:")
-    print("  python3 test_route_updates.py scenario1  # Initial setup")
-    print("  python3 test_route_updates.py scenario2  # Car movement test")
-    print("  python3 test_route_updates.py scenario3  # Prediction update test")
-    print("  python3 test_route_updates.py all        # All scenarios")
+    print("  python3 tools/manual_route_update_sim.py scenario1  # Initial setup")
+    print("  python3 tools/manual_route_update_sim.py scenario2  # Car movement test")
+    print("  python3 tools/manual_route_update_sim.py scenario3  # Prediction update test")
+    print("  python3 tools/manual_route_update_sim.py all        # All scenarios")
     print()
-    
+
     import sys
     if len(sys.argv) < 2:
         print("No scenario specified. Running scenario1 by default...\n")
-        test_scenario_1_basic()
+        scenario_1_basic()
     elif sys.argv[1] == "scenario1":
-        test_scenario_1_basic()
+        scenario_1_basic()
     elif sys.argv[1] == "scenario2":
-        test_scenario_2_car_movement()
+        scenario_2_car_movement()
     elif sys.argv[1] == "scenario3":
-        test_scenario_3_prediction_update()
+        scenario_3_prediction_update()
     elif sys.argv[1] == "all":
-        test_scenario_1_basic()
+        scenario_1_basic()
         time.sleep(2)
-        test_scenario_2_car_movement()
+        scenario_2_car_movement()
         time.sleep(2)
-        test_scenario_3_prediction_update()
+        scenario_3_prediction_update()
     else:
         print(f"Unknown scenario: {sys.argv[1]}")
         print("Use: scenario1, scenario2, scenario3, or all")

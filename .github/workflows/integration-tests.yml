@@ -18,8 +18,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest
+          # eccodes/cusfpredict need native system libraries not present on a
+          # bare runner and aren't needed by tests/integration (only used by
+          # the offline GFS predictor path via deferred imports) - install
+          # best-effort so a missing native lib doesn't fail this job.
+          pip install eccodes cusfpredict || echo "::warning::eccodes/cusfpredict install failed (native deps); integration tests are unaffected."
+          pip install flask flask-socketio lxml numpy python-dateutil pytz requests pyserial simple-websocket aprslib
+          pip install -r tests/requirements-dev.txt
       - name: Run integration tests
         run: |
           pytest tests/integration -q

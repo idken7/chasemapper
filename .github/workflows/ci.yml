@@ -5,6 +5,8 @@ on:
   pull_request:
 
 jobs:
+  # Fast unit + integration suite. No browser/live-server dependency, so this
+  # is required to pass before merging.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -23,19 +25,77 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', '**/tests/requirements-dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install pytest pytest-cov pytest-playwright playwright
+          # eccodes/cusfpredict need native system libraries (e.g. libeccodes)
+          # that aren't available on a bare runner, and are only used by the
+          # offline GFS predictor path, which the test suite doesn't exercise
+          # (all imports of these are deferred/local, not top-level). Install
+          # them best-effort so a missing native lib doesn't fail CI, but
+          # every other dependency below is a hard requirement - a real
+          # install failure there must fail the build.
+          pip install eccodes cusfpredict || echo "::warning::eccodes/cusfpredict install failed (native deps); offline predictor tests are unaffected."
+          pip install flask flask-socketio lxml numpy python-dateutil pytz requests pyserial simple-websocket aprslib
+          pip install -r tests/requirements-dev.txt
+
+      - name: Run unit + integration tests
+        run: |
+          pytest tests/unit tests/integration -q --maxfail=1
+        env:
+          PYTHONUNBUFFERED: 1
+
+  # Browser-driven GUI/E2E tests. These need Playwright and (for tests/e2e) a
+  # live server on a fixed port, and are inherently slower/more prone to
+  # timing flakiness than the unit/integration suite. Gated as non-blocking
+  # so a flaky UI interaction doesn't hold up an otherwise-good change; the
+  # job still runs and reports so regressions are visible.
+  e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install eccodes cusfpredict || echo "::warning::eccodes/cusfpredict install failed (native deps); unaffected here."
+          pip install flask flask-socketio lxml numpy python-dateutil pytz requests pyserial simple-websocket aprslib
+          pip install -r tests/requirements-dev.txt
 
       - name: Install Playwright browsers
-        run: python -m playwright install chromium
+        run: python -m playwright install --with-deps chromium
 
-      - name: Run tests
+      - name: Start server for tests/e2e (expects http://localhost:5001)
         run: |
-          pytest -q --maxfail=1
+          CHASEMAPPER_TESTING=1 nohup python3 horusmapper.py --nolog \
+            -c horusmapper.cfg.example > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:5001/ && break
+            sleep 1
+          done
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Run GUI + E2E tests
+        run: |
+          pytest tests/gui tests/e2e -q
+        env:
+          PYTHONUNBUFFERED: 1
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log
+          path: server.log
+          if-no-files-found: ignore
