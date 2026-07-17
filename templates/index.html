@@ -94,12 +94,12 @@
     </script>
 
     <!-- Custom scripts -->
-    <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/habitat.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/utils.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260717-reliability"></script>
-    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20260519-ion-fix"></script>
+    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20260717-reliability"></script>
     <script src="{{ url_for('static', filename='js/ui_dialogs.js') }}"></script>
@@ -168,6 +168,35 @@
             initial_load_complete = true;
             flushPendingTelemetryQueue();
             updateTelemetryTable();
+        }
+
+        // Fetch the server's telemetry archive and (re)build each balloon from it.
+        // Used both for the initial page-load hydration and to reconcile state on
+        // a socket reconnect (e.g. after a server restart), where the client may
+        // otherwise silently diverge from the server. add_new_balloon() rebuilds
+        // existing balloons from the archived full path, so replaying is safe to
+        // run more than once.
+        function fetchTelemetryArchive() {
+            $.ajax({
+                url: "/get_telemetry_archive",
+                dataType: 'json',
+                async: true,
+                success: function(data) {
+                    for (var callsign in data) {
+                        if (!Object.prototype.hasOwnProperty.call(data, callsign)) {
+                            continue;
+                        }
+                        replayArchiveEntry(callsign, data[callsign]);
+                    }
+                    finalizeInitialHydration();
+                },
+                error: function(xhr, status, error) {
+                    console.warn('Archive bootstrap request failed, continuing with queued telemetry hydration.', status, error);
+                },
+                complete: function() {
+                    finalizeInitialHydration();
+                }
+            });
         }
 
         // The sonde we are currently following on the map
@@ -527,7 +556,7 @@
             var esriwholink = 
             'i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community';
             var esri_sat_map = L.tileLayer(
-            'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             {
                 attribution: '&copy; '+esrimapLink+', '+esriwholink,
                 maxZoom: 18,
@@ -743,30 +772,56 @@
             }, 'Toggle 2D/3D view', 'toggle3DButton', { position: 'topright' }).addTo(map);
 
             window.setTimeout(function() {
-                // Always enable 3D Cesium view as the primary map
-                if (typeof set3DMapViewEnabled === 'function') {
-                    set3DMapViewEnabled(true);
+                // The Cesium library is loaded from a CDN. In a chase vehicle with
+                // poor/blocked connectivity the CDN may be unreachable, leaving
+                // `Cesium` undefined. Only promote the 3D view to primary when the
+                // library actually loaded; otherwise stay on the 2D Leaflet map and
+                // let the user know, rather than showing a blank 3D canvas.
+                var cesiumAvailable = (typeof Cesium !== 'undefined');
+
+                if (cesiumAvailable) {
+                    // Enable 3D Cesium view as the primary map
+                    if (typeof set3DMapViewEnabled === 'function') {
+                        set3DMapViewEnabled(true);
+                    } else {
+                        localStorage.setItem('enable_3d_map_view', '1');
+                        if (typeof chase_config !== 'undefined') {
+                            chase_config.enable_3d_map_view = true;
+                        }
+                    }
+
+                    if (typeof apply3DMapViewState === 'function') {
+                        apply3DMapViewState();
+                    }
+
+                    // Apply stored 2D/3D mode preference
+                    if (typeof getStored2DMode === 'function') {
+                        var is2D = getStored2DMode();
+                        if (is2D && typeof set2DMode === 'function') {
+                            set2DMode();
+                        } else if (!is2D && typeof set3DMode === 'function') {
+                            set3DMode();
+                        }
+                    }
                 } else {
-                    localStorage.setItem('enable_3d_map_view', '1');
-                    if (typeof chase_config !== 'undefined') {
-                        chase_config.enable_3d_map_view = true;
+                    // Cesium CDN unreachable — fall back to the 2D Leaflet map.
+                    console.warn('Cesium unavailable (CDN blocked/offline) — falling back to 2D map.');
+                    if (typeof set3DMapViewEnabled === 'function') {
+                        set3DMapViewEnabled(false);
+                    } else {
+                        localStorage.setItem('enable_3d_map_view', '0');
+                        if (typeof chase_config !== 'undefined') {
+                            chase_config.enable_3d_map_view = false;
+                        }
+                    }
+                    if (typeof apply3DMapViewState === 'function') {
+                        apply3DMapViewState();
+                    }
+                    if (typeof window.showAppToast === 'function') {
+                        window.showAppToast('3D map unavailable — using 2D map');
                     }
                 }
-                
-                if (typeof apply3DMapViewState === 'function') {
-                    apply3DMapViewState();
-                }
-                
-                // Apply stored 2D/3D mode preference
-                if (typeof getStored2DMode === 'function') {
-                    var is2D = getStored2DMode();
-                    if (is2D && typeof set2DMode === 'function') {
-                        set2DMode();
-                    } else if (!is2D && typeof set3DMode === 'function') {
-                        set3DMode();
-                    }
-                }
-                
+
                 if (typeof update3DButtonVisual === 'function') {
                     update3DButtonVisual();
                 }
@@ -841,30 +896,9 @@
             initTables();
 
             
-            // Grab the recent archive of telemetry data
-            // This should only ever be run once - on page load.
-            $.ajax({
-                  url: "/get_telemetry_archive",
-                  dataType: 'json',
-                  async: true,
-                  success: function(data) {
-
-                    for (var callsign in data){
-                        if (!Object.prototype.hasOwnProperty.call(data, callsign)) {
-                            continue;
-                        }
-
-                        replayArchiveEntry(callsign, data[callsign]);
-                    }
-                                        finalizeInitialHydration();
-                                    },
-                                    error: function(xhr, status, error) {
-                                        console.warn('Archive bootstrap request failed, continuing with queued telemetry hydration.', status, error);
-                                    },
-                                    complete: function() {
-                                        finalizeInitialHydration();
-                  }
-            });
+            // Grab the recent archive of telemetry data to hydrate the map on load.
+            // (Also re-run on socket reconnect — see the 'connect' handler below.)
+            fetchTelemetryArchive();
 
             // Initialise bearings
             initialiseBearings();
@@ -1003,9 +1037,20 @@
             };
 
             // Tell the server we are connected and ready for data.
+            var _socket_connected_once = false;
             socket.on('connect', function() {
                 socket.emit('client_connected', {data: 'I\'m connected!'});
                 // This will cause the server to emit a few messages telling us to fetch data.
+
+                if (_socket_connected_once) {
+                    // This is a reconnect (network drop or server restart). The
+                    // client may have missed telemetry, or the server may have
+                    // restarted with different state. Re-fetch the archive to
+                    // reconcile the map instead of silently diverging.
+                    console.info('Socket reconnected — re-hydrating telemetry from archive.');
+                    fetchTelemetryArchive();
+                }
+                _socket_connected_once = true;
             });
 
 

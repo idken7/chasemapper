@@ -743,8 +743,32 @@
         return output;
     }
 
+    // Cap on how many track points are pushed into a Cesium polyline per update.
+    // The balloon and chase-car tracks grow unbounded over a flight; rebuilding
+    // (and densifying) the whole array every telemetry tick is O(n) per tick and
+    // O(n^2) over the flight. Keeping only the most recent N points bounds the
+    // per-tick cost. The 2D Leaflet layers keep the full trail. Configurable via
+    // chase_config.cesium_max_track_points.
+    function getMaxTrackPoints() {
+        try {
+            if (typeof chase_config !== 'undefined' && chase_config && chase_config.cesium_max_track_points) {
+                var n = parseInt(chase_config.cesium_max_track_points, 10);
+                if (isFinite(n) && n > 1) {
+                    return n;
+                }
+            }
+        } catch (e) {
+            // ignore and use default
+        }
+        return 2000;
+    }
+
     function toCesiumPositionList(points, options) {
         var listOptions = options || {};
+        // Optionally keep only the most recent maxPoints entries (the tail).
+        if (listOptions.maxPoints && Array.isArray(points) && points.length > listOptions.maxPoints) {
+            points = points.slice(points.length - listOptions.maxPoints);
+        }
         var normalizedPoints = listOptions.densify === false ? toCesiumPointList(points) : densifyCesiumPointList(points, listOptions.maxSegmentMeters);
         var positions = [];
 
@@ -1245,9 +1269,15 @@
         var mapContainer = document.getElementById('map');
         var cesiumContainer = getCesiumContainer();
 
+        // When Cesium (3D) is active, hide the Leaflet container so it isn't
+        // rendering tiles/markers underneath the 3D canvas. Leaflet remains the
+        // source of truth for state (layers persist in memory); only its
+        // container is hidden. Leaflet's controls are reparented to <body> in
+        // moveLeafletControlsToBody() so they stay usable while #map is hidden.
+        // Switching back to 2D calls map.invalidateSize() to re-measure/redraw.
         if (mapContainer) {
-            mapContainer.style.display = '';
-            mapContainer.setAttribute('aria-hidden', 'false');
+            mapContainer.style.display = active ? 'none' : '';
+            mapContainer.setAttribute('aria-hidden', active ? 'true' : 'false');
         }
 
         if (cesiumContainer) {
@@ -1359,7 +1389,7 @@
             position: position
         });
 
-        var path = toCesiumPositionList((payload && payload.pathData) || (balloonState && balloonState.path && typeof balloonState.path.getLatLngs === 'function' ? balloonState.path.getLatLngs() : []), {maxSegmentMeters: 15000});
+        var path = toCesiumPositionList((payload && payload.pathData) || (balloonState && balloonState.path && typeof balloonState.path.getLatLngs === 'function' ? balloonState.path.getLatLngs() : []), {maxSegmentMeters: 15000, maxPoints: getMaxTrackPoints()});
         upsertBalloonEntity(callsign, 'path', {
             show: visible && path.length >= 2,
             polyline: {
@@ -1564,9 +1594,9 @@
         // Get path points - handle Leaflet polyline or raw array
         var pathPoints = [];
         if (chase_car_position.path && typeof chase_car_position.path.getLatLngs === 'function') {
-            pathPoints = toCesiumPositionList(chase_car_position.path.getLatLngs(), {maxSegmentMeters: 10000});
+            pathPoints = toCesiumPositionList(chase_car_position.path.getLatLngs(), {maxSegmentMeters: 10000, maxPoints: getMaxTrackPoints()});
         } else if (Array.isArray(chase_car_position.path) && chase_car_position.path.length > 0) {
-            pathPoints = toCesiumPositionList(chase_car_position.path, {maxSegmentMeters: 10000});
+            pathPoints = toCesiumPositionList(chase_car_position.path, {maxSegmentMeters: 10000, maxPoints: getMaxTrackPoints()});
         }
         
         if (pathPoints.length === 0) {

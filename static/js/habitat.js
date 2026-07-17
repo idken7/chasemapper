@@ -8,7 +8,7 @@
 
 // URL to scrape recent vehicle position data from.
 // TODO: Allow adjustment of the number of positions to request.
-var spacenearus_url = "http://spacenear.us/tracker/datanew.php?mode=2hours&type=positions&format=json&max_positions=100&position_id=";
+var spacenearus_url = "https://spacenear.us/tracker/datanew.php?mode=2hours&type=positions&format=json&max_positions=100&position_id=";
 // Record of the last position ID, so we only request new data.
 var spacenearus_last_position_id = 0;
 // Keep track of whether an asynchronous AJAX request is in progress.
