@@ -126,14 +126,23 @@ def test_aprs_add_remove_flow():
                     return {
                         lat: Cesium.Math.toDegrees(cartographic.latitude),
                         lon: Cesium.Math.toDegrees(cartographic.longitude),
-                        label: entity.label && entity.label.text ? entity.label.text.getValue(Cesium.JulianDate.now()) : ''
+                        labelShown: !!(entity.label && entity.label.show && entity.label.show.getValue(Cesium.JulianDate.now())),
+                        hasPoint: !!entity.point,
+                        hasBillboard: !!entity.billboard
                     };
                 }
             """)
             assert home_position is not None
             assert abs(home_position['lat'] - 40.12345) < 0.01
             assert abs(home_position['lon'] - -74.54321) < 0.01
-            assert home_position['label'] == 'Current Location'
+            # The home marker is a native Cesium point graphic (a plain blue dot,
+            # no text label) - see syncHomeEntity() in cesium-map.js. It used to be
+            # a billboard with a hand-drawn canvas image, sized in a way that
+            # squashed the circle into an oval; the point graphic can't have that
+            # class of bug since it has no width/height to mismatch.
+            assert home_position['labelShown'] is False
+            assert home_position['hasPoint'] is True
+            assert home_position['hasBillboard'] is False
 
             # The Cesium marker interaction should reveal the camera-angle slider.
             page.evaluate("window.showCesiumCameraSlider && window.showCesiumCameraSlider('TEST1')")
