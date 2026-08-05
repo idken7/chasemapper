@@ -10,7 +10,10 @@ body {
 	--theme-rgb: 79,70,229; /* rgb of accent */
 	--glass-alpha: 0.42;
 	--panel-transition-duration: 260ms;
-	--glass-blur: 12px;
+	--glass-blur: 22px;
+	--glass-saturate: 1.6;
+	--glass-sheen: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 40%);
+	--glass-sheen-light: linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0) 45%);
 }
 
 body,
@@ -182,7 +185,9 @@ body.dark-theme .cesium-camera-slider-card {
 
 .cesium-measure-panel {
 	position: fixed;
-	right: 12px;
+	/* Cleared of the top-right zoom/3D-toggle/geolocate control stack (~64px wide);
+	   see .leaflet-top.leaflet-right in index.html where zoomControl is moved to topright. */
+	right: 84px;
 	top: 82px;
 	z-index: 9999;
 	pointer-events: none;
@@ -345,7 +350,7 @@ body.dark-theme .cesium-measure-card {
 
 @media (max-width: 520px) {
 	.cesium-measure-panel {
-		right: 10px;
+		right: 74px;
 		left: 10px;
 		top: 82px;
 	}
@@ -357,11 +362,32 @@ body.dark-theme .cesium-measure-card {
 	}
 }
 
-/* Moved control container remains fixed and interactive while Cesium is active */
+/* Chase-status readout (Chasing/ETA/Distance), embedded as the top bar of the
+   Leaflet Routing Machine directions panel (.leaflet-routing-container) so it
+   travels with the route instead of floating as its own overlapping box.
+   It also doubles as that panel's drag handle - see chase_routing.js. */
+.chase-status-inline {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 14px;
+	padding: 8px 10px;
+	margin-bottom: 4px;
+	cursor: move;
+	font-size: 12.5px;
+}
+
+.chase-status-item strong {
+	margin-right: 3px;
+}
+
+/* Moved control container spans the viewport while Cesium is active; it stays
+   pointer-events:none itself so empty space passes clicks to the map, while
+   individual controls (.leaflet-control) keep their own pointer-events:auto. */
 .leaflet-control-container[data-moved="1"] {
 	position: fixed !important;
 	z-index: 2147483647 !important;
-	pointer-events: auto !important;
+	pointer-events: none !important;
 }
 
 /* Dark theme overrides */
@@ -435,13 +461,14 @@ body.dark-theme .log-level-info { color: #cfe6ff; }
 	height: auto;
 	min-height: 56px;
 	max-height: none;
-	background: rgba(var(--theme-rgb), var(--glass-alpha));
+	background: var(--glass-sheen), rgba(var(--theme-rgb), var(--glass-alpha));
 	color: #fff;
 	border-radius: 20px;
 	padding: 4px 8px;
-	backdrop-filter: blur(20px) saturate(1.15);
-	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	backdrop-filter: blur(26px) saturate(var(--glass-saturate));
+	-webkit-backdrop-filter: blur(26px) saturate(var(--glass-saturate));
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+	border: 1px solid rgba(255, 255, 255, 0.16);
 	display: grid;
 	grid-template-columns: 1fr;
 	grid-template-rows: auto auto;
@@ -682,10 +709,10 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	flex-direction: column;
 	flex-shrink: 1;
 	min-height: 0;
-	background: rgba(23, 30, 44, calc(var(--glass-alpha) - 0.03));
+	background: var(--glass-sheen), rgba(23, 30, 44, calc(var(--glass-alpha) - 0.08));
 	border-radius: 16px;
-	box-shadow: 0 18px 42px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.08);
-	border: 0 solid rgba(255,255,255,0.08);
+	box-shadow: 0 18px 42px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.14);
+	border: 1px solid rgba(255,255,255,0.1);
 	overflow: hidden;
 	opacity: 0;
 	pointer-events: none;
@@ -694,7 +721,8 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	transform-origin: top left;
 	will-change: transform, opacity;
 	backface-visibility: hidden;
-	backdrop-filter: blur(28px) saturate(1.2);
+	backdrop-filter: blur(32px) saturate(var(--glass-saturate));
+	-webkit-backdrop-filter: blur(32px) saturate(var(--glass-saturate));
 }
 
 .log-panel.panel-closing {
@@ -776,10 +804,10 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	max-height: 0;
 	flex-shrink: 1;
 	min-height: 0;
-	background: linear-gradient(180deg, rgba(23, 30, 44, 0.36), rgba(16, 22, 34, 0.28));
+	background: var(--glass-sheen), linear-gradient(180deg, rgba(23, 30, 44, 0.32), rgba(16, 22, 34, 0.24));
 	border-radius: 20px;
-	box-shadow: 0 22px 54px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.18);
-	border: 1px solid rgba(255,255,255,0.1);
+	box-shadow: 0 22px 54px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.18);
+	border: 1px solid rgba(255,255,255,0.12);
 	overflow: hidden;
 	opacity: 0;
 	pointer-events: none;
@@ -788,7 +816,8 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	transform-origin: top left;
 	will-change: transform, opacity;
 	backface-visibility: hidden;
-	backdrop-filter: blur(34px) saturate(1.32);
+	backdrop-filter: blur(36px) saturate(var(--glass-saturate));
+	-webkit-backdrop-filter: blur(36px) saturate(var(--glass-saturate));
 }
 
 .settings-panel.panel-closing {
@@ -901,6 +930,34 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	gap: 8px;
 	flex-wrap: wrap;
 }
+
+.chaser-roster-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-height: 160px;
+	overflow-y: auto;
+}
+.chaser-roster-list li {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.85rem;
+}
+.chaser-roster-list .chaser-roster-swatch {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex: 0 0 auto;
+	display: inline-block;
+}
+.chaser-roster-list .chaser-roster-empty {
+	color: #999;
+	font-style: italic;
+}
 .button-select-group {
 	display: inline-flex;
 	align-items: center;
@@ -1000,6 +1057,12 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .settings-panel .aprs-title-left strong {
 	white-space: nowrap;
 }
+.settings-panel .aprs-last-time-row {
+	width: 100%;
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 2px;
+}
 .settings-panel .aprs-location-row { width: 100%; margin-top: 2px; }
 .settings-panel .aprs-detail-grid {
 	display: grid;
@@ -1022,41 +1085,87 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 }
 
 /* APRS Actions button styling - consolidated */
-.settings-panel .aprs-follow-btn .aprs-follow-fallback,
-.settings-panel .aprs-view-btn .aprs-view-fallback,
-.settings-panel .aprs-refresh-btn .aprs-refresh-fallback,
-.settings-panel .aprs-recovery-btn .aprs-recovery-fallback,
-.settings-panel .aprs-settings-btn .aprs-settings-fallback,
-.settings-panel .aprs-remove-btn .aprs-remove-fallback { display: none; }
+/* Only the icon-only inline buttons (follow, kebab toggle) hide their text
+   fallback; menu items show icon + label since they have room in the dropdown. */
+.settings-panel .aprs-follow-btn .aprs-follow-fallback { display: none; }
 
-.settings-panel .aprs-actions-row {
-	display: flex;
-	gap: 8px;
-	justify-content: center;
-	margin-top: 8px;
-	width: 100%;
+.settings-panel .list-group-item.aprs-item { position: relative; overflow: visible; }
+
+/* Inline title-row actions: follow toggle + kebab menu trigger */
+.settings-panel .aprs-title-right {
+	gap: 6px;
+	flex: 0 0 auto;
 }
-.settings-panel .aprs-actions-row .btn {
-	width: 36px;
-	height: 36px;
+.settings-panel .aprs-icon-btn {
+	width: 32px;
+	height: 32px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	border-radius: 10px;
+	border-radius: 9px;
 	font-size: 14px;
 }
+.settings-panel .aprs-menu-toggle {
+	background: rgba(255,255,255,0.06);
+	border-color: rgba(255,255,255,0.12);
+	color: inherit;
+}
+.settings-panel .aprs-menu-toggle[aria-expanded="true"] {
+	background: rgba(255,255,255,0.16);
+}
+
+/* Overflow menu: a dropdown anchored under the kebab button, hidden until opened */
+.settings-panel .aprs-actions-row {
+	display: none;
+	position: absolute;
+	top: 44px;
+	right: 12px;
+	z-index: 20;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 200px;
+	padding: 6px;
+	background: #1b2733;
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 12px;
+	box-shadow: 0 10px 28px rgba(0,0,0,0.4);
+}
+.settings-panel .aprs-item.aprs-menu-open .aprs-actions-row {
+	display: flex;
+}
+.settings-panel .aprs-actions-row .btn {
+	width: 100%;
+	height: auto;
+	justify-content: flex-start;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	font-size: 13px;
+	background: transparent !important;
+	border: none !important;
+	color: #e6eef6;
+	text-align: left;
+}
+.settings-panel .aprs-actions-row .btn:hover,
+.settings-panel .aprs-actions-row .btn:focus-visible {
+	background: rgba(255,255,255,0.08) !important;
+}
+.settings-panel .aprs-actions-row .btn i { width: 16px; text-align: center; flex: 0 0 auto; }
+.settings-panel .aprs-actions-row .aprs-remove-btn { color: #ff8a80; }
+.settings-panel .aprs-actions-row .aprs-remove-btn i { color: #ff8a80; }
+.settings-panel .aprs-actions-row .aprs-recovery-btn i { color: #f0ad4e; }
+.settings-panel .aprs-actions-row .aprs-view-btn i { color: #57d38c; }
+
 .settings-panel .aprs-is-following {
 	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
 	border-radius: 14px;
 }
 
 /* Ensure FA icons are visible inside small buttons */
-.aprs-remove-btn i, #aprsAddBtn i { color: #fff; font-size: 14px; }
+#aprsAddBtn i { color: #fff; font-size: 14px; }
 .aprs-refresh-spinning .fa { animation: aprsRefreshSpin 0.8s linear infinite; }
-.aprs-remove-btn.btn-danger { background:#d9534f; border-color:#d43f3a; }
-.aprs-recovery-btn.btn-warning { background:#f0ad4e; border-color:#eea236; }
-.aprs-view-btn.btn-success { background:#2eaf67; border-color:#28945a; }
 
 .aprs-callsign-modal-card {
 	width: min(760px, 94vw);
@@ -1622,10 +1731,12 @@ body:not(.dark-theme) .leaflet-container {
 }
 
 body:not(.dark-theme) .menu-dock {
-	background: linear-gradient(180deg, rgba(250, 252, 255, 0.94), rgba(241, 246, 252, 0.92));
+	background: var(--glass-sheen-light), linear-gradient(180deg, rgba(250, 252, 255, 0.66), rgba(241, 246, 252, 0.58));
 	color: #0f172a;
-	border: 1px solid rgba(15, 23, 42, 0.12);
-	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+	border: 1px solid rgba(15, 23, 42, 0.1);
+	box-shadow: 0 8px 28px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+	backdrop-filter: blur(26px) saturate(1.8);
+	-webkit-backdrop-filter: blur(26px) saturate(1.8);
 }
 
 body:not(.dark-theme) .topbar-shell,
@@ -1667,23 +1778,29 @@ body:not(.dark-theme) .topbar-action-btn.is-selected:focus {
 }
 
 body:not(.dark-theme) .log-panel {
-	background: rgba(255, 255, 255, 0.84);
+	background: var(--glass-sheen-light), rgba(255, 255, 255, 0.58);
+	border-color: rgba(15, 23, 42, 0.1);
+	backdrop-filter: blur(32px) saturate(1.8);
+	-webkit-backdrop-filter: blur(32px) saturate(1.8);
 }
 
 body:not(.dark-theme) .settings-panel {
-	background: rgba(255, 255, 255, 0.9);
+	background: var(--glass-sheen-light), rgba(255, 255, 255, 0.62);
+	border-color: rgba(15, 23, 42, 0.1);
+	backdrop-filter: blur(36px) saturate(1.8);
+	-webkit-backdrop-filter: blur(36px) saturate(1.8);
 }
 
 body:not(.dark-theme) .log-panel .log-panel-header,
 body:not(.dark-theme) .settings-panel .settings-header {
-	background: rgba(248, 250, 252, 0.95);
+	background: rgba(248, 250, 252, 0.55);
 	color: #0f172a;
 	border-bottom: 1px solid rgba(15, 23, 42, 0.1);
 }
 
 body:not(.dark-theme) .settings-panel .settings-body,
 body:not(.dark-theme) .log-panel-body {
-	background: rgba(255, 255, 255, 0.94);
+	background: rgba(255, 255, 255, 0.32);
 	color: #0f172a;
 }
 
@@ -1774,6 +1891,31 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 	color: #0f172a;
 }
 
+body:not(.dark-theme) .settings-panel .aprs-actions-row {
+	background: #ffffff;
+	border: 1px solid rgba(15, 23, 42, 0.14);
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+}
+
+body:not(.dark-theme) .settings-panel .aprs-actions-row .btn {
+	color: #0f172a;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-actions-row .btn:hover,
+body:not(.dark-theme) .settings-panel .aprs-actions-row .btn:focus-visible {
+	background: rgba(15, 23, 42, 0.06) !important;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-menu-toggle {
+	background: rgba(15, 23, 42, 0.06);
+	border-color: rgba(15, 23, 42, 0.16);
+	color: #0f172a;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
+	background: rgba(15, 23, 42, 0.14);
+}
+
 :root {
 	--map-control-size: 48px;
 }
@@ -1857,8 +1999,9 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 .recovery-modal-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(4, 8, 15, 0.66);
-	backdrop-filter: blur(4px);
+	background: rgba(4, 8, 15, 0.5);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
 }
 
 .recovery-modal-card {
@@ -1866,16 +2009,24 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 	width: min(560px, calc(100vw - 40px));
 	max-height: calc(100vh - 40px);
 	overflow: auto;
-	border-radius: 16px;
-	border: 1px solid rgba(255,255,255,0.12);
-	background: rgba(17, 24, 39, 0.94);
-	box-shadow: 0 24px 64px rgba(0,0,0,0.42);
+	border-radius: 20px;
+	border: 1px solid rgba(255,255,255,0.14);
+	background: linear-gradient(180deg, rgba(36, 44, 62, 0.66), rgba(17, 24, 39, 0.58));
+	box-shadow: 0 24px 64px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.2);
+	backdrop-filter: blur(30px) saturate(1.35);
+	-webkit-backdrop-filter: blur(30px) saturate(1.35);
 	color: #e6eef6;
 }
 
 .recovery-modal-header {
 	padding: 12px 14px 10px;
 	border-bottom: 1px solid rgba(255,255,255,0.09);
+}
+
+/* The Chase Routing card is draggable (see index.html) so it can be moved
+   if it ends up over another panel; other modals stay fixed/centered. */
+.chase-routing-modal-card .recovery-modal-header {
+	cursor: move;
 }
 
 .recovery-modal-title {
@@ -1960,10 +2111,12 @@ body:not(.dark-theme) .recovery-modal-backdrop {
 }
 
 body:not(.dark-theme) .recovery-modal-card {
-	background: rgba(255,255,255,0.97);
-	border-color: rgba(15,23,42,0.16);
+	background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(246,249,252,0.68));
+	border-color: rgba(15,23,42,0.14);
 	color: #0f172a;
-	box-shadow: 0 24px 64px rgba(15,23,42,0.24);
+	box-shadow: 0 24px 64px rgba(15,23,42,0.2), inset 0 1px 0 rgba(255,255,255,0.85);
+	backdrop-filter: blur(30px) saturate(1.5);
+	-webkit-backdrop-filter: blur(30px) saturate(1.5);
 }
 
 body:not(.dark-theme) .recovery-modal-header,
@@ -2017,9 +2170,9 @@ body:not(.dark-theme) .settings-panel .list-group-item {
 
 body:not(.dark-theme) .settings-group,
 body:not(.dark-theme) .aprs-summary-section {
-	background: rgba(255, 255, 255, 0.92);
-	border: 1px solid rgba(15, 23, 42, 0.12);
-	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+	background: rgba(255, 255, 255, 0.55);
+	border: 1px solid rgba(15, 23, 42, 0.1);
+	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
 body:not(.dark-theme) .settings-group h4,
@@ -2056,10 +2209,11 @@ body:not(.dark-theme) .cesium-measure-status {
 
 /* Liquid Glass UI Enhancements */
 .leaflet-control {
-	background: rgba(255, 255, 255, 0.08) !important;
-	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
-	border: 1px solid rgba(255, 255, 255, 0.12) !important;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+	background: var(--glass-sheen), rgba(255, 255, 255, 0.1) !important;
+	backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+	-webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+	border: 1px solid rgba(255, 255, 255, 0.16) !important;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
 	border-radius: 12px !important;
 }
 
@@ -2081,34 +2235,34 @@ body:not(.dark-theme) .cesium-measure-status {
 
 /* Glass effect for panels and overlays */
 .leaflet-popup-content-wrapper {
-	background: rgba(255, 255, 255, 0.08) !important;
-	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
-	border: 1px solid rgba(255, 255, 255, 0.12) !important;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15) !important;
+	background: var(--glass-sheen), rgba(255, 255, 255, 0.1) !important;
+	backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+	-webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) !important;
+	border: 1px solid rgba(255, 255, 255, 0.16) !important;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
 	border-radius: 12px !important;
 	color: #fff !important;
 }
 
 .leaflet-popup-tip {
-	background: rgba(255, 255, 255, 0.08) !important;
+	background: rgba(255, 255, 255, 0.1) !important;
 }
 
 body.dark-theme .leaflet-popup-content-wrapper {
-	background: rgba(8, 12, 18, 0.08) !important;
+	background: var(--glass-sheen), rgba(8, 12, 18, 0.55) !important;
 	color: #e6eef6 !important;
 }
 
 /* Dialog and modal glass styling for Chase Routing modal */
 /* Chase routing modal uses the default recovery-modal styles for exact parity with other dialogs. */
 
-/* Chase status panel glass styling */
+/* Chase status bar: flush header strip inside the (always light-themed)
+   Leaflet Routing Machine panel, rounded to match its top corners only. */
 #chase-status {
-	background: rgba(255, 255, 255, 0.08) !important;
-	backdrop-filter: blur(var(--glass-blur)) saturate(1.15) !important;
-	border: 1px solid rgba(255, 255, 255, 0.12) !important;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
-	border-radius: 12px !important;
-	color: #fff !important;
+	background: rgba(0, 0, 0, 0.045) !important;
+	border-bottom: 1px solid rgba(0, 0, 0, 0.12) !important;
+	border-radius: 4px 4px 0 0 !important;
+	color: #1f2d3d !important;
 }
 
 @media (max-width: 520px) {
@@ -2318,8 +2472,11 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	line-height: 1.3;
 }
 
-/* Remove top-left Leaflet control container entirely as requested */
-.leaflet-top.leaflet-left {
+/* Top-left stays hidden by default (nothing else should land there), except
+   when it's hosting the Chase Routing directions panel, which defaults to
+   topleft (see chase_routing.js) so it doesn't collide with the topright
+   zoom/3D-toggle/measure/geolocate control stack. */
+.leaflet-top.leaflet-left:not(:has(.leaflet-routing-container)) {
 	display: none !important;
 }
 
@@ -2632,4 +2789,59 @@ body:not(.dark-theme) .settings-panel .list-group-item {
 		opacity: 1;
 		transform: translateX(0);
 	}
+}
+
+/* Liquid-glass scrollbars for panel/dialog content */
+.settings-body,
+.log-panel-body,
+.recovery-modal-card,
+.aprs-callsign-modal-body {
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+.settings-body::-webkit-scrollbar,
+.log-panel-body::-webkit-scrollbar,
+.recovery-modal-card::-webkit-scrollbar,
+.aprs-callsign-modal-body::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+.settings-body::-webkit-scrollbar-track,
+.log-panel-body::-webkit-scrollbar-track,
+.recovery-modal-card::-webkit-scrollbar-track,
+.aprs-callsign-modal-body::-webkit-scrollbar-track {
+	background: transparent;
+}
+.settings-body::-webkit-scrollbar-thumb,
+.log-panel-body::-webkit-scrollbar-thumb,
+.recovery-modal-card::-webkit-scrollbar-thumb,
+.aprs-callsign-modal-body::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.28);
+	border-radius: 999px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+.settings-body::-webkit-scrollbar-thumb:hover,
+.log-panel-body::-webkit-scrollbar-thumb:hover,
+.recovery-modal-card::-webkit-scrollbar-thumb:hover,
+.aprs-callsign-modal-body::-webkit-scrollbar-thumb:hover {
+	background: rgba(255, 255, 255, 0.42);
+}
+body:not(.dark-theme) .settings-body,
+body:not(.dark-theme) .log-panel-body,
+body:not(.dark-theme) .recovery-modal-card,
+body:not(.dark-theme) .aprs-callsign-modal-body {
+	scrollbar-color: rgba(15, 23, 42, 0.28) transparent;
+}
+body:not(.dark-theme) .settings-body::-webkit-scrollbar-thumb,
+body:not(.dark-theme) .log-panel-body::-webkit-scrollbar-thumb,
+body:not(.dark-theme) .recovery-modal-card::-webkit-scrollbar-thumb,
+body:not(.dark-theme) .aprs-callsign-modal-body::-webkit-scrollbar-thumb {
+	background: rgba(15, 23, 42, 0.22);
+}
+body:not(.dark-theme) .settings-body::-webkit-scrollbar-thumb:hover,
+body:not(.dark-theme) .log-panel-body::-webkit-scrollbar-thumb:hover,
+body:not(.dark-theme) .recovery-modal-card::-webkit-scrollbar-thumb:hover,
+body:not(.dark-theme) .aprs-callsign-modal-body::-webkit-scrollbar-thumb:hover {
+	background: rgba(15, 23, 42, 0.36);
 }

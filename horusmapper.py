@@ -218,6 +218,150 @@ def _consume_rate_limit(client_ip, bucket_name, limit, window_s):
         return True, 0
 
 
+#
+# Socket.IO security: connection-time auth, per-action "operator" auth for
+# destructive shared actions, and rate limiting - all reusing the exact same
+# CHASEMAPPER_API_KEY / CHASEMAPPER_REQUIRE_API_AUTH policy as the REST API
+# above, so there's a single, consistent story for "who can do what".
+#
+# Flask-SocketIO (in the default threading async mode this app runs under)
+# preserves the original handshake's Flask request context for the lifetime
+# of a connection, so flask.request.args/headers inside a `connect` handler
+# *or* any later event handler on that same connection both see the query
+# string / headers the client connected with. That means the API key only
+# needs to be supplied once, at connect time (as an `api_key` query param,
+# same as the REST endpoints accept), not repeated on every event.
+#
+
+
+def _require_socketio_connect_auth():
+    """Whether the current Socket.IO connection attempt must present a valid API key."""
+    if _testing_mode():
+        return False
+    return _require_api_auth_for_request(_get_client_ip(), _get_configured_api_key())
+
+
+def _require_operator_auth():
+    """Gate destructive/shared actions (clearing payload or car data) behind
+    the same API-key policy used to guard the connection and the REST API.
+
+    This is deliberately re-checked per-action (not just once at connect)
+    so that a key configured/rotated after a client connects still applies
+    to long-lived Socket.IO sessions without requiring a reconnect.
+    """
+    if _testing_mode():
+        return True
+    configured_key = _get_configured_api_key()
+    if not _require_api_auth_for_request(_get_client_ip(), configured_key):
+        return True
+    return _request_api_key() == configured_key
+
+
+def _deny_operator_action(action_name):
+    logging.warning(
+        "Denied '%s' from %s: missing/invalid API key.", action_name, _get_client_ip()
+    )
+    try:
+        socketio.emit(
+            "operator_action_denied",
+            {"action": action_name, "reason": "unauthorized"},
+            namespace="/chasemapper",
+            room=flask.request.sid,
+        )
+    except Exception:
+        logging.exception("Error notifying client of denied operator action")
+
+
+def _device_position_rate_limit_config():
+    enabled = _bool_from_env(
+        os.environ.get("CHASEMAPPER_SOCKETIO_RATE_LIMIT_ENABLED", "true"), default=True
+    )
+    limit = _int_from_env(os.environ.get("CHASEMAPPER_SOCKETIO_RATE_LIMIT_PER_MIN"), 120)
+    window_s = _int_from_env(os.environ.get("CHASEMAPPER_SOCKETIO_RATE_LIMIT_WINDOW_S"), 60)
+    # Coarser backstop shared by every client_id reported from the same source
+    # IP, so one address can't dodge the per-person limit below by minting
+    # many fake client_ids. Deliberately generous relative to `limit` - it's
+    # a defense against abuse, not a cap on how many real people can
+    # legitimately share one network (e.g. a chase club on one LAN/hotspot).
+    ip_limit = _int_from_env(
+        os.environ.get("CHASEMAPPER_SOCKETIO_RATE_LIMIT_PER_IP_PER_MIN"), limit * 20
+    )
+    return enabled, limit, window_s, ip_limit
+
+
+# Simple presence tracking: which Socket.IO sessions are currently connected,
+# so every client can show "N connected" without polling. Broadcast on every
+# connect/disconnect rather than computed on demand, since it's cheap and
+# rare (connection churn, not a per-telemetry-tick event).
+connected_sids = set()
+connected_sids_lock = Lock()
+
+
+def _broadcast_presence():
+    with connected_sids_lock:
+        _count = len(connected_sids)
+    socketio.emit("presence_update", {"connected": _count}, namespace="/chasemapper")
+
+
+# Tracks which Socket.IO session ("sid") currently "owns" each independently
+# -tracked chase-car client_id, so one browser can't spoof another's live
+# position by reusing/guessing their client_id while that browser is still
+# actively connected. A client_id is free to be (re)claimed by any sid once
+# its previous owner disconnects (see the `disconnect` handler below).
+client_car_owners = {}  # client_id -> sid
+client_car_owners_by_sid = {}  # sid -> set of client_ids
+client_car_owners_lock = Lock()
+
+
+def _claim_client_car_ownership(client_id, sid):
+    """Return True if `sid` is allowed to act as `client_id` right now."""
+    with client_car_owners_lock:
+        _owner_sid = client_car_owners.get(client_id)
+        if _owner_sid is not None and _owner_sid != sid:
+            return False
+        client_car_owners[client_id] = sid
+        client_car_owners_by_sid.setdefault(sid, set()).add(client_id)
+        return True
+
+
+def _release_client_car_ownership(sid):
+    with client_car_owners_lock:
+        _owned = client_car_owners_by_sid.pop(sid, None)
+        if not _owned:
+            return
+        for _client_id in _owned:
+            if client_car_owners.get(_client_id) == sid:
+                client_car_owners.pop(_client_id, None)
+
+
+@socketio.on("connect", namespace="/chasemapper")
+def handle_socketio_connect(auth=None):
+    """Reject the Socket.IO connection outright if an API key is configured
+    and required for this client's IP (mirrors the REST API's policy)."""
+    if _require_socketio_connect_auth() and _request_api_key() != _get_configured_api_key():
+        logging.warning(
+            "Rejected Socket.IO connection from %s: missing/invalid API key.",
+            _get_client_ip(),
+        )
+        raise ConnectionRefusedError("unauthorized")
+
+    with connected_sids_lock:
+        connected_sids.add(flask.request.sid)
+    _broadcast_presence()
+
+
+@socketio.on("disconnect", namespace="/chasemapper")
+def handle_socketio_disconnect():
+    try:
+        _release_client_car_ownership(flask.request.sid)
+    except Exception:
+        logging.exception("Error releasing client car ownership on disconnect")
+
+    with connected_sids_lock:
+        connected_sids.discard(flask.request.sid)
+    _broadcast_presence()
+
+
 @app.before_request
 def enforce_api_endpoint_security():
     # Guard only external route/state API surfaces.
@@ -692,8 +836,18 @@ current_payload_tracks = (
 # Lock protecting access to `current_payloads` and `current_payload_tracks`.
 payloads_lock = Lock()
 
-# Chase car position
+# Chase car position (the "primary" car - hardware GPS/UDP feed, or the
+# default identity for a lone browser that isn't sharing its own device
+# location).
 car_track = GenericTrack()
+
+# Additional, independently-tracked chase cars, keyed by a client-supplied
+# id (persisted per-browser in localStorage). This lets multiple people
+# connect to the same server and each have their own live position tracked
+# separately, instead of everyone overwriting the single `car_track` above.
+# Each entry is {"track": GenericTrack(), "name": str, "last_seen": float}.
+client_car_tracks = {}
+client_car_tracks_lock = Lock()
 
 # Bearing store
 bearing_store = None
@@ -1025,6 +1179,35 @@ def client_connected(_data):
                         namespace="/chasemapper",
                         room=flask.request.sid,
                     )
+
+        # Also replay the latest known position of every other independently
+        # tracked chase car, so a newly-connected client immediately sees
+        # everyone already active rather than waiting for their next update.
+        with client_car_tracks_lock:
+            client_cars_snapshot = [
+                (_cid, _entry["track"].get_latest_state(), _entry["name"])
+                for _cid, _entry in client_car_tracks.items()
+            ]
+
+        for _client_id, _state, _name in client_cars_snapshot:
+            if not _state:
+                continue
+            socketio.emit(
+                "telemetry_event",
+                {
+                    "callsign": "CAR",
+                    "car_id": _client_id,
+                    "car_name": _name,
+                    "position": [_state["lat"], _state["lon"], _state["alt"]],
+                    "vel_v": 0.0,
+                    "heading": _state["heading"],
+                    "heading_valid": _state["heading_valid"],
+                    "heading_status": _state["heading_status"],
+                    "speed": _state["speed"],
+                },
+                namespace="/chasemapper",
+                room=flask.request.sid,
+            )
     except Exception as e:
         logging.debug("Error replaying telemetry to client: %s", str(e))
 
@@ -1066,22 +1249,20 @@ def aprs_refresh_request(data):
 # allow-list keeps client_settings_update limited to the toggles the Settings
 # UI exposes. aprs_callsigns/aprs_prediction_overrides are handled separately
 # below (server-owned); selected_profile has its own "profile_change" event.
+# Keys the server accepts from a `client_settings_update` push and applies to
+# the shared `chasemapper_config` (which is then broadcast to every connected
+# client). This is intentionally restricted to settings that actually change
+# *server-side* behaviour - a running thread, a compute budget, or data that's
+# genuinely shared across everyone (e.g. the synchronised time-sync hunt).
+#
+# Purely cosmetic/display preferences (unit selection, map colours, line
+# styles, 2D/3D mode, timezone display, default map centre, etc.) are
+# intentionally NOT here - they're personal per-browser choices that live in
+# localStorage (see LOCAL_DISPLAY_CONFIG_KEYS client-side) and must never be
+# pushed through the server to other people's browsers.
 CLIENT_SETTABLE_CONFIG_KEYS = frozenset((
     "aprs_enabled",
     "aprs_poll_interval",
-    "aprs_timezone",
-    "bearing_color",
-    "bearing_custom_color",
-    "bearing_length",
-    "bearing_weight",
-    "bearings_only_mode",
-    "cesium_map_mode",
-    "chase_car_speed",
-    "default_alt",
-    "default_lat",
-    "default_lon",
-    "doa_confidence_threshold",
-    "enable_3d_map_view",
     "habitat_call",
     "habitat_update_rate",
     "habitat_upload_enabled",
@@ -1092,19 +1273,11 @@ CLIENT_SETTABLE_CONFIG_KEYS = frozenset((
     "pred_model",
     "pred_model_time",
     "pred_update_rate",
-    "range_ring_color",
-    "range_ring_custom_color",
-    "range_ring_quantity",
-    "range_ring_spacing",
-    "range_ring_weight",
-    "range_rings_enabled",
     "show_abort",
-    "switch_miles_feet",
     "time_seq_active",
     "time_seq_cycle",
     "time_seq_enabled",
     "time_seq_times",
-    "unitselection",
 ))
 
 
@@ -1945,6 +2118,9 @@ def download_new_model_2():
 def clear_payload_data(data):
     """ Clear the payload data store """
     global current_payloads, current_payload_tracks
+    if not _require_operator_auth():
+        _deny_operator_action("payload_data_clear")
+        return
     logging.warning("Client requested all payload data be cleared.")
     # Wait until any current prediction has finished running.
     predictor_idle_event.wait(timeout=10.0)
@@ -1959,6 +2135,9 @@ def clear_payload_data(data):
 def clear_car_data(data):
     """ Clear out the car position track """
     global car_track
+    if not _require_operator_auth():
+        _deny_operator_action("car_data_clear")
+        return
     logging.warning("Client requested all chase car data be cleared.")
     car_track = GenericTrack()
 
@@ -2429,11 +2608,78 @@ def udp_listener_car_callback(data):
         chase_logger.add_car_position(_car_position_update)
 
 
-def udp_listener_bearing_callback(data):
+def handle_client_car_position(client_id, name, data):
+    """ Handle a position report from an independently-tracked chase car.
+
+    This is separate from `udp_listener_car_callback` / `car_track` (the
+    primary hardware GPS / UDP feed) so that multiple browsers/phones can
+    each report their own position without overwriting each other or the
+    primary car. It intentionally does not touch bearing_store, chase_logger
+    or online_uploader - those are tied to the single physical station/car
+    those subsystems assume.
+    """
+    global client_car_tracks
+
+    _lat = float(data["latitude"])
+    _lon = float(data["longitude"])
+
+    try:
+        _alt = float(data["altitude"])
+    except Exception:
+        _alt = 0.0
+
+    _time_dt = pytz.utc.localize(datetime.utcnow())
+
+    _car_position_update = {
+        "time": _time_dt,
+        "lat": _lat,
+        "lon": _lon,
+        "alt": _alt,
+        "comment": "CAR",
+    }
+    if "heading" in data:
+        _car_position_update["heading"] = data["heading"]
+    if "heading_status" in data:
+        _car_position_update["heading_status"] = data["heading_status"]
+
+    with client_car_tracks_lock:
+        if client_id not in client_car_tracks:
+            client_car_tracks[client_id] = {
+                "track": GenericTrack(),
+                "name": name or client_id,
+                "last_seen": time.time(),
+            }
+        _entry = client_car_tracks[client_id]
+        _entry["track"].add_telemetry(_car_position_update)
+        if name:
+            _entry["name"] = name
+        _entry["last_seen"] = time.time()
+        _state = _entry["track"].get_latest_state()
+        _entry_name = _entry["name"]
+
+    if not _state:
+        return
+
+    _car_telem = {
+        "callsign": "CAR",
+        "car_id": client_id,
+        "car_name": _entry_name,
+        "position": [_lat, _lon, _alt],
+        "vel_v": 0.0,
+        "heading": _state["heading"],
+        "heading_valid": _state["heading_valid"],
+        "heading_status": _state["heading_status"],
+        "speed": _state["speed"],
+    }
+
+    flask_emit_event("telemetry_event", _car_telem)
+
+
+def udp_listener_bearing_callback(data, source_position=None):
     global bearing_store, bearing_mode, chase_logger
 
     if bearing_store != None:
-        bearing_store.add_bearing(data)
+        bearing_store.add_bearing(data, source_position=source_position)
         bearing_mode = True
         if chase_logger:
             chase_logger.add_bearing(data)
@@ -2442,8 +2688,60 @@ def udp_listener_bearing_callback(data):
 
 @socketio.on("add_manual_bearing", namespace="/chasemapper")
 def add_manual_bearing(data):
-    # Add a user-supplied bearing from the web interface
-    udp_listener_bearing_callback(data)
+    """ Add a user-supplied bearing from the web interface.
+
+    If the submission includes a client_id (the submitting browser's own
+    persistent id - see the multi-user car tracking above), the person's
+    name is appended to 'source' (e.g. "EasyBearing: VK5QI") so bearings
+    from different people are distinguishable on the map, without breaking
+    the existing manual_bearing_sources substring match in bearings.js
+    (which keys off the original "EasyBearing"/"BPI"/"manual" prefix).
+
+    For *relative* bearings specifically (compass-relative, no explicit
+    lat/lon - see chasemapper/bearings.py), it's meaningless to fuse them
+    with the primary car's position if that's not where this person actually
+    is. When we know who submitted it, fuse with THEIR OWN tracked position
+    instead; if we don't have one yet (they haven't enabled "Share My Live
+    Location"), reject it rather than silently misattributing it.
+    """
+    try:
+        if not isinstance(data, dict):
+            udp_listener_bearing_callback(data)
+            return
+
+        _client_id = data.get("client_id")
+        _source_position = None
+
+        if _client_id:
+            data = dict(data)
+            _name = data.get("name") or _client_id
+            data["source"] = "%s: %s" % (data.get("source") or "EasyBearing", _name)
+
+            if data.get("bearing_type") == "relative":
+                with client_car_tracks_lock:
+                    _entry = client_car_tracks.get(_client_id)
+                    _state = _entry["track"].get_latest_state() if _entry else None
+
+                if not _state:
+                    socketio.emit(
+                        "bearing_rejected",
+                        {"reason": "no_known_position"},
+                        namespace="/chasemapper",
+                        room=flask.request.sid,
+                    )
+                    return
+
+                _source_position = {
+                    "lat": _state["lat"],
+                    "lon": _state["lon"],
+                    "speed": _state["speed"],
+                    "heading": _state["heading"],
+                    "heading_valid": _state["heading_valid"],
+                }
+
+        udp_listener_bearing_callback(data, source_position=_source_position)
+    except Exception:
+        logging.exception("Error handling add_manual_bearing")
 
 
 # Data Age Monitoring Thread
@@ -2489,6 +2787,32 @@ def check_data_age():
                     )
             except Exception:
                 logging.exception("Exception while checking payload data age for %s", _call)
+
+        # Also age out independently-tracked chase cars whose owning browser
+        # has gone away (closed tab, lost connection, etc), so long-running
+        # servers don't accumulate stale entries.
+        with client_car_tracks_lock:
+            _client_ids = list(client_car_tracks.keys())
+
+        for _client_id in _client_ids:
+            try:
+                with client_car_tracks_lock:
+                    _entry = client_car_tracks.get(_client_id)
+                if not _entry:
+                    continue
+
+                if (_now - _entry["last_seen"]) > (
+                    chasemapper_config["payload_max_age"] * 60.0
+                ):
+                    with client_car_tracks_lock:
+                        client_car_tracks.pop(_client_id, None)
+
+                    logging.info(
+                        "Client car %s position older than maximum age - removed from data store."
+                        % _client_id
+                    )
+            except Exception:
+                logging.exception("Exception while checking client car data age for %s", _client_id)
 
         time.sleep(2)
 
@@ -2657,11 +2981,80 @@ def profile_change(data):
 
 @socketio.on("device_position", namespace="/chasemapper")
 def device_position_update(data):
-    """ Accept a device position update from a client and process it as if it was a chase car position """
+    """ Accept a device position update from a client.
+
+    If the client supplies a `client_id` (a per-browser id, persisted in
+    localStorage), the position is tracked independently for that client -
+    see handle_client_car_position(). This lets multiple people connect and
+    each have their own live position, rather than every browser's location
+    overwriting the same shared "CAR" position.
+
+    If no client_id is supplied (older client, or a deliberately shared
+    single-operator setup), fall back to the legacy behaviour of treating it
+    as the primary chase car position.
+
+    Rate-limited per (source IP, client_id) - not just per IP - so several
+    real people sharing one network/NAT (e.g. a chase club on one hotspot)
+    don't throttle each other out of a single shared bucket. A coarser
+    per-IP backstop still catches one address minting many fake client_ids
+    to dodge that. When a client_id is supplied, also gated by an ownership
+    lease so one connection can't spoof another still-active connection's
+    identity (see _claim_client_car_ownership).
+    """
     try:
-        udp_listener_car_callback(data)
+        _client_id = data.get("client_id") if isinstance(data, dict) else None
+
+        _rl_enabled, _rl_limit, _rl_window_s, _rl_ip_limit = _device_position_rate_limit_config()
+        if _rl_enabled and not _testing_mode():
+            _client_ip = _get_client_ip()
+            _ok_ip, _ = _consume_rate_limit(
+                _client_ip, "device_position:ip", _rl_ip_limit, _rl_window_s
+            )
+            if not _ok_ip:
+                return
+            _ok, _ = _consume_rate_limit(
+                _client_ip,
+                f"device_position:{_client_id or 'primary'}",
+                _rl_limit,
+                _rl_window_s,
+            )
+            if not _ok:
+                return
+
+        if _client_id:
+            if not _claim_client_car_ownership(_client_id, flask.request.sid):
+                logging.warning(
+                    "Rejected device_position for client_id=%s from %s: owned by another active connection.",
+                    _client_id,
+                    _get_client_ip(),
+                )
+                return
+            _name = data.get("name") or _client_id
+            handle_client_car_position(_client_id, _name, data)
+        else:
+            udp_listener_car_callback(data)
     except Exception:
         logging.exception("Error handling device_position update")
+
+
+@socketio.on("client_car_clear", namespace="/chasemapper")
+def client_car_clear(data):
+    """ Clear a single independently-tracked client's chase-car track (their own "Clear My Track" action). """
+    try:
+        _client_id = data.get("client_id") if isinstance(data, dict) else None
+        if not _client_id:
+            return
+        if not _claim_client_car_ownership(_client_id, flask.request.sid):
+            logging.warning(
+                "Rejected client_car_clear for client_id=%s from %s: owned by another active connection.",
+                _client_id,
+                _get_client_ip(),
+            )
+            return
+        with client_car_tracks_lock:
+            client_car_tracks.pop(_client_id, None)
+    except Exception:
+        logging.exception("Error handling client_car_clear")
 
 
 class WebHandler(logging.Handler):

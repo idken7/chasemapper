@@ -1,0 +1,15 @@
+# Example Caddyfile for reverse-proxying chasemapper with automatic HTTPS.
+# See README.md "Deploying for Multiple Remote Users / HTTPS" for context.
+#
+# Caddy detects the WebSocket `Upgrade` header automatically, so no extra
+# configuration is needed for the Socket.IO connection to work through it.
+# Caddy also sets X-Forwarded-For automatically - set CHASEMAPPER_TRUST_PROXY=1
+# on the chasemapper process to have it use that for real client IPs (see
+# README.md "Behind a reverse proxy: set CHASEMAPPER_TRUST_PROXY").
+#
+# Replace chasemapper.example.com with your own DNS name, point it at this
+# host, then run: caddy run --config Caddyfile
+
+chasemapper.example.com {
+    reverse_proxy localhost:5001
+}

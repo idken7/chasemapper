@@ -1,0 +1,38 @@
+# Example nginx server block for reverse-proxying chasemapper with HTTPS.
+# See README.md "Deploying for Multiple Remote Users / HTTPS" for context.
+#
+# The Upgrade/Connection headers below are required for Socket.IO's
+# WebSocket transport to work through the proxy - without them the
+# connection will fail to upgrade (commonly missed).
+#
+# X-Forwarded-For (not X-Real-IP - chasemapper doesn't read that header) lets
+# chasemapper see real client IPs instead of nginx's own. It only takes effect
+# if you also set CHASEMAPPER_TRUST_PROXY=1 on the chasemapper process - see
+# README.md "Behind a reverse proxy: set CHASEMAPPER_TRUST_PROXY".
+#
+# Obtain a certificate with certbot (https://certbot.eff.org/) or similar,
+# then adjust the paths/server_name below to match your deployment.
+
+server {
+    listen 443 ssl;
+    server_name chasemapper.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/chasemapper.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/chasemapper.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+# Optional: redirect plain HTTP to HTTPS.
+server {
+    listen 80;
+    server_name chasemapper.example.com;
+    return 301 https://$host$request_uri;
+}

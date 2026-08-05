@@ -110,7 +110,7 @@ class Bearings(object):
         except Exception as e:
             logging.error("Bearing Handler - Invalid car position: %s" % str(e))
 
-    def add_bearing(self, bearing):
+    def add_bearing(self, bearing, source_position=None):
         """ Add a bearing into the store, fusing incoming data with the latest car position as required.
 
         bearing must be a dictionary with the following keys:
@@ -129,6 +129,14 @@ class Bearings(object):
             'raw_bearing_angles': A list of angles, associated with...
             'raw_doa': A list of TDOA result values, for each of the provided angles.
 
+        source_position: Optional dict with 'lat', 'lon', 'speed', 'heading',
+        'heading_valid' keys, used instead of self.current_car_position when
+        fusing a *relative* bearing. This lets a bearing be attributed to a
+        specific person's own tracked position (see horusmapper.py's
+        add_manual_bearing) rather than always the single hardware-fed
+        primary car - relevant once more than one person can be independently
+        positioned. Ignored for absolute bearings, which already carry their
+        own explicit lat/lon.
         """
 
         # Should never be passed a non-bearing dict, but check anyway,
@@ -137,8 +145,10 @@ class Bearings(object):
 
         _arrival_time = time.time()
 
-        # Get a copy of the current car position, in case it is updated
-        _current_car_pos = self.current_car_position.copy()
+        # Get a copy of the current car position, in case it is updated.
+        # A caller-supplied source_position (see docstring) takes priority
+        # for relative-bearing fusion.
+        _current_car_pos = source_position if source_position is not None else self.current_car_position.copy()
 
         if "timestamp" in bearing:
             _src_timestamp = bearing["timestamp"]

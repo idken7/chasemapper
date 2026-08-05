@@ -52,14 +52,33 @@ var timeSeqTimes = [0,0,0,0];
 
 
 function updateBearingSettings(){
-	// Update bearing settings, but do *not* redraw.
-	bearing_weight = parseFloat($('#bearingWeight').val());
-	manual_bearing_weight = parseFloat($('#manualBearingWeight').val());
-	bearing_length = parseFloat($('#bearingLength').val())*1000;
-	bearing_confidence_threshold = parseFloat($('#bearingConfidenceThreshold').val());
-	bearing_max_age = parseFloat($('#bearingMaximumAge').val())*60.0;
-	bearing_min_opacity = parseFloat($('#bearingMinOpacity').val());
-	bearing_max_opacity = parseFloat($('#bearingMaxOpacity').val());
+	// Update bearing settings, but do *not* redraw. Several of these inputs
+	// were removed from the page in an earlier GUI refactor (see
+	// getCheckboxState's comment in utils.js) but this function still tries
+	// to read them - guard every parse against NaN/undefined and fall back
+	// to the current value, so a missing control can't corrupt these (and,
+	// below, can't get persisted as a broken localStorage value either).
+	var _weight = parseFloat($('#bearingWeight').val());
+	if (!isNaN(_weight)) bearing_weight = _weight;
+
+	var _manual_weight = parseFloat($('#manualBearingWeight').val());
+	if (!isNaN(_manual_weight)) manual_bearing_weight = _manual_weight;
+
+	var _length_km = parseFloat($('#bearingLength').val());
+	if (!isNaN(_length_km)) bearing_length = _length_km * 1000;
+
+	var _confidence = parseFloat($('#bearingConfidenceThreshold').val());
+	if (!isNaN(_confidence)) bearing_confidence_threshold = _confidence;
+
+	var _max_age = parseFloat($('#bearingMaximumAge').val());
+	if (!isNaN(_max_age)) bearing_max_age = _max_age * 60.0;
+
+	var _min_opacity = parseFloat($('#bearingMinOpacity').val());
+	if (!isNaN(_min_opacity)) bearing_min_opacity = _min_opacity;
+
+	var _max_opacity = parseFloat($('#bearingMaxOpacity').val());
+	if (!isNaN(_max_opacity)) bearing_max_opacity = _max_opacity;
+
 	var _bearing_color = $('#bearingColorSelect').val();
 	var _bearing_custom_color = $('#bearingCustomColor').val();
 
@@ -76,6 +95,17 @@ function updateBearingSettings(){
 	} else if (_bearing_color == "custom"){
 		bearing_color = _bearing_custom_color;
 	}
+	// else: control is absent - leave bearing_color as whatever it already was.
+
+	// Persist as personal display preferences (never sent to the server),
+	// only when we actually read a valid value.
+	if (typeof setLocalDisplaySetting === 'function'){
+		if (!isNaN(_weight)) setLocalDisplaySetting('bearing_weight', bearing_weight);
+		if (!isNaN(_length_km)) setLocalDisplaySetting('bearing_length', _length_km);
+		if (!isNaN(_confidence)) setLocalDisplaySetting('doa_confidence_threshold', bearing_confidence_threshold);
+		if (_bearing_color) setLocalDisplaySetting('bearing_color', _bearing_color);
+		if (_bearing_custom_color) setLocalDisplaySetting('bearing_custom_color', _bearing_custom_color);
+	}
 }
 
 function destroyAllBearings(){
@@ -87,6 +117,42 @@ function destroyAllBearings(){
 	//bearing_sources = [];
 }
 
+
+// bearing.source is now sometimes a free-text name (e.g. "EasyBearing: VK5QI",
+// with the name coming from a user's own chosen chaser name) rather than a
+// fixed hardware label. Build the per-source filter checkbox's DOM id from a
+// sanitized version of it, since jQuery's "#id" selector syntax interprets
+// unescaped ':' and other special characters as CSS pseudo-selectors and
+// would break/misbehave otherwise.
+function bearingSourceElementId(source){
+	return "bearing_source_" + (source || '').toString().replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// Colour-codes bearing lines by source, so if more than one person is
+// submitting bearings at once (see add_manual_bearing / bearingEntry.html /
+// oclock.html), whose is whose is visually distinguishable rather than every
+// line rendering identically. The first source seen this session keeps
+// tracking the user's own configured bearing_color setting exactly as
+// before (so a single-source setup looks unchanged); each additional
+// distinct source gets a fixed colour from a small palette.
+var bearing_source_colours = {};
+var bearing_primary_source = null;
+var bearing_source_colour_idx = 0;
+var bearing_source_colour_palette = ['#e74c3c', '#2ecc71', '#9b59b6', '#1abc9c', '#e67e22', '#3498db'];
+
+function getBearingLineColour(source){
+	if (bearing_primary_source === null){
+		bearing_primary_source = source;
+	}
+	if (source === bearing_primary_source){
+		return bearing_color;
+	}
+	if (!bearing_source_colours.hasOwnProperty(source)){
+		bearing_source_colours[source] = bearing_source_colour_palette[bearing_source_colour_idx % bearing_source_colour_palette.length];
+		bearing_source_colour_idx++;
+	}
+	return bearing_source_colours[source];
+}
 
 function bearingValid(bearing){
 	// Decide if a bearing should be plotted on the map, based on user options.
@@ -105,7 +171,8 @@ function bearingValid(bearing){
 	}
 
 	// Disable showing of this bearing if the source is not selected
-	if (!document.getElementById("bearing_source_" + bearing.source).checked){
+	var _sourceCheckbox = document.getElementById(bearingSourceElementId(bearing.source));
+	if (_sourceCheckbox && !_sourceCheckbox.checked){
 		_show_bearing = false;
 	}
 
@@ -142,12 +209,15 @@ function addBearing(timestamp, bearing, live){
 
 	if ( !bearing_sources.includes(bearing.source)){
 		bearing_sources.push(bearing.source);
-		_new_bearing_div_name = "bearing_source_" + bearing.source;
-		bearing_sources_div = "<div class='paramRow'><b>Source: " + bearing.source + "</b> <input type='checkbox' class='paramSelector' id='"+_new_bearing_div_name+"'></div>";
+		// bearing.source may now contain a free-text name (see comment on
+		// bearingSourceElementId above) - escape it for display, and derive
+		// a sanitized id for the checkbox rather than using it verbatim.
+		_new_bearing_div_name = bearingSourceElementId(bearing.source);
+		bearing_sources_div = "<div class='paramRow'><b>Source: " + escapeHtml(bearing.source) + "</b> <input type='checkbox' class='paramSelector' id='"+_new_bearing_div_name+"'></div>";
 		$("#bearing_source_selector").append(bearing_sources_div);
-		$("#"+_new_bearing_div_name).prop('checked',true);
+		$(document.getElementById(_new_bearing_div_name)).prop('checked',true);
 
-		$("#"+_new_bearing_div_name).change(function(){
+		$(document.getElementById(_new_bearing_div_name)).on('change', function(){
 			redrawBearings();
 		});
 	}
@@ -170,7 +240,7 @@ function addBearing(timestamp, bearing, live){
 	// Create the PolyLine
 	bearing_store[timestamp].line = L.polyline(
 		[[bearing_store[timestamp].lat, bearing_store[timestamp].lon],_end],{
-			color: bearing_color,
+			color: getBearingLineColour(bearing_store[timestamp].source),
 			weight: _temp_bearing_weight,
 			opacity: _opacity
 		});
@@ -238,7 +308,7 @@ function restyleBearings(){
 
 		// Create the PolyLine
 		bearing_store[key].line.setStyle({
-				color: bearing_color,
+				color: getBearingLineColour(bearing_store[key].source),
 				weight: _temp_bearing_weight,
 				opacity: _opacity
 			});
@@ -273,7 +343,7 @@ function redrawBearings(){
 		// Create the PolyLine
 		bearing_store[key].line = L.polyline(
 			[[bearing_store[key].lat, bearing_store[key].lon],_end],{
-				color: bearing_color,
+				color: getBearingLineColour(bearing_store[key].source),
 				weight: _temp_bearing_weight,
 				opacity: _opacity
 			});
@@ -355,6 +425,11 @@ function toggleBearingsOnlyMode(){
 		return;
 	}
 	var _bearings_only_enabled = bearingsOnlyModeElement.checked;
+
+	// Persist as a personal display preference (never sent to the server).
+	if (typeof setLocalDisplaySetting === 'function'){
+		setLocalDisplaySetting('bearings_only_mode', _bearings_only_enabled);
+	}
 
 
 	if ((_bearings_only_enabled == true) ){//} && (bearings_only_mode == false)){
@@ -530,6 +605,13 @@ function manualBearing(){
 		'longitude': chase_car_position.latest_data[1],
 		'bearing': current_bearing
 	};
+	// The server appends our name to 'source' (keeping the "EasyBearing"
+	// prefix intact, since manual_bearing_sources above matches on it) so
+	// bearings from different people are distinguishable on the map.
+	if (typeof my_car_client_id !== 'undefined'){
+		_bearing_info.client_id = my_car_client_id;
+		_bearing_info.name = (typeof getMyCarName === 'function' && getMyCarName()) || undefined;
+	}
 
 	socket.emit('add_manual_bearing', _bearing_info);
 }

@@ -36,6 +36,11 @@
 
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <!-- car.js: just for the multi-user identity helpers (my_car_client_id,
+         getMyCarName, isMyOwnCarTelemetry, startSharingMyLocation) - this
+         page doesn't render other chasers, so its map-marker functions are
+         never called here. -->
+    <script src="{{ url_for('static', filename='js/car.js') }}"></script>
 
 
 
@@ -164,6 +169,16 @@
                 handleSettings(data);
             });
 
+            // This page submits *relative* bearings (compass-relative, no
+            // explicit lat/lon), which the server fuses with wherever this
+            // browser's own position is - so it needs to actually be
+            // reporting one, same as the main map.
+            startSharingMyLocation();
+
+            socket.on('bearing_rejected', function(data){
+                var _reason = (data && data.reason) || '';
+                alert('Bearing not recorded' + (_reason === 'no_known_position' ? ': enable location sharing first (see the prompt above).' : '.'));
+            });
 
             function handleOclockClick(value){
                 console.log(value);
@@ -171,7 +186,9 @@
                     'type': 'BEARING',
                     'bearing_type': 'relative',
                     'source': 'EasyBearing',
-                    'bearing': value
+                    'bearing': value,
+                    'client_id': my_car_client_id,
+                    'name': getMyCarName() || undefined
                 };
                 console.log(_bearing_info);
                 socket.emit('add_manual_bearing', _bearing_info);
@@ -203,8 +220,10 @@
                 //  time_to_landing: String
                 // If callsign = 'CAR', the lat/lon/alt will be considered to be a car telemetry position.
 
-                // Handle chase car position updates.
-                if (data.callsign == 'CAR'){
+                // Handle chase car position updates. Ignore telemetry for
+                // other connected chasers' cars - this page only cares about
+                // its own position (see isMyOwnCarTelemetry in car.js).
+                if (data.callsign == 'CAR' && isMyOwnCarTelemetry(data)){
                     // Update car position.
                     chase_car_position.latest_data = data.position;
                     chase_car_position.heading = data.heading; // degrees true

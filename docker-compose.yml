@@ -6,6 +6,12 @@ services:
     tty: true
     ports:
       - "5001:5001"
+    environment:
+      # Optional API key auth for /api/route, /api/latest_route, /api/mobile_state,
+      # the Socket.IO connection, and the "Clear Payload Data"/"Clear Chase-Car Track"
+      # actions. See README.md "Endpoint Security (Auth + Rate Limiting)".
+      # - CHASEMAPPER_API_KEY=changeme
+      # - CHASEMAPPER_REQUIRE_API_AUTH=auto
     volumes:
       # NOTE: The application expects a single config file at /opt/chasemapper/horusmapper.cfg
       # mounting a host directory at that path (./horusmapper.cfg) will cause the app to fail

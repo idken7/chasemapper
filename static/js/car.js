@@ -82,6 +82,21 @@ function updateRangeRings(){
 	// Grab the range ring settings.
 	var _ring_enabled = getCheckboxState("rangeRingsEnabled", false);
 
+	// Persist as personal display preferences (never sent to the server).
+	if (typeof setLocalDisplaySetting === 'function'){
+		setLocalDisplaySetting('range_rings_enabled', _ring_enabled);
+		var _rq = parseInt($('#ringQuantity').val());
+		if (!isNaN(_rq)) setLocalDisplaySetting('range_ring_quantity', _rq);
+		var _rs = parseFloat($('#ringSpacing').val());
+		if (!isNaN(_rs)) setLocalDisplaySetting('range_ring_spacing', _rs);
+		var _rw = parseFloat($('#ringWeight').val());
+		if (!isNaN(_rw)) setLocalDisplaySetting('range_ring_weight', _rw);
+		var _rc = $('#ringColorSelect').val();
+		if (_rc) setLocalDisplaySetting('range_ring_color', _rc);
+		var _rcc = $('#ringCustomColor').val();
+		if (_rcc) setLocalDisplaySetting('range_ring_custom_color', _rcc);
+	}
+
 	// Check if we actually have a chase car position to work with.
 	var _position = chase_car_position.latest_data;
 
@@ -136,12 +151,262 @@ var reconfigureCarMarker = function(profile_name){
 }
 
 
+//
+// Multi-user chase-car identity.
+//
+// Each browser gets a persistent random id (stored in localStorage) plus an
+// optional display name/callsign. When "Share My Location" is enabled, this
+// id is sent along with every position update so the server tracks it as an
+// independent chase car rather than overwriting anyone else's position.
+//
+
+var my_device_position_active = false;
+
+function getMyCarClientId(){
+	try{
+		var _id = localStorage.getItem('chasemapper_client_id');
+		if (!_id){
+			_id = (window.crypto && typeof crypto.randomUUID === 'function') ?
+				crypto.randomUUID() :
+				('car-' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+			localStorage.setItem('chasemapper_client_id', _id);
+		}
+		return _id;
+	}catch(e){
+		// localStorage unavailable (e.g. private browsing) - fall back to a session-only id.
+		if (!window._chasemapper_session_client_id){
+			window._chasemapper_session_client_id = 'car-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+		}
+		return window._chasemapper_session_client_id;
+	}
+}
+
+var my_car_client_id = getMyCarClientId();
+
+function getMyCarName(){
+	try{
+		return localStorage.getItem('chasemapper_car_name') || '';
+	}catch(e){
+		return '';
+	}
+}
+
+function setMyCarName(name){
+	try{
+		localStorage.setItem('chasemapper_car_name', name);
+	}catch(e){ /* ignore */ }
+}
+
+// Returns true if the supplied CAR telemetry event represents *this*
+// browser's own position, rather than another connected chaser (or the
+// primary/hardware-fed car, if this browser isn't sharing its own location).
+function isMyOwnCarTelemetry(data){
+	if (data.car_id){
+		return data.car_id === my_car_client_id;
+	}
+	// No car_id => the primary/hardware-fed car. Only treat it as "mine"
+	// if we aren't separately reporting our own device location.
+	return !my_device_position_active;
+}
+
 var devicePositionCallback = function(position){
 	// Pass a Device position update onto the back-end for processing and re-distribution.
-	var device_pos = {time:position.timestamp, latitude:position.coords.latitude, longitude:position.coords.longitude, altitude:position.coords.altitude};
+	my_device_position_active = true;
+	var device_pos = {
+		time: position.timestamp,
+		latitude: position.coords.latitude,
+		longitude: position.coords.longitude,
+		altitude: position.coords.altitude,
+		client_id: my_car_client_id,
+		name: getMyCarName() || undefined
+	};
 	socket.emit('device_position', device_pos);
+}
+
+var my_device_watch_id = null;
+
+function startSharingMyLocation(){
+	if (!(navigator && navigator.geolocation)){
+		return false;
+	}
+	if (my_device_watch_id !== null){
+		return true;
+	}
+	my_device_watch_id = navigator.geolocation.watchPosition(
+		devicePositionCallback,
+		devicePositionError,
+		{enableHighAccuracy: true, maximumAge: 2000, timeout: 15000}
+	);
+	try{ localStorage.setItem('chasemapper_share_location', '1'); }catch(e){}
+	return true;
+}
+
+function stopSharingMyLocation(){
+	if (my_device_watch_id !== null){
+		navigator.geolocation.clearWatch(my_device_watch_id);
+		my_device_watch_id = null;
+	}
+	my_device_position_active = false;
+	try{ localStorage.setItem('chasemapper_share_location', '0'); }catch(e){}
+}
+
+function clearMyCarTrack(){
+	socket.emit('client_car_clear', {client_id: my_car_client_id});
 }
 
 var devicePositionError = function(error){
 	console.log(error.message);
+}
+
+//
+// Rendering of other connected chasers' live positions.
+//
+// Reuses the same chase_vehicles store / colour-cycled car icons already
+// used for Habitat/SondeHub-sourced vehicles (see habitat.js / sondehub.js),
+// keyed with a "LIVE:" prefix so it can't collide with a real callsign.
+//
+
+function shouldShowLiveChasers(){
+	var el = document.getElementById('showLiveChasers');
+	// Default to showing them if the control isn't present in the UI.
+	return el == null || el.checked;
+}
+
+function handleOtherChaserTelemetry(data){
+	if (!Array.isArray(data.position) || data.position.length < 2){
+		return;
+	}
+
+	var _id = data.car_id || 'server';
+	var _name = data.car_name || (_id === 'server' ? 'Base Station' : _id);
+	var _key = 'LIVE:' + _id;
+	var _latest_data = data.position;
+
+	if (!chase_vehicles.hasOwnProperty(_key)){
+		chase_vehicles[_key] = {};
+		chase_vehicles[_key].heading = data.heading || 90;
+		chase_vehicles[_key].latest_data = _latest_data;
+		chase_vehicles[_key].name = _name;
+		chase_vehicles[_key].colour = car_colour_values[car_colour_idx];
+		car_colour_idx = (car_colour_idx + 1) % car_colour_values.length;
+
+		chase_vehicles[_key].marker = L.marker(_latest_data, {
+			title: _name,
+			icon: habitat_car_icons[chase_vehicles[_key].colour],
+			rotationOrigin: "center center"
+		});
+		// _name is free-text (another chaser's own chosen display name) and
+		// Leaflet's bindTooltip renders string content as raw HTML, not
+		// text - escape it so it can't inject markup/scripts into everyone
+		// else's browser.
+		chase_vehicles[_key].marker.bindTooltip(escapeHtml(_name), {
+			permanent: true,
+			direction: 'center',
+			offset: [0, 25],
+			className: 'custom_label'
+		}).openTooltip();
+
+		chase_vehicles[_key].onmap = false;
+		if (shouldShowLiveChasers()){
+			chase_vehicles[_key].marker.addTo(map);
+			chase_vehicles[_key].onmap = true;
+		}
+	} else {
+		chase_vehicles[_key].heading = (typeof data.heading === 'number') ? data.heading : chase_vehicles[_key].heading;
+		chase_vehicles[_key].latest_data = _latest_data;
+		if (chase_vehicles[_key].name !== _name){
+			chase_vehicles[_key].name = _name;
+			chase_vehicles[_key].marker.setTooltipContent(escapeHtml(_name));
+		}
+		chase_vehicles[_key].marker.setLatLng(_latest_data).update();
+	}
+
+	var _car_heading = chase_vehicles[_key].heading - 90.0;
+	if (_car_heading <= 90.0){
+		chase_vehicles[_key].marker.setIcon(habitat_car_icons[chase_vehicles[_key].colour]);
+		chase_vehicles[_key].marker.setRotationAngle(_car_heading);
+	} else {
+		_car_heading = _car_heading - 180.0;
+		chase_vehicles[_key].marker.setIcon(habitat_car_icons_flipped[chase_vehicles[_key].colour]);
+		chase_vehicles[_key].marker.setRotationAngle(_car_heading);
+	}
+
+	if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
+		window.syncCesiumAfterOtherCarUpdate(_key, _name, chase_vehicles[_key]);
+	}
+
+	if (typeof updateChaserRosterDisplay === 'function'){
+		updateChaserRosterDisplay();
+	}
+}
+
+//
+// Presence: connected count + a roster of who's actively sharing a
+// position (this browser's own car plus every "LIVE:" entry in
+// chase_vehicles). Purely a display convenience - doesn't affect routing,
+// predictions, or any other multi-user logic above.
+//
+
+var car_colour_hex = {red: '#e74c3c', green: '#2ecc71', yellow: '#f1c40f', blue: '#3498db'};
+
+function updateChaserCountDisplay(count){
+	var el = document.getElementById('chaserCountLabel');
+	if (!el){
+		return;
+	}
+	el.textContent = count + (count === 1 ? ' connected' : ' connected');
+}
+
+function updateChaserRosterDisplay(){
+	var _list = document.getElementById('chaserRoster');
+	if (!_list){
+		return;
+	}
+
+	var _entries = [];
+
+	// My own car, if we have a position yet.
+	if (chase_car_position && Array.isArray(chase_car_position.latest_data) && chase_car_position.latest_data.length > 0){
+		_entries.push({name: (getMyCarName() || 'Me') + ' (you)', colour: 'blue'});
+	}
+
+	for (var _key in chase_vehicles){
+		if (_key.indexOf('LIVE:') !== 0){
+			continue;
+		}
+		_entries.push({name: chase_vehicles[_key].name || _key, colour: chase_vehicles[_key].colour || 'green'});
+	}
+
+	if (_entries.length === 0){
+		_list.innerHTML = '<li class="chaser-roster-empty">No one sharing a location yet.</li>';
+		return;
+	}
+
+	_list.innerHTML = _entries.map(function(_entry){
+		var _hex = car_colour_hex[_entry.colour] || '#999';
+		return '<li><span class="chaser-roster-swatch" style="background:' + _hex + ';"></span>' +
+			'<span>' + $('<div>').text(_entry.name).html() + '</span></li>';
+	}).join('');
+}
+
+// Show/hide every live-chaser marker currently known, without disconnecting
+// anything (mirrors show_sondehub_vehicles() in sondehub.js).
+function showLiveChasers(){
+	var _state = shouldShowLiveChasers();
+	for (var _car in chase_vehicles){
+		if (_car.indexOf('LIVE:') !== 0){
+			continue;
+		}
+		if (_state){
+			if (!chase_vehicles[_car].onmap){
+				chase_vehicles[_car].marker.addTo(map);
+				chase_vehicles[_car].onmap = true;
+			}
+		} else {
+			if (chase_vehicles[_car].onmap){
+				chase_vehicles[_car].marker.remove();
+				chase_vehicles[_car].onmap = false;
+			}
+		}
+	}
 }

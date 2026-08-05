@@ -108,6 +108,19 @@ function getCheckboxState(id, defaultValue) {
     return !!el.checked;
 }
 
+// Escape a string for safe insertion into innerHTML. Needed anywhere a
+// user-chosen free-text value (chaser name, bearing source) ends up in
+// rendered HTML - e.g. Leaflet's bindTooltip() and bindPopup() render
+// string content as raw HTML by default, not text.
+function escapeHtml(value) {
+    return (value || '').toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // calculates look angles between two points
 // format of a and b should be {lon: 0, lat: 0, alt: 0}
 // returns {elevention: 0, azimut: 0, bearing: "", range: 0}

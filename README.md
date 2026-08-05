@@ -88,30 +88,89 @@ Chasemapper routing is not provided by Cesium APIs.
 By default, route computation uses the public OSRM service. To point to your own OSRM backend, set environment variable `CHASEMAPPER_OSRM_BASE_URL`.
 
 ### Endpoint Security (Auth + Rate Limiting)
-For internet-exposed deployments, route/state endpoints are protected with optional API-key auth and per-IP rate limiting.
+For internet-exposed deployments, route/state endpoints are protected with optional API-key auth and per-IP rate limiting. The same `CHASEMAPPER_API_KEY` / `CHASEMAPPER_REQUIRE_API_AUTH` policy also gates the Socket.IO connection itself (so a browser can't even connect without the key, when required for its IP) and two destructive, server-shared actions, so a connected-but-unauthorized client can't wipe the shared view for everyone else.
 
-Guarded endpoints:
+Guarded REST endpoints:
 - `POST /api/route`
 - `GET|POST /api/latest_route`
 - `GET /api/mobile_state`
 
+Guarded Socket.IO connection and actions:
+- The Socket.IO `connect` handshake itself - a browser must supply the key as an `api_key` query-string parameter on the Socket.IO connection URL, or the connection is refused outright, when a key is required for its IP.
+- `payload_data_clear` ("Clear Payload Data") and `car_data_clear` ("Clear Chase-Car Track") - these shared, destructive actions are re-checked against the same policy on every use (not just at connect time), so a key configured/rotated after a client connects still applies without requiring a reconnect. A denied action emits an `operator_action_denied` event back to that client.
+
 Environment variables:
-- `CHASEMAPPER_API_KEY`: API key value accepted from `X-API-Key` header (or `api_key` query parameter).
+- `CHASEMAPPER_API_KEY`: API key value accepted from `X-API-Key` header (or `api_key` query parameter) for REST requests, and from the `api_key` query parameter for the Socket.IO connection.
+- `CHASEMAPPER_TRUST_PROXY`: `false` (default) or `true`. Whether to trust the `X-Forwarded-For` header for determining a client's IP (used by the `auto` policy below and by rate limiting). Only enable this when chasemapper is genuinely behind a reverse proxy that sets this header itself - see [Deploying for Multiple Remote Users](#deploying-for-multiple-remote-users--https) - otherwise a client can spoof it to impersonate a private IP.
 - `CHASEMAPPER_REQUIRE_API_AUTH`:
   - `auto` (default): require key for non-private client IPs when key is configured.
   - `true`: require key for all guarded endpoint requests.
   - `false`: disable key checks.
 - `CHASEMAPPER_API_RATE_LIMIT_ENABLED`: `true` (default) or `false`.
-- `CHASEMAPPER_API_RATE_LIMIT_PER_MIN`: requests per minute per IP for guarded endpoints.
-- `CHASEMAPPER_API_RATE_LIMIT_WINDOW_S`: rate-limit window seconds (default `60`).
+- `CHASEMAPPER_API_RATE_LIMIT_PER_MIN`: requests per minute per IP for guarded REST endpoints.
+- `CHASEMAPPER_API_RATE_LIMIT_WINDOW_S`: rate-limit window seconds (default `60`) for guarded REST endpoints.
+- `CHASEMAPPER_SOCKETIO_RATE_LIMIT_ENABLED`: `true` (default) or `false`. Applies to the `device_position` Socket.IO event (a browser reporting its live GPS position), reusing the same rate-limit mechanism as the REST endpoints.
+- `CHASEMAPPER_SOCKETIO_RATE_LIMIT_PER_MIN`: `device_position` updates accepted per minute per source IP (default `120`).
+- `CHASEMAPPER_SOCKETIO_RATE_LIMIT_WINDOW_S`: rate-limit window seconds for `device_position` (default `60`).
 
 Rate-limit responses return HTTP `429` with `Retry-After` and JSON body containing `retry_after_s`.
+
+**Supplying the key from the browser:** enter it in Settings > Server Access (the API Key field), which saves it to the browser's `localStorage` and reloads the page to reconnect with it. If a browser connects to a server that requires a key it doesn't have, it will instead be prompted for one with a `window.prompt()` dialog at connect time.
 
 Mobile integration contract (schemas, cadence, retries): see [doc/mobile-api-contract.md](doc/mobile-api-contract.md).
 
 Minimal native iOS prototype screen: see [mobile-prototype/ios/README.md](mobile-prototype/ios/README.md).
 
 Automotive UI constraints and mapping prototypes (CarPlay + Android Auto): see [mobile-prototype/automotive-ui-constraints.md](mobile-prototype/automotive-ui-constraints.md).
+
+## Deploying for Multiple Remote Users / HTTPS
+Chasemapper's "Share My Live Location" feature uses the browser's geolocation API, which browsers only expose on secure contexts - that is, over HTTPS, or on `localhost`. This is a browser platform restriction, not something chasemapper can work around. If you want chasers to share their live position from phones/tablets over the internet (rather than just on `localhost` or a trusted LAN), you need to put TLS in front of chasemapper.
+
+### Option 1: Caddy (simplest, automatic TLS)
+[Caddy](https://caddyserver.com/) obtains and renews certificates automatically and needs no special configuration to proxy WebSockets - it detects the `Upgrade` header and handles it. A minimal `Caddyfile` is enough:
+
+```
+chasemapper.example.com {
+    reverse_proxy localhost:5001
+}
+```
+
+Point `chasemapper.example.com`'s DNS at your server, run Caddy, and it will handle certificate issuance/renewal for you. See [deploy/Caddyfile.example](deploy/Caddyfile.example).
+
+Caddy automatically sets the `X-Forwarded-For` header, so combine this with the "Behind a reverse proxy" note below to get correct per-client IPs at the app.
+
+### Option 2: nginx
+If you already run nginx, a reverse proxy works too, but you must explicitly forward the `Upgrade`/`Connection` headers or Socket.IO's WebSocket transport will fail to upgrade and silently fall back to (or fail on) polling. You must also forward `X-Forwarded-For` (not `X-Real-IP` - chasemapper doesn't read that header) so the app sees real client IPs rather than nginx's own:
+
+```
+server {
+    listen 443 ssl;
+    server_name chasemapper.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/chasemapper.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/chasemapper.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+See [deploy/nginx.conf.example](deploy/nginx.conf.example) (obtain the certificate with [certbot](https://certbot.eff.org/) or similar).
+
+### Behind a reverse proxy: set `CHASEMAPPER_TRUST_PROXY`
+By default chasemapper ignores `X-Forwarded-For` entirely and uses the raw TCP connection's address as the client IP - which, behind either proxy above, is always the proxy itself (usually `127.0.0.1`, a private address). That silently breaks two things at once: the `auto` API-key policy would treat every visitor as "local" and never ask for a key, and per-IP rate limiting would lump every visitor into one shared bucket. Set `CHASEMAPPER_TRUST_PROXY=1` on the chasemapper process whenever it's behind a reverse proxy so it reads the real client IP from `X-Forwarded-For` instead. Only set this when you actually control the proxy in front of it - otherwise a client could spoof the header themselves to fake a private IP and bypass auth/rate-limiting.
+
+### Lock it down
+Once chasemapper is reachable from outside a trusted LAN, set `CHASEMAPPER_API_KEY`, `CHASEMAPPER_REQUIRE_API_AUTH=auto` (or `true`), and `CHASEMAPPER_TRUST_PROXY=1` (if proxied) - see [Endpoint Security](#endpoint-security-auth--rate-limiting) above. Without this, anyone who finds the URL can view/clear shared chase data.
+
+### A note on concurrency
+Chasemapper runs Flask-SocketIO in its default threading mode (no `eventlet` or `gevent` installed) - this is fine for a handful of concurrent chasers. If you expect many simultaneous connections, Flask-SocketIO will auto-detect and prefer `eventlet` if it's installed (`pip install eventlet`). This is **not** a drop-in change: eventlet's cooperative (greenlet-based) scheduling can interact with this app's existing background threads (the APRS tracker, GPS listeners, the data-age monitor) in ways plain OS threading doesn't, so test thoroughly before relying on it in production. This is a decision to make deliberately as a deployer, not something enabled by default - `eventlet` is intentionally not in `requirements.txt`.
 
 ## Live Predictions
 By default, chasemapper will attempt to request flight-path predictions from the SondeHub instance of the [Tawhiri Predictor](https://github.com/projecthorus/tawhiri), which requires an internet connection. If you have a semi-reliable internet connection during the flight, this might be all you need to get chasing!
@@ -187,6 +246,20 @@ SyslogIdentifier=chasemapper
 
 [Install]
 WantedBy=multi-user.target
+```
+
+If you want to set `CHASEMAPPER_API_KEY` (and optionally `CHASEMAPPER_REQUIRE_API_AUTH`, see [Endpoint Security](#endpoint-security-auth--rate-limiting) above) for a non-Docker deployment, add `Environment=` lines to the `[Service]` block:
+
+```
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/chasemapper/horusmapper.py
+Restart=always
+RestartSec=3
+WorkingDirectory=/home/pi/chasemapper/
+User=pi
+SyslogIdentifier=chasemapper
+Environment=CHASEMAPPER_API_KEY=changeme
+Environment=CHASEMAPPER_REQUIRE_API_AUTH=auto
 ```
 
 Once/if edited, install and start the service using:

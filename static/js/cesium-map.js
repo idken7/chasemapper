@@ -46,7 +46,6 @@
     var CESIUM_CAMERA_STORAGE_KEY = 'chasemapper_cesium_camera';
     var CESIUM_MAP_MODE_STORAGE_KEY = 'chasemapper_cesium_map_mode';
     var CESIUM_2D_MODE_STORAGE_KEY = 'chasemapper_cesium_2d_mode';
-    var currentLocationPinImage = null;
     var DEFAULT_CAMERA_STATE = {
         heading: 0,
         pitch: -35,
@@ -331,36 +330,6 @@
         } catch (e) {
             // ignore storage failures
         }
-    }
-
-    function getCurrentLocationPinImage() {
-        if (currentLocationPinImage) {
-            return currentLocationPinImage;
-        }
-        try {
-            // Draw a simple filled blue circle on a canvas to mimic Google/Apple blue-dot.
-            var size = 36;
-            var canvas = document.createElement('canvas');
-            canvas.width = size; canvas.height = size;
-            var ctx = canvas.getContext('2d');
-            // Clear
-            ctx.clearRect(0,0,size,size);
-            // Outer halo (subtle)
-            var center = size/2;
-            var haloR = Math.floor(size * 0.33);
-            var borderR = Math.floor(size * 0.22);
-            var innerR = Math.floor(size * 0.16);
-            ctx.beginPath(); ctx.fillStyle = 'rgba(30,134,255,0.12)'; ctx.arc(center, center, haloR, 0, Math.PI*2); ctx.fill();
-            // White border ring (draw as filled slightly larger circle)
-            ctx.beginPath(); ctx.fillStyle = '#FFFFFF'; ctx.arc(center, center, borderR + 2, 0, Math.PI*2); ctx.fill();
-            // Blue center circle
-            ctx.beginPath(); ctx.fillStyle = '#1E86FF'; ctx.arc(center, center, innerR, 0, Math.PI*2); ctx.fill();
-            currentLocationPinImage = canvas.toDataURL('image/png');
-        } catch (e) {
-            currentLocationPinImage = null;
-        }
-
-        return currentLocationPinImage;
     }
 
     function getStored2DMode() {
@@ -1625,6 +1594,44 @@
         });
     }
 
+    // Render another connected chaser's live position as a Cesium billboard +
+    // label. Simpler than syncChaseCarEntity() (no terrain sampling or
+    // breadcrumb trail) since this is just a supplementary "where is everyone
+    // else" marker, not the primary navigation-focused car.
+    function syncOtherChaserEntity(key, name, vehicle) {
+        var viewer = cesiumState.viewer;
+        if (!viewer || !cesiumState.active || !vehicle) {
+            return;
+        }
+
+        var pos = toCesiumPosition(vehicle.latest_data);
+        if (!pos) {
+            return;
+        }
+
+        upsertBalloonEntity('OTHER_CAR_' + key, 'track', {
+            show: !!vehicle.onmap,
+            position: pos,
+            billboard: {
+                image: '/static/img/car-' + (vehicle.colour || 'green') + '.png',
+                width: 55,
+                height: 25,
+                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY
+            },
+            label: {
+                text: name || key,
+                font: '14px sans-serif',
+                pixelOffset: new Cesium.Cartesian2(0, 22),
+                fillColor: Cesium.Color.WHITE,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY
+            }
+        });
+    }
+
     // Show a polyline route on the Cesium map. Expects an array of {lat, lng} objects.
     function showChaseRouteOnCesium(latlngs) {
         var viewer = cesiumState.viewer;
@@ -1737,12 +1744,17 @@
         cesiumState.homeEntity = upsertBalloonEntity('HOME', 'station', {
             show: true,
             position: homePosition,
-            billboard: {
-                image: getCurrentLocationPinImage() || '/static/img/antenna-green.png',
-                width: 32,
-                height: 48,
-                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            // Native Cesium point graphics for the current-location marker - a
+            // simple blue dot with a white ring, like Google/Apple Maps. This
+            // replaces a hand-drawn canvas billboard that was sized 32x48 for
+            // a 36x36 square image, which squashed the circle into an oval and
+            // (via verticalOrigin: BOTTOM, meant for pin-shaped icons) floated
+            // it above the actual coordinate instead of centering on it.
+            point: {
+                pixelSize: 14,
+                color: Cesium.Color.fromCssColorString('#1E86FF'),
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 3,
                 heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY
             },
@@ -1752,6 +1764,9 @@
                 show: false
             }
         });
+        if (cesiumState.homeEntity) {
+            cesiumState.homeEntity.billboard = undefined;
+        }
     }
 
     function syncAllCesiumStateFromStore() {
@@ -2054,15 +2069,22 @@
             // Insert placeholder where the container was
             leafletControlsState.savedParent.insertBefore(leafletControlsState.savedPlaceholder, container);
 
-            // Compute fixed position relative to viewport
-            var rect = container.getBoundingClientRect();
+            // .leaflet-control-container has no in-flow content of its own (its
+            // .leaflet-top/.leaflet-bottom children are all position:absolute), so
+            // its getBoundingClientRect() is always 0x0 - freezing width/height to
+            // that snapshot collapsed the containing block for any left-anchored
+            // control (e.g. the routing/directions panel), even though right-anchored
+            // ones happened to still render. Span the viewport instead and rely on
+            // Leaflet's own pointer-events model (.leaflet-top/.leaflet-bottom: none,
+            // .leaflet-control: auto) so empty space still passes clicks through to
+            // the map underneath.
             container.style.position = 'fixed';
-            container.style.top = rect.top + 'px';
-            container.style.left = rect.left + 'px';
-            container.style.width = rect.width + 'px';
-            container.style.height = rect.height + 'px';
+            container.style.top = '0px';
+            container.style.left = '0px';
+            container.style.width = '100%';
+            container.style.height = '100%';
             container.style.zIndex = '2147483647';
-            container.style.pointerEvents = 'auto';
+            container.style.pointerEvents = 'none';
             container.setAttribute('data-moved', '1');
 
             // Append to document.body
@@ -2188,6 +2210,13 @@
         syncChaseCarEntity();
     }
 
+    function syncCesiumAfterOtherCarUpdate(key, name, vehicle) {
+        if (!cesiumState.active) {
+            return;
+        }
+        syncOtherChaserEntity(key, name, vehicle);
+    }
+
     window.syncAllCesiumStateFromStore = syncAllCesiumStateFromStore;
     window.applyCesiumMapViewState = applyCesiumMapViewState;
     window.getCesiumMapModes = getCesiumMapModes;
@@ -2203,6 +2232,7 @@
     window.syncCesiumAfterBalloonUpdate = syncCesiumAfterBalloonUpdate;
     window.syncCesiumAfterPredictionUpdate = syncCesiumAfterPredictionUpdate;
     window.syncCesiumAfterCarUpdate = syncCesiumAfterCarUpdate;
+    window.syncCesiumAfterOtherCarUpdate = syncCesiumAfterOtherCarUpdate;
     window.showChaseRouteOnCesium = showChaseRouteOnCesium;
     window.clearChaseRouteOnCesium = clearChaseRouteOnCesium;
     window.zoomCesiumViewIn = zoomCesiumViewIn;

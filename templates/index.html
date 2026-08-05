@@ -251,14 +251,8 @@
             return (value || '').toString().toUpperCase();
         }
 
-        function escapeHtml(value) {
-            return (value || '').toString()
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
+        // escapeHtml() now lives in utils.js (loaded before this script) so
+        // it's available to bearing_entry.html / oclock.html too.
 
         function getTrackedPayloadCallsigns() {
             var tracked = [];
@@ -318,12 +312,57 @@
             };
         }
 
+        // API key for servers configured with CHASEMAPPER_API_KEY (see README
+        // "Endpoint Security"). Only actually required for non-private-IP
+        // connections when the server has a key configured - harmless to
+        // send otherwise.
+        function getSavedApiKey(){
+            try{ return localStorage.getItem('chasemapper_api_key') || ''; }catch(e){ return ''; }
+        }
+        function setSavedApiKey(key){
+            try{ localStorage.setItem('chasemapper_api_key', key || ''); }catch(e){ /* ignore */ }
+        }
+
         $(document).ready(function() {
 
             // Connect to the Socket.IO server.
             // The connection URL has the following format:
             //     http[s]://<domain>:<port>[/<namespace>]
-            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace);
+            var _savedApiKey = getSavedApiKey();
+            var _connectOpts = _savedApiKey ? {query: {api_key: _savedApiKey}} : {};
+            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace, _connectOpts);
+
+            socket.on('connect_error', function(err){
+                var msg = (err && err.message) || '';
+                if (msg.indexOf('unauthorized') === -1){
+                    return;
+                }
+                var entered = window.prompt('This server requires an API key to connect. Enter it below:');
+                if (entered && entered.trim()){
+                    setSavedApiKey(entered.trim());
+                    location.reload();
+                }
+            });
+
+            socket.on('operator_action_denied', function(data){
+                alert('Action "' + ((data && data.action) || '') + '" was denied: this server requires a valid API key for that action. Set it in Settings > Server Access.');
+            });
+
+            socket.on('presence_update', function(data){
+                if (typeof updateChaserCountDisplay === 'function'){
+                    updateChaserCountDisplay((data && data.connected) || 0);
+                }
+            });
+
+            socket.on('bearing_rejected', function(data){
+                var _reason = (data && data.reason) || '';
+                if (_reason === 'no_known_position'){
+                    alert('Bearing not recorded: enable "Share My Live Location" in Settings > My Chase Car first, so relative bearings know where to start from.');
+                } else {
+                    alert('Bearing not recorded' + (_reason ? (': ' + _reason) : '.'));
+                }
+            });
+
             if (typeof registerAprsSocketHandlers === 'function') {
                 registerAprsSocketHandlers();
             }
@@ -877,9 +916,12 @@
             }
             map.on('dragend',mapMovedEvent);
 
-            // Initialize draggable measure panel (allow dragging the Distance Measure window)
+            // Initialize draggable floating panels (allow moving them out of the way
+            // if they ever end up overlapping another panel or control).
             try {
                 $('#cesiumMeasurePanel').draggable({ handle: '.cesium-measure-header', containment: 'window' });
+                $('#cesiumCameraSliderPanel').draggable({ handle: '.cesium-camera-slider-header', containment: 'window' });
+                $('.chase-routing-modal-card').draggable({ handle: '.recovery-modal-header', containment: 'window' });
             } catch (e) {
                 // jQuery UI may not be available; ignore.
             }
@@ -1016,6 +1058,83 @@
                             chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
                         }
                     );
+                }
+            });
+
+            // Server Access: API key for servers configured with
+            // CHASEMAPPER_API_KEY. Reload on save so the Socket.IO connection
+            // (and any queued reconnect) picks up the new query param.
+            (function(){
+                var _apiKeyInput = document.getElementById('serverApiKey');
+                if (!_apiKeyInput){
+                    return;
+                }
+                _apiKeyInput.value = getSavedApiKey();
+                $(_apiKeyInput).on('change', function(){
+                    var _newKey = _apiKeyInput.value.trim();
+                    if (_newKey !== getSavedApiKey()){
+                        setSavedApiKey(_newKey);
+                        location.reload();
+                    }
+                });
+            })();
+
+            // My Chase Car (multi-user) settings: name, live-location sharing,
+            // and other-chaser visibility.
+            (function(){
+                var _nameInput = document.getElementById('myCarName');
+                if (_nameInput){
+                    _nameInput.value = getMyCarName();
+                    $(_nameInput).on('change', function(){
+                        setMyCarName(_nameInput.value.trim());
+                        if (typeof updateChaserRosterDisplay === 'function'){
+                            updateChaserRosterDisplay();
+                        }
+                    });
+                }
+
+                var _shareCheckbox = document.getElementById('shareMyLocation');
+                if (_shareCheckbox){
+                    var _wasSharing = false;
+                    try { _wasSharing = localStorage.getItem('chasemapper_share_location') === '1'; } catch(e){}
+                    _shareCheckbox.checked = _wasSharing;
+
+                    $(_shareCheckbox).on('change', function(){
+                        if (_shareCheckbox.checked){
+                            if (!startSharingMyLocation()){
+                                alert('Location sharing is not available in this browser (it may require HTTPS).');
+                                _shareCheckbox.checked = false;
+                            }
+                        } else {
+                            stopSharingMyLocation();
+                        }
+                    });
+
+                    if (_wasSharing){
+                        if (!startSharingMyLocation()){
+                            _shareCheckbox.checked = false;
+                        }
+                    }
+                }
+
+                var _showOtherCheckbox = document.getElementById('showLiveChasers');
+                if (_showOtherCheckbox){
+                    $(_showOtherCheckbox).on('change', function(){
+                        showLiveChasers();
+                    });
+                }
+            })();
+
+            $("#clearMyCarTrack").click(function(){
+                // Clears the server-side record of my independently-shared
+                // location (a no-op if "Share My Location" isn't in use).
+                clearMyCarTrack();
+                if (chase_car_position && chase_car_position.marker !== "NONE" && my_device_position_active){
+                    chase_car_position.marker.remove();
+                    if (chase_car_position.path !== "NONE"){
+                        chase_car_position.path.remove();
+                    }
+                    chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
                 }
             });
 
@@ -1320,6 +1439,41 @@
                             </div>
                         </section>
                         <section class="settings-group settings-group--full">
+                            <h4>My Chase Car</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group settings-inline-row">
+                                    <label for="myCarName">My Callsign / Name</label>
+                                    <input id="myCarName" class="form-control settings-inline-input" placeholder="e.g. VK5QI" maxlength="40">
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="shareMyLocation">Share My Live Location</label>
+                                    <input id="shareMyLocation" type="checkbox">
+                                </div>
+                                <small class="text-muted">Reports this browser's own GPS position to the server as an independent chase car, visible to everyone connected. Requires the page to be served over HTTPS (or accessed via localhost).</small>
+                                <div class="form-group settings-inline-row">
+                                    <label for="showLiveChasers">Show Other Connected Chasers</label>
+                                    <input id="showLiveChasers" type="checkbox" checked>
+                                </div>
+                                <div class="paramRow">
+                                    <button type="button" class="btn btn-secondary" id="clearMyCarTrack" data-test="clear-my-car">Clear My Track</button>
+                                </div>
+                                <div class="form-group" style="margin-top:10px;">
+                                    <label style="margin-bottom:4px;display:block;">Chasers Online</label>
+                                    <ul id="chaserRoster" class="chaser-roster-list"></ul>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
+                            <h4>Server Access</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group settings-inline-row">
+                                    <label for="serverApiKey">API Key</label>
+                                    <input id="serverApiKey" type="password" class="form-control settings-inline-input" placeholder="Only needed for internet-exposed servers" autocomplete="off">
+                                </div>
+                                <small class="text-muted">If this server was started with an API key, enter it here to connect and to allow clearing shared payload/car data. Saved locally in this browser only; reloads the page after saving.</small>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
                             <h4>Other</h4>
                             <div class="settings-group-body">
                                 <div class="paramRow">
@@ -1352,6 +1506,7 @@
             <!-- Measure button removed from menuDock (now a standalone top-right control) -->
         </div>
         <div class="d-flex align-items-center topbar-status topbar-status-right">
+            <span id="chaserCountLabel" class="topbar-status-label" title="Chasers currently connected to this server">1 connected</span>
             <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
             <span class="topbar-status-label">APRS</span>
         </div>
@@ -1654,6 +1809,9 @@ function showSettingsPanel(mode) {
         $('#settingsPanel .settings-header span').text('Settings');
         if (navigator && navigator.geolocation){
             navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
+        }
+        if (typeof updateChaserRosterDisplay === 'function'){
+            updateChaserRosterDisplay();
         }
         ensureSettingsPanelHeight();
         if (!isAlreadyOpen || !isSameMode) {

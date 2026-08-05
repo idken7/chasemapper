@@ -37,6 +37,88 @@ var chase_config = {
     aprs_prediction_overrides: {}
 };
 
+//
+// Personal display settings.
+//
+// These are purely cosmetic/per-viewer preferences (unit selection, map
+// centre, line colours/sizes, view modes, etc) that used to be pushed to the
+// server and re-broadcast to every connected client - meaning one person's
+// choice would silently change everyone else's screen. The server no longer
+// accepts these keys at all (see CLIENT_SETTABLE_CONFIG_KEYS in
+// horusmapper.py); instead each browser keeps its own copy in localStorage,
+// and reapplies it on top of chase_config every time the server sends a
+// settings update (see applyLocalDisplayOverrides()).
+//
+// (cesium_map_mode / enable_3d_map_view already have their own dedicated
+// localStorage-backed handling elsewhere, so they're intentionally excluded
+// here to avoid double-handling.)
+var LOCAL_DISPLAY_CONFIG_KEYS = [
+    'aprs_timezone',
+    'bearing_color',
+    'bearing_custom_color',
+    'bearing_length',
+    'bearing_weight',
+    'bearings_only_mode',
+    'chase_car_speed',
+    'default_alt',
+    'default_lat',
+    'default_lon',
+    'doa_confidence_threshold',
+    'range_ring_color',
+    'range_ring_custom_color',
+    'range_ring_quantity',
+    'range_ring_spacing',
+    'range_ring_weight',
+    'range_rings_enabled',
+    'switch_miles_feet',
+    'unitselection'
+];
+
+function getLocalDisplaySetting(key, fallback){
+    try{
+        var raw = localStorage.getItem('chasemapper_display_' + key);
+        if (raw === null){
+            return fallback;
+        }
+        return JSON.parse(raw);
+    }catch(e){
+        return fallback;
+    }
+}
+
+function setLocalDisplaySetting(key, value){
+    try{
+        localStorage.setItem('chasemapper_display_' + key, JSON.stringify(value));
+    }catch(e){ /* localStorage unavailable - ignore */ }
+}
+
+// Re-apply this browser's own saved display preferences on top of whatever
+// the server just sent, so a settings broadcast from another client (or the
+// server's config-file defaults) never overwrites them.
+function applyLocalDisplayOverrides(){
+    LOCAL_DISPLAY_CONFIG_KEYS.forEach(function(key){
+        var stored = getLocalDisplaySetting(key, undefined);
+        // null shouldn't legitimately occur for any of these settings - it
+        // most likely means a NaN got JSON-stringified to "null" by a past
+        // bug (JSON.stringify(NaN) === "null"). Treat it the same as
+        // "nothing stored" rather than clobbering chase_config with it.
+        if (stored !== undefined && stored !== null){
+            chase_config[key] = stored;
+        }
+    });
+}
+
+// Persist the current value of every local display setting present in
+// chase_config. Called whenever the user changes one, so it survives future
+// settings broadcasts triggered by other clients.
+function captureLocalDisplaySettings(){
+    LOCAL_DISPLAY_CONFIG_KEYS.forEach(function(key){
+        if (chase_config.hasOwnProperty(key)){
+            setLocalDisplaySetting(key, chase_config[key]);
+        }
+    });
+}
+
 // APRS UI state cache keyed by uppercased callsign.
 var aprs_telemetry_cache = {};
 var aprs_last_rx_ms = {};
@@ -474,11 +556,34 @@ function createAprsListItem(cs, collecting) {
     titleLeft.append($('<strong>').text(csKey));
     titleRow.append(titleLeft);
 
+    // Only the two most-used actions live inline: follow (toggle) and a
+    // kebab menu that reveals the rest. Everything else moves into that menu.
+    var followBtn = createAprsActionButton(
+        '<i class="fa fa-location-arrow" aria-hidden="true"></i>',
+        'aprs-follow-fallback', csKey, 'btn-primary aprs-follow-btn aprs-icon-btn',
+        'follow', 'Follow callsign', 'Follow callsign ' + csKey
+    ).attr('aria-pressed', 'false');
+
+    var menuToggleBtn = $('<button type="button">')
+        .addClass('btn btn-secondary aprs-icon-btn aprs-menu-toggle')
+        .html('<i class="fa fa-ellipsis-v" aria-hidden="true"></i>')
+        .attr('title', 'More actions')
+        .attr('aria-label', 'More actions for ' + csKey)
+        .attr('aria-haspopup', 'true')
+        .attr('aria-expanded', 'false')
+        .attr('data-test', 'aprs-menu-toggle-' + csKey);
+
+    var titleRight = $('<div>').addClass('d-flex align-items-center gap-1 aprs-title-right');
+    titleRight.append(followBtn).append(menuToggleBtn);
+    titleRow.append(titleRight);
+
+    // Last-heard timestamp gets its own line so it never has to compete with
+    // the callsign and buttons for horizontal space on the title row.
     var timeSpan = $('<div>').addClass('aprs-last-time text-muted').text('\u2014');
     if (collecting) {
         timeSpan.addClass('collecting').text('Collecting...');
     }
-    titleRow.append(timeSpan);
+    var timeRow = $('<div>').addClass('aprs-last-time-row').append(timeSpan);
 
     var locationRow = $('<div>').addClass('aprs-location-row aprs-detail-row');
     locationRow.append($('<span>').addClass('aprs-detail-label').text('Location'));
@@ -486,14 +591,19 @@ function createAprsListItem(cs, collecting) {
 
     var detailGrid = createAprsDetailGrid();
 
-    left.append(titleRow).append(locationRow).append(detailGrid);
+    left.append(titleRow).append(timeRow).append(locationRow).append(detailGrid);
 
-    var actionsRow = $('<div>').addClass('d-flex align-items-center gap-1 flex-wrap aprs-actions aprs-actions-row');
-    var followBtn = createAprsActionButton(
-        '<i class="fa fa-location-arrow" aria-hidden="true"></i>',
-        'aprs-follow-fallback', csKey, 'btn-primary aprs-follow-btn',
-        'follow', 'Follow callsign', 'Follow callsign ' + csKey
-    ).attr('aria-pressed', 'false');
+    var actionsRow = $('<div>').addClass('aprs-actions aprs-actions-row').attr('role', 'menu');
+    var viewBtn = createAprsActionButton(
+        '<i class="fa fa-list-alt" aria-hidden="true"></i>',
+        'aprs-view-fallback', csKey, 'btn-success aprs-view-btn',
+        'view', 'View callsign summary', 'View callsign summary ' + csKey
+    );
+    var settingsBtn = createAprsActionButton(
+        '<i class="fa fa-cog" aria-hidden="true"></i>',
+        'aprs-settings-fallback', csKey, 'btn-secondary aprs-settings-btn',
+        'settings', 'Prediction settings', 'Prediction settings ' + csKey
+    );
     var refreshBtn = createAprsActionButton(
         '<i class="fa fa-refresh" aria-hidden="true"></i>',
         'aprs-refresh-fallback', csKey, 'btn-info aprs-refresh-btn',
@@ -504,25 +614,14 @@ function createAprsListItem(cs, collecting) {
         'aprs-recovery-fallback', csKey, 'btn-warning aprs-recovery-btn',
         'recover', 'Mark recovered', 'Mark recovered ' + csKey
     );
-    var settingsBtn = createAprsActionButton(
-        '<i class="fa fa-cog" aria-hidden="true"></i>',
-        'aprs-settings-fallback', csKey, 'btn-secondary aprs-settings-btn',
-        'settings', 'Prediction settings', 'Prediction settings ' + csKey
-    );
-    var viewBtn = createAprsActionButton(
-        '<i class="fa fa-list-alt" aria-hidden="true"></i>',
-        'aprs-view-fallback', csKey, 'btn-success aprs-view-btn',
-        'view', 'View callsign summary', 'View callsign summary ' + csKey
-    );
-    var btn = createAprsActionButton(
+    var removeBtn = createAprsActionButton(
         '<i class="fa fa-trash-o" aria-hidden="true"></i>',
         'aprs-remove-fallback', csKey, 'btn-danger aprs-remove-btn',
         'remove', 'Remove callsign', 'Remove callsign ' + csKey
     );
-    // Reorder buttons for ergonomic layout and better fit: follow, summary, settings, refresh, recover, remove
-    actionsRow.append(followBtn).append(viewBtn).append(settingsBtn).append(refreshBtn).append(recoveryBtn).append(btn);
+    actionsRow.append(viewBtn).append(settingsBtn).append(refreshBtn).append(recoveryBtn).append(removeBtn);
 
-    // Arrange: data on top (left), actions in a horizontal row below the data
+    // Arrange: data + inline actions on top, overflow menu anchored under the kebab button
     row.append(left).append(actionsRow);
     li.append(row);
 
@@ -1304,6 +1403,12 @@ function serverSettingsUpdate(data){
     // Accept a json blob of settings data from the client, and update our local store.
     var previousAprsCallsigns = Array.isArray(chase_config.aprs_callsigns) ? chase_config.aprs_callsigns.slice() : [];
     chase_config = data;
+    // `data` is the server's shared config, which only ever holds config-file
+    // defaults for personal display settings (the server no longer accepts
+    // client changes to them). Re-apply this browser's own saved choices on
+    // top so they aren't overwritten by that default, or by another client's
+    // unrelated settings change triggering this same broadcast.
+    applyLocalDisplayOverrides();
     if (typeof chase_config.pred_model_time !== 'string') {
         chase_config.pred_model_time = '—';
     }
@@ -1486,6 +1591,11 @@ function clientSettingsUpdate(){
     if (typeof timeSeqActive !== 'undefined') chase_config.time_seq_active = timeSeqActive;
     if (typeof timeSeqCycle !== 'undefined') chase_config.time_seq_cycle = timeSeqCycle;
 
+    // Persist this browser's own display preferences locally. They're also
+    // present on chase_config below for code that reads them directly, but
+    // the server ignores them entirely - they never reach other clients.
+    captureLocalDisplaySettings();
+
     if (typeof socket !== 'undefined' && socket) {
         socket.emit('client_settings_update', chase_config);
     } else {
@@ -1612,6 +1722,57 @@ $(document).on('click', '.aprs-view-btn', function(e){
         return;
     }
     openAprsCallsignSummaryModal(cs);
+});
+
+$(document).on('click', '.aprs-menu-toggle', function(e){
+    e = e || window.event;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    var $btn = $(this);
+    var $item = $btn.closest('.aprs-item');
+    var willOpen = !$item.hasClass('aprs-menu-open');
+
+    $('.aprs-item.aprs-menu-open').not($item).removeClass('aprs-menu-open')
+        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
+
+    $item.toggleClass('aprs-menu-open', willOpen);
+    $btn.attr('aria-expanded', willOpen ? 'true' : 'false');
+});
+
+// Selecting any action in the overflow menu closes it; the action's own
+// handler (bound above) still runs since both are delegated on document.
+$(document).on('click', '.aprs-actions-row button', function(){
+    $(this).closest('.aprs-item').removeClass('aprs-menu-open')
+        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
+});
+
+// Clicking the body of a callsign row (but not its buttons) opens the
+// summary view. Button handlers above call stopPropagation, so this only
+// fires for clicks that weren't already handled.
+$(document).on('click', '.aprs-item', function(e){
+    var $target = $(e.target);
+    if ($target.closest('.aprs-title-right, .aprs-actions-row').length > 0) {
+        return;
+    }
+    var cs = ($(this).data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    openAprsCallsignSummaryModal(cs);
+});
+
+// Any click that reaches here wasn't on a kebab toggle or menu action
+// (those stop propagation), so it's safe to close any open overflow menu.
+$(document).on('click', function(){
+    $('.aprs-item.aprs-menu-open').removeClass('aprs-menu-open')
+        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
+});
+
+$(document).on('keydown', function(e){
+    if (e.key === 'Escape' || e.which === 27) {
+        $('.aprs-item.aprs-menu-open').removeClass('aprs-menu-open')
+            .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
+    }
 });
 
 $(document).on('input change', '#cesiumCameraSliderInput', function(){

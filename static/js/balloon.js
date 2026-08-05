@@ -463,6 +463,13 @@ function handleTelemetry(data){
 
     // Handle chase car position updates.
     if (data.callsign == 'CAR'){
+      if (!isMyOwnCarTelemetry(data)){
+        // This is another connected chaser's position (or, if we're sharing
+        // our own device location, the primary/hardware-fed car) - render it
+        // as a distinct marker rather than overwriting our own car.
+        handleOtherChaserTelemetry(data);
+        return;
+      }
         // Update car position.
         chase_car_position.latest_data = data.position;
         chase_car_position.heading = data.heading; // degrees true
@@ -551,6 +558,9 @@ function handleTelemetry(data){
         car_data_age = 0.0;
         if (typeof syncCesiumAfterCarUpdate === 'function') {
             syncCesiumAfterCarUpdate();
+        }
+        if (typeof updateChaserRosterDisplay === 'function') {
+            updateChaserRosterDisplay();
         }
     }else{
 

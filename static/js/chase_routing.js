@@ -150,9 +150,30 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         } catch (e) { console.warn('advanceDisplayedRouteAlongIndex error', e); }
     }
 
-    // Ensure chase-status panel exists (fallback if template missing)
-    if (typeof $ !== 'undefined' && $('#chase-status').length == 0){
-        $('body').append("<div id='chase-status' style='position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.92); padding:8px; border-radius:4px; z-index:1000; display:none; box-shadow:0 1px 4px rgba(0,0,0,0.3); font-size:13px;'><div><strong>Chasing:</strong> <span id='chaseStatusCall'>None</span></div><div><strong>ETA:</strong> <span id='chaseStatusETA'>--</span></div><div><strong>Distance:</strong> <span id='chaseStatusDist'>--</span></div></div>");
+    // The chase-status readout (Chasing/ETA/Distance) lives inside the Leaflet
+    // Routing Machine itinerary panel (.leaflet-routing-container) rather than
+    // as its own floating box, so it travels with the directions instead of
+    // overlapping them. Leaflet Routing Machine only re-renders its inner
+    // .leaflet-routing-alternatives-container on route updates, so a bar
+    // prepended to the outer container survives those re-renders.
+    function ensureChaseStatusBar(){
+        if ($('#chase-status').length) return;
+        var container = document.querySelector('.leaflet-routing-container');
+        if (!container) return;
+        var $bar = $(
+            "<div id='chase-status' class='chase-status-inline' style='display:none;' title='Drag to move the directions panel'>" +
+                "<span class='chase-status-item'><strong>Chasing:</strong> <span id='chaseStatusCall'>None</span></span>" +
+                "<span class='chase-status-item'><strong>ETA:</strong> <span id='chaseStatusETA'>--</span></span>" +
+                "<span class='chase-status-item'><strong>Distance:</strong> <span id='chaseStatusDist'>--</span></span>" +
+            "</div>"
+        );
+        $(container).prepend($bar);
+        // Drag the whole directions panel by its chase-status bar.
+        try {
+            $(container).draggable({ handle: '#chase-status', containment: 'window' });
+        } catch (e) {
+            // jQuery UI may not be available; ignore.
+        }
     }
 
     function openChaseRoutingModal(){
@@ -221,8 +242,9 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             if (!cs){ $('#gpsStatus').text('Select a callsign'); return; }
             window.balloon_currently_chased = cs;
             if (!window.router && typeof L !== 'undefined' && map){
-                window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false}).addTo(map);
+                window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false, position:'topleft'}).addTo(map);
                 attachRouterEvents(window.router);
+                ensureChaseStatusBar();
             }
 
             var pred_marker = (balloon_positions[cs] && balloon_positions[cs].pred_marker) ? balloon_positions[cs].pred_marker.getLatLng() : null;
@@ -286,8 +308,9 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             return;
         }
         if (!window.router && typeof L !== 'undefined' && map){
-            window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false}).addTo(map);
+            window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false, position:'topleft'}).addTo(map);
             attachRouterEvents(window.router);
+            ensureChaseStatusBar();
         }
         if (!window.router) return;
 
