@@ -119,7 +119,7 @@ Rate-limit responses return HTTP `429` with `Retry-After` and JSON body containi
 
 Mobile integration contract (schemas, cadence, retries): see [doc/mobile-api-contract.md](doc/mobile-api-contract.md).
 
-Minimal native iOS prototype screen: see [mobile-prototype/ios/README.md](mobile-prototype/ios/README.md).
+A full SwiftUI + CarPlay iOS client (phone map/status/settings tabs and a CarPlay navigation template, both built against the endpoints above) lives in [ios-app/](ios-app/) - see [ios-app/README.md](ios-app/README.md) to build it. `mobile-prototype/ios/` predates it and contains the original minimal single-screen prototype the full app grew out of.
 
 Automotive UI constraints and mapping prototypes (CarPlay + Android Auto): see [mobile-prototype/automotive-ui-constraints.md](mobile-prototype/automotive-ui-constraints.md).
 

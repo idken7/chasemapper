@@ -36,7 +36,9 @@ node_modules/
 Thumbs.db
 
 # Local config file - contains live API keys/credentials, never commit this.
-# Copy horusmapper.cfg.example to horusmapper.cfg/horusmapper.cfg and fill it in.
+# Non-Docker installs: cp horusmapper.cfg.example horusmapper.cfg
+# Docker installs: cp horusmapper.cfg.example horusmapper.cfg/horusmapper.cfg
+/horusmapper.cfg
 horusmapper.cfg/horusmapper.cfg
 
 # Ignore log files
