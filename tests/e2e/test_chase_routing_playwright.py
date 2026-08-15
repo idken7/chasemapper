@@ -118,12 +118,11 @@ def test_chase_routing_modal_and_route_creation():
         # Click Start Routing
         page.click('#startChaseBtn')
 
-        # Wait for the fake router to emit routesfound. The modal intentionally
-        # stays open afterwards (see the "do not auto-close" comment in
-        # attachRouterEvents' routesfound handler in chase_routing.js) so the
-        # user can review or re-run routing; assert on the route summary and
-        # re-enabled Start button instead of a modal close.
-        page.wait_for_selector('#chaseRoutingModal.is-open', timeout=5000)
+        # Starting a chase closes the modal and opens the route panel instead
+        # (see the startChaseBtn click handler's closeChaseRoutingModal() +
+        # openRoutePanel() calls in chase_routing.js) - wait for that panel,
+        # then for the fake router to emit routesfound.
+        page.wait_for_selector('#routePanel.panel-open', timeout=5000)
         page.wait_for_function(
             "document.querySelector('#chaseStatusDist').textContent.trim() !== '--'",
             timeout=5000,
