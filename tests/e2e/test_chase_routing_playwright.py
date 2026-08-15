@@ -111,7 +111,7 @@ def test_chase_routing_modal_and_route_creation():
         # Select the TEST callsign
         page.select_option('#chaseCalls', 'TEST')
         # Ensure manual mode selected and manual coords visible
-        page.select_option('#startMode', 'manual')
+        page.click('#startModeGroup .pill-toggle-btn[data-start-mode="manual"]')
         page.fill('#manualLat', '40.0150')
         page.fill('#manualLon', '-105.2705')
 

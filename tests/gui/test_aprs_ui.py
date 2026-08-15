@@ -106,7 +106,10 @@ def test_aprs_add_remove_flow():
             assert page.locator('#toggle3DButton').evaluate("el => el.classList.contains('is-active')") is True
 
             # The settings panel should remain readable in light mode and the
-            # current-location UI should update the Cesium home marker.
+            # current-location UI should update the Cesium home marker. The
+            # app defaults to dark mode, so force light mode here - that's
+            # what this check is actually about.
+            page.evaluate("document.body.classList.remove('dark-theme')")
             page.click('#topbarSettingsBtn')
             page.wait_for_selector('#otherSection:visible', timeout=3000)
             assert page.locator('#settingsPanel .settings-header').evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
