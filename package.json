@@ -1,0 +1,15 @@
+{
+  "name": "chasemapper-frontend-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Test harness for chasemapper's static/js frontend. The app itself ships with no build step or bundler - these are plain <script>-tag files with no module system, loaded here the same way a browser loads them (see tests/js/helpers/loadScript.js).",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "jquery": "^3.7.1"
+  }
+}

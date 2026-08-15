@@ -49,6 +49,25 @@ jobs:
         env:
           PYTHONUNBUFFERED: 1
 
+  # Jest unit tests for the static/js frontend (no build step/bundler - see
+  # package.json). Fast and has no server dependency, so this is required.
+  js-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run JS unit tests
+        run: npm test
+
   # Browser-driven GUI/E2E tests. These need Playwright and (for tests/e2e) a
   # live server on a fixed port, and are inherently slower/more prone to
   # timing flakiness than the unit/integration suite. Gated as non-blocking
