@@ -5,15 +5,42 @@ body {
 }
 
 :root{
-	--theme-accent: #4f46e5;
+	--theme-accent: #FFCB05;
 	--theme-foreground: #e6eef6;
-	--theme-rgb: 79,70,229; /* rgb of accent */
+	--theme-rgb: 255,203,5; /* rgb of accent */
 	--glass-alpha: 0.42;
 	--panel-transition-duration: 260ms;
 	--glass-blur: 22px;
 	--glass-saturate: 1.6;
 	--glass-sheen: linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 40%);
 	--glass-sheen-light: linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0) 45%);
+
+	/* CHASE//DECK design tokens */
+	--cd-bg: #0a0d16;
+	--cd-bg-elevated: #141a2c;
+	--cd-maize: #FFCB05;
+	--cd-blue: #6f9fd8;
+	--cd-blue-light: #8fb6e6;
+	--cd-fg: #e6eef6;
+	--cd-font-display: 'Space Grotesk', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+	--cd-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	--topbar-height: 56px;
+}
+
+body {
+	font-family: var(--cd-font-display);
+}
+
+.mono,
+.telem-readout-alt,
+.telem-readout-value,
+.topbar-status-label,
+.recovery-value,
+.log-panel-body,
+.aprs-detail-value,
+.settings-panel input[type=number],
+.chase-status-inline {
+	font-family: var(--cd-font-mono);
 }
 
 body,
@@ -70,6 +97,12 @@ html, body, #map, #cesiumMap {
 	z-index: 2147483647 !important;
 	position: fixed !important;
 	pointer-events: auto !important;
+}
+
+/* Clear the fixed top bar (Flight Deck nav) so zoom/measure/3D-toggle
+   controls don't render underneath it. */
+.leaflet-top {
+	top: calc(var(--topbar-height) + 12px) !important;
 }
 
 /* Ensure control buttons are clickable above the Cesium canvas */
@@ -188,7 +221,7 @@ body.dark-theme .cesium-camera-slider-card {
 	/* Cleared of the top-right zoom/3D-toggle/geolocate control stack (~64px wide);
 	   see .leaflet-top.leaflet-right in index.html where zoomControl is moved to topright. */
 	right: 84px;
-	top: 82px;
+	top: calc(var(--topbar-height) + 26px);
 	z-index: 9999;
 	pointer-events: none;
 	opacity: 0;
@@ -202,8 +235,11 @@ body.dark-theme .cesium-camera-slider-card {
 	pointer-events: auto;
 }
 
-.cesium-measure-card {
+.cesium-measure-panel.is-open .cesium-measure-card {
 	pointer-events: auto;
+}
+
+.cesium-measure-card {
 	min-width: 280px;
 	max-width: min(92vw, 360px);
 	padding: 12px 14px;
@@ -283,6 +319,53 @@ body.dark-theme .cesium-camera-slider-card {
 	gap: 8px;
 	justify-content: flex-end;
 	margin-top: 10px;
+}
+
+/* Bootstrap buttons that live inside branded panels but weren't covered by
+   the .recovery-modal-footer button system (the APRS add button, "Apply"
+   location, "Clear ..." actions, the measure panel's Finish/Clear). Maize
+   primary action, theme-aware neutral secondary, matching the rest of the
+   Flight Deck accent system. */
+.settings-panel .btn-primary,
+.cesium-measure-card .btn-primary {
+	background: var(--cd-maize);
+	border-color: var(--cd-maize);
+	color: #0a0d16;
+	font-weight: 700;
+}
+.settings-panel .btn-primary:hover,
+.settings-panel .btn-primary:focus,
+.cesium-measure-card .btn-primary:hover,
+.cesium-measure-card .btn-primary:focus {
+	background: #e6b704;
+	border-color: #e6b704;
+	color: #0a0d16;
+}
+body.dark-theme .settings-panel .btn-secondary,
+body.dark-theme .cesium-measure-card .btn-secondary {
+	background: rgba(255, 255, 255, 0.08);
+	border-color: rgba(255, 255, 255, 0.12);
+	color: var(--cd-fg);
+}
+body.dark-theme .settings-panel .btn-secondary:hover,
+body.dark-theme .settings-panel .btn-secondary:focus,
+body.dark-theme .cesium-measure-card .btn-secondary:hover,
+body.dark-theme .cesium-measure-card .btn-secondary:focus {
+	background: rgba(255, 255, 255, 0.14);
+	color: #fff;
+}
+body:not(.dark-theme) .settings-panel .btn-secondary,
+body:not(.dark-theme) .cesium-measure-card .btn-secondary {
+	background: rgba(15, 23, 42, 0.06);
+	border-color: rgba(15, 23, 42, 0.14);
+	color: #0f172a;
+}
+body:not(.dark-theme) .settings-panel .btn-secondary:hover,
+body:not(.dark-theme) .settings-panel .btn-secondary:focus,
+body:not(.dark-theme) .cesium-measure-card .btn-secondary:hover,
+body:not(.dark-theme) .cesium-measure-card .btn-secondary:focus {
+	background: rgba(15, 23, 42, 0.1);
+	color: #020617;
 }
 
 /* Dialog and form label consistency */
@@ -381,6 +464,15 @@ body.dark-theme .cesium-measure-card {
 	margin-right: 3px;
 }
 
+/* Leaflet Routing Machine's own itinerary box is superseded by the custom
+   .route-panel (renderRoutePanel() in chase_routing.js) - LRM still computes
+   the route/turn-by-turn data (window.router), it just no longer renders its
+   stock DOM. Hidden rather than removed since LRM manages this element's
+   internals directly. */
+.leaflet-routing-container {
+	display: none;
+}
+
 /* Moved control container spans the viewport while Cesium is active; it stays
    pointer-events:none itself so empty space passes clicks to the map, while
    individual controls (.leaflet-control) keep their own pointer-events:auto. */
@@ -392,8 +484,8 @@ body.dark-theme .cesium-measure-card {
 
 /* Dark theme overrides */
 body.dark-theme {
-	background: #071226;
-	color: #e6eef6;
+	background: var(--cd-bg);
+	color: var(--cd-fg);
 }
 
 body,
@@ -407,7 +499,7 @@ body,
 .leaflet-top.leaflet-right .leaflet-control-layers-toggle {
 	transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease, transform 200ms ease, opacity 200ms ease;
 }
-body.dark-theme .leaflet-container { background: #071226; }
+body.dark-theme .leaflet-container { background: var(--cd-bg); }
 
 #cesiumMap .cesium-widget,
 #cesiumMap .cesium-viewer,
@@ -442,57 +534,28 @@ body.dark-theme .log-panel { background: rgba(8,12,18,0.9); }
 body.dark-theme .log-panel .log-panel-header { color: #e6eef6; }
 body.dark-theme .log-panel-body { color: #e6eef6; }
 body.dark-theme .log-line { color: #e6eef6; }
-body.dark-theme .log-level-error { color: #ff6b6b; font-weight:700; }
-body.dark-theme .log-level-warn { color: #ffd28a; font-weight:700; }
+body.dark-theme .log-level-error { color: #ff8a8a; font-weight:700; }
+body.dark-theme .log-level-warn { color: #ffce6b; font-weight:700; }
 body.dark-theme .log-level-debug { color: #7bdff6; }
 body.dark-theme .log-level-info { color: #cfe6ff; }
 
 /* Floating menubar styles */
-#topbar { font-family: 'Segoe UI', Roboto, Arial, sans-serif; }
+/* The nav bar + APRS/Settings/Log panels used to live inside one bottom-left
+   "dock" box. In the Flight Deck layout the top bar is fixed at the very top
+   of the screen and the panels hang independently below/around it (APRS
+   top-left, Settings top-right, Log spanning the bottom) — so #menuDock is
+   now just a non-visual wrapper kept for existing JS lookups; it no longer
+   positions or styles anything itself. */
 .menu-dock {
-	position: fixed;
-	left: 14px;
-	bottom: 14px;
-	top: auto;
-	transform: none;
-	z-index: 9999;
-	width: auto;
-	max-width: 420px;
-	height: auto;
-	min-height: 56px;
-	max-height: none;
-	background: var(--glass-sheen), rgba(var(--theme-rgb), var(--glass-alpha));
-	color: #fff;
-	border-radius: 20px;
-	padding: 4px 8px;
-	backdrop-filter: blur(26px) saturate(var(--glass-saturate));
-	-webkit-backdrop-filter: blur(26px) saturate(var(--glass-saturate));
-	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(0, 0, 0, 0.1);
-	border: 1px solid rgba(255, 255, 255, 0.16);
-	display: grid;
-	grid-template-columns: 1fr;
-	grid-template-rows: auto auto;
-	align-items: center;
-	row-gap: 4px;
-	overflow: hidden;
-	transition: all var(--panel-transition-duration) cubic-bezier(0.34, 1.56, 0.64, 1), background-color var(--panel-transition-duration) ease;
-	will-change: transform, opacity;
+	position: static;
+	background: none;
+	border: 0;
+	box-shadow: none;
+	padding: 0;
 }
 
-@media (max-width: 840px) {
-	.menu-dock {
-		left: 50%;
-		right: auto;
-		transform: translateX(-50%);
-		width: calc(100vw - 28px);
-		max-width: none;
-		padding-left: 12px;
-		padding-right: 12px;
-	}
-}
-
-/* Apply glass style to settings and log panels too for a subtle liquid-glass feel */
-.settings-panel, .log-panel, .menu-dock {
+/* Apply the same corner-clipping to settings/log panels for a crisp edge */
+.settings-panel, .log-panel {
 	background-clip: padding-box;
 }
 
@@ -532,17 +595,24 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .recovery-modal-card .form-control,
 .recovery-modal-card input[type="text"] {
 	color: var(--theme-foreground);
-	background: rgba(255,255,255,0.03);
-	border: 1px solid rgba(255,255,255,0.06);
+	background: rgba(255,255,255,0.06);
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 9px;
+	padding: 11px 14px;
+	font-size: 14px;
+}
+.recovery-modal-card input[type="number"],
+.recovery-modal-card .recovery-value {
+	font-family: var(--cd-font-mono);
 }
 
 /* Checkbox styling to match theme */
 .recovery-modal-card input[type="checkbox"]{
 	-webkit-appearance: none;
 	appearance: none;
-	width: 18px;
-	height: 18px;
-	border-radius: 4px;
+	width: 19px;
+	height: 19px;
+	border-radius: 5px;
 	border: 1px solid rgba(255,255,255,0.12);
 	background: rgba(0,0,0,0.12);
 	display: inline-block;
@@ -566,6 +636,19 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	transform: rotate(45deg);
 }
 
+/* The Log/Settings/APRS panels take over the right (or, for Log, full)
+   width of the screen and collide with the zoom +/- control there - the
+   Flight Deck design never shows it on those screens (only Track/Route).
+   Only the zoom buttons are hidden, not the whole right-side control stack:
+   the 3D toggle/measure/locate/route buttons stay reachable regardless of
+   which panel is open, since those are real distinct actions rather than a
+   pure map-viewport control. body.side-panel-open is toggled by
+   updateMapControlsVisibility() in index.html whenever #settingsPanel or
+   #logPanel is open. */
+body.side-panel-open .leaflet-control-zoom {
+	display: none;
+}
+
 /* Stack right-side leaflet control buttons vertically and add spacing */
 .leaflet-top.leaflet-right .leaflet-bar {
 	display: flex;
@@ -577,92 +660,132 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	align-items: center;
 	justify-content: center;
 }
-.topbar-actions {
-	position: relative;
-	right: auto;
-	top: auto;
-	z-index: auto;
-	width: 100%;
-	justify-content: space-between;
-}
+/* Flight Deck top bar: fixed full-width, brand mark on the left, the nav
+   pill group centered, live/chaser status on the right. */
+/* Flight Deck top nav: floats directly over the map (brand / centered nav
+   pills / live status) - no full-width background bar, matching the design
+   mockup exactly (every screen shows this as three items positioned at
+   top:20/left:24/right:24, not a bar spanning the viewport). Grid (not
+   flex+space-between) is what actually centers the middle column regardless
+   of how wide the brand/status siblings are. */
 .topbar-shell {
-	position: relative;
-	width: 100%;
-	display: flex;
-	justify-content: space-between;
+	position: fixed;
+	top: 20px;
+	left: 24px;
+	right: 24px;
+	height: auto;
+	width: auto;
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
-	gap: 12px;
-	background: transparent;
+	gap: 16px;
+	background: none;
 	color: #fff;
-	border-radius: 14px;
-	padding: 4px 8px !important;
+	border-radius: 0;
+	padding: 0 !important;
 	box-shadow: none;
 	border: 0;
-	z-index: 3;
-	align-self: center;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	z-index: 9998;
 }
 .topbar-brand {
-	display: none;
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	flex: 0 0 auto;
+	justify-self: start;
+	font-family: var(--cd-font-mono);
 }
 .topbar-brand-mark {
-	display: none;
+	display: flex;
+	width: 20px;
+	height: 20px;
+	border-radius: 5px;
+	background: var(--cd-maize);
+	color: #0a0d16;
+	align-items: center;
+	justify-content: center;
+	font-weight: 700;
+	font-size: 11px;
+	flex: 0 0 auto;
+}
+.topbar-brand-text {
+	display: flex;
+	flex-direction: column;
+	line-height: 1.2;
 }
 .topbar-title {
-	display: none;
+	display: block;
+	color: #fff;
+	font-weight: 700;
+	font-size: 12.5px;
+	letter-spacing: 0.03em;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-subtitle {
-	display: none;
-}
-.topbar-actions {
-	gap: 8px;
+	display: block;
+	color: rgba(230, 238, 246, 0.75);
+	font-size: 9.5px;
+	font-family: var(--cd-font-display);
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-action-group {
 	flex: 0 0 auto;
-}
-.topbar-quick-controls {
 	display: inline-flex;
-	align-items: center;
-	gap: 8px;
-	margin-left: 6px;
-	margin-right: 0;
-	order: 10;
-}
-.topbar-action-group {
-	padding: 4px;
-	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.06);
-	border: 1px solid rgba(255, 255, 255, 0.08);
-	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+	gap: 4px;
+	padding: 5px;
+	border-radius: 10px;
+	/* Opaque dark pill (not the mockup's literal 5% white tint) - with the
+	   background bar gone, this now sits directly over real map tiles rather
+	   than the mockup's near-black canvas, so it needs real contrast to stay
+	   legible. Same reasoning as .doa-panel/.routing-active-pill. */
+	background: rgba(10, 13, 22, 0.7);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+	backdrop-filter: blur(10px) saturate(1.3);
+	-webkit-backdrop-filter: blur(10px) saturate(1.3);
 }
 .topbar-action-btn {
 	border: 0;
-	border-radius: 999px !important;
-	padding: 0.42rem 0.82rem;
-	font-weight: 600;
-	letter-spacing: 0.01em;
-	color: rgba(255, 255, 255, 0.92) !important;
+	border-radius: 8px !important;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 9px 16px;
+	font-size: 0.76rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	color: rgba(230, 238, 246, 0.45) !important;
 	background: transparent !important;
 	box-shadow: none !important;
 	transition: transform 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 180ms ease;
 }
+.nav-pill-icon {
+	flex: 0 0 auto;
+	display: inline-flex;
+}
+.nav-pill-label {
+	white-space: nowrap;
+}
 .topbar-action-btn + .topbar-action-btn {
-	margin-left: 4px;
+	margin-left: 0;
 }
 .topbar-action-btn:hover,
 .topbar-action-btn:focus {
-	background: rgba(255, 255, 255, 0.09) !important;
+	background: rgba(255, 255, 255, 0.08) !important;
 	color: #ffffff !important;
-	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 	outline: none;
 }
 
 .topbar-action-btn.is-selected,
 .topbar-action-btn.is-selected:hover,
 .topbar-action-btn.is-selected:focus {
-	background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.1)) !important;
-	color: #ffffff !important;
-	box-shadow: 0 8px 18px rgba(2, 6, 23, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.26), inset 0 -1px 0 rgba(0, 0, 0, 0.22);
-	transform: translateY(-0.5px);
+	background: rgba(255, 203, 5, 0.16) !important;
+	color: var(--cd-maize) !important;
+	box-shadow: none;
+	transform: none;
 }
 
 .topbar-action-btn:not(.is-selected):active {
@@ -670,38 +793,70 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 }
 
 .topbar-action-btn:focus-visible {
-	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+	box-shadow: 0 0 0 3px rgba(111, 159, 216, 0.4);
 }
 .topbar-status {
-	gap: 8px;
+	gap: 7px;
 	font-weight: 600;
-	margin-left: auto;
-	flex: 0 0 auto;
+	justify-self: end;
 	white-space: nowrap;
+	color: var(--cd-blue-light);
+	font-size: 0.72rem;
+	letter-spacing: 0.02em;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-status-label {
 	opacity: 0.95;
 	white-space: nowrap;
 }
+.topbar-status-sep {
+	opacity: 0.5;
+}
 .aprs-status-dot {
-	width: 12px;
-	height: 12px;
+	width: 8px;
+	height: 8px;
 	display: inline-block;
 	border-radius: 50%;
-	box-shadow: 0 0 0 2px rgba(255,255,255,0.2);
+	box-shadow: 0 0 0 2px rgba(255,255,255,0.12);
 }
-.aprs-status-good { background: #2ecc71; }
-.aprs-status-broken { background: #e74c3c; }
-.aprs-status-connecting { background: #f1c40f; }
+.aprs-status-good { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+.aprs-status-broken { background: #e74c3c; box-shadow: 0 0 8px #e74c3c; }
+.aprs-status-connecting { background: var(--cd-blue); box-shadow: 0 0 8px var(--cd-blue); }
+
+@media (max-width: 900px) {
+	.topbar-subtitle { display: none; }
+	.nav-pill-label { display: none; }
+	.topbar-action-btn { padding: 0.5rem 0.6rem; }
+}
+
+/* Below the mobile-tab-bar breakpoint (see .mobile-tab-bar) the bottom tab
+   bar takes over as the primary way to navigate, but the top pills stay
+   visible/clickable (icon-only) rather than disappearing entirely — some
+   redundancy is preferable to losing keyboard/assistive/automation access
+   to Track/Route/APRS/Log/Settings on narrow viewports. */
+@media (max-width: 720px) {
+	.topbar-shell {
+		left: 10px;
+		right: 10px;
+		gap: 8px;
+	}
+	.topbar-title { display: none; }
+	.topbar-status-label { display: none; }
+	.topbar-status-sep { display: none; }
+	.topbar-action-group { gap: 2px; padding: 3px; }
+	.topbar-action-btn { padding: 0.42rem 0.46rem; }
+}
 
 /* Floating panels */
 .log-panel {
-	grid-column: 1;
-	grid-row: 1;
-	align-self: end;
-	position: relative;
+	/* Spans the bottom of the screen, matching the Flight Deck design. */
+	position: fixed;
+	left: 24px;
+	right: 24px;
+	bottom: 24px;
+	top: auto;
 	transform: translateY(8px);
-	width: 100%;
+	width: auto;
 	max-width: none;
 	height: 0;
 	max-height: 0;
@@ -718,11 +873,16 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	pointer-events: none;
 	visibility: hidden;
 	transition: transform 240ms cubic-bezier(.2,.9,.2,1), opacity 180ms ease, max-height 260ms cubic-bezier(.2,.9,.2,1);
-	transform-origin: top left;
+	transform-origin: bottom center;
 	will-change: transform, opacity;
 	backface-visibility: hidden;
 	backdrop-filter: blur(32px) saturate(var(--glass-saturate));
 	-webkit-backdrop-filter: blur(32px) saturate(var(--glass-saturate));
+	z-index: 9997;
+}
+
+@media (max-width: 520px) {
+	.log-panel { left: 10px; right: 10px; bottom: 10px; }
 }
 
 .log-panel.panel-closing {
@@ -741,6 +901,16 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	border-bottom: 1px solid rgba(255,255,255,0.06);
 	cursor: pointer;
 	flex: 0 0 auto;
+}
+
+/* The log panel spans edge-to-edge, but the floating zoom/measure/3D-toggle
+   control stack (top-right, always on top via its own very high z-index)
+   sits over that same right edge. Without this the level-filter pills get
+   visually clipped/unclickable under the control stack. */
+@media (min-width: 721px) {
+	.log-panel .log-panel-header {
+		padding-right: 96px;
+	}
 }
 .log-panel-title {
 	flex: 0 0 auto;
@@ -785,27 +955,30 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .log-filter-btn:focus-visible {
 	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35), inset 0 1px 0 rgba(255,255,255,0.2) !important;
 }
-.log-panel-body { padding:12px 16px 16px; overflow:auto; max-height:none; min-height:0; flex:1 1 auto; font-family: monospace; font-size:13px; background: transparent; }
+.log-panel-body { padding:18px 22px; overflow:auto; max-height:none; min-height:0; flex:1 1 auto; font-family: var(--cd-font-mono); font-size:13px; background: transparent; }
 .log-line { padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05); }
 .log-level-error { color: #ff8a8a; font-weight:700; }
-.log-level-warn { color: #ffd28a; }
+.log-level-warn { color: #ffce6b; }
 .log-level-debug { color: #7bdff6; }
 .log-level-info { color: #e5eef8; }
 
 .settings-panel {
-	grid-column: 1;
-	grid-row: 1;
-	align-self: end;
-	position: relative;
-	transform: translateY(8px);
-	width: 100%;
+	/* Hangs below the top bar — left-anchored in APRS mode, right-anchored
+	   in Settings mode (data-panel-mode is set by showSettingsPanel() in
+	   index.html). */
+	position: fixed;
+	top: calc(var(--topbar-height) + 28px);
+	right: 24px;
+	left: auto;
+	transform: translateY(-8px);
+	width: min(440px, calc(100vw - 48px));
 	max-width: none;
 	height: 0;
 	max-height: 0;
 	flex-shrink: 1;
 	min-height: 0;
 	background: var(--glass-sheen), linear-gradient(180deg, rgba(23, 30, 44, 0.32), rgba(16, 22, 34, 0.24));
-	border-radius: 20px;
+	border-radius: 16px;
 	box-shadow: 0 22px 54px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.18);
 	border: 1px solid rgba(255,255,255,0.12);
 	overflow: hidden;
@@ -813,11 +986,28 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	pointer-events: none;
 	visibility: hidden;
 	transition: transform 240ms cubic-bezier(.2,.9,.2,1), opacity 180ms ease, max-height 260ms cubic-bezier(.2,.9,.2,1), box-shadow 220ms ease, border-color 220ms ease;
-	transform-origin: top left;
+	transform-origin: top right;
 	will-change: transform, opacity;
 	backface-visibility: hidden;
 	backdrop-filter: blur(36px) saturate(var(--glass-saturate));
 	-webkit-backdrop-filter: blur(36px) saturate(var(--glass-saturate));
+	z-index: 9997;
+}
+
+.settings-panel[data-panel-mode="aprs"] {
+	left: 24px;
+	right: auto;
+	width: min(420px, calc(100vw - 48px));
+	transform-origin: top left;
+}
+
+@media (max-width: 520px) {
+	.settings-panel,
+	.settings-panel[data-panel-mode="aprs"] {
+		left: 10px;
+		right: 10px;
+		width: auto;
+	}
 }
 
 .settings-panel.panel-closing {
@@ -825,10 +1015,6 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	pointer-events: auto;
 	visibility: visible;
 	transition: transform 180ms ease, opacity 140ms ease, max-height 180ms ease;
-}
-#topbar {
-	grid-column: 1;
-	grid-row: 2;
 }
 .settings-panel-content {
 	display: flex;
@@ -894,7 +1080,7 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .settings-grid {
 	display: grid;
 	grid-template-columns: 1fr;
-	gap: 14px;
+	gap: 12px;
 }
 
 .settings-group {
@@ -902,7 +1088,7 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	flex-direction: column;
 	gap: 10px;
 	padding: 12px;
-	border-radius: 16px;
+	border-radius: 12px;
 	background: rgba(255,255,255,0.03);
 	border: 1px solid rgba(255,255,255,0.06);
 	box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
@@ -914,7 +1100,7 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 
 .settings-group h4 {
 	margin: 0;
-	font-size: 0.94rem;
+	font-size: 13px;
 	font-weight: 700;
 	color: #fff;
 }
@@ -1016,27 +1202,70 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	outline: none;
 }
 .button-select-btn.is-active {
-	background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.1)) !important;
-	box-shadow: 0 8px 18px rgba(2, 6, 23, 0.22), inset 0 1px 0 rgba(255,255,255,0.2);
-	color: #fff !important;
+	background: var(--cd-maize) !important;
+	box-shadow: 0 8px 18px rgba(2, 6, 23, 0.22);
+	color: #0a0d16 !important;
 }
 .button-select-btn:focus-visible {
 	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35), inset 0 1px 0 rgba(255,255,255,0.2) !important;
 }
-.settings-panel .list-group-item { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); padding: 10px 12px; border-radius: 14px; margin-bottom: 8px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
+.settings-panel .list-group-item { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); padding: 10px; border-radius: 12px; margin-bottom: 6px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
+
+/* Only the followed callsign (.aprs-is-following, toggled by
+   updateAprsFollowIndicators()) shows the full expanded card - everything
+   else in the list collapses to a single compact row. Matches the Flight
+   Deck design: one expanded "hero" entry plus a plain list underneath. */
+.settings-panel .aprs-collapsed-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	cursor: pointer;
+}
+.settings-panel .aprs-collapsed-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	color: #e6eef6;
+	font-size: 13px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.settings-panel .aprs-collapsed-time {
+	flex: 0 0 auto;
+	color: rgba(230, 238, 246, 0.4);
+	font-family: var(--cd-font-mono);
+	font-size: 11px;
+}
+/* !important: .aprs-row also carries Bootstrap's .d-flex utility class,
+   which sets display:flex !important - a plain declaration here would lose
+   that fight and the "collapsed" row would never actually hide. */
+.settings-panel .aprs-row { display: none !important; }
+
+.settings-panel .list-group-item.aprs-item.aprs-is-following {
+	background: rgba(255, 203, 5, 0.09);
+	border-color: rgba(255, 203, 5, 0.3);
+	padding: 14px;
+}
+.settings-panel .aprs-item.aprs-is-following .aprs-collapsed-row { display: none; }
+.settings-panel .aprs-item.aprs-is-following .aprs-row { display: flex !important; }
+
 .settings-panel .aprs-last-time { font-size: 0.9em; color: #9fb3c9; }
 .settings-panel .aprs-title-row { gap: 12px; width: 100%; }
 .aprs-title-left { gap: 8px; }
 .aprs-staleness-light {
-	width: 10px;
-	height: 10px;
+	width: 9px;
+	height: 9px;
 	display: inline-block;
 	border-radius: 50%;
 	box-shadow: 0 0 0 2px rgba(255,255,255,0.18);
 }
-.aprs-staleness-green { background: #2ecc71; }
-.aprs-staleness-yellow { background: #f1c40f; }
-.aprs-staleness-red { background: #e74c3c; }
+/* Semantic colors match the mockup's chaser-dot scheme: live telemetry = blue,
+   stale = light grey, no data = faded red. (The followed/expanded row is
+   additionally flagged via its own maize card border, .aprs-is-following.) */
+.aprs-staleness-green { background: var(--cd-blue); }
+.aprs-staleness-yellow { background: #d0d4dc; }
+.aprs-staleness-red { background: #e05a5a; }
 .settings-panel .aprs-row {
 	gap: 10px;
 	align-items: stretch;
@@ -1057,36 +1286,46 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 .settings-panel .aprs-title-left strong {
 	white-space: nowrap;
 }
-.settings-panel .aprs-last-time-row {
+/* Last-heard + location share one line on the expanded card. */
+.settings-panel .aprs-meta-row {
 	width: 100%;
 	display: flex;
-	justify-content: flex-end;
+	align-items: baseline;
+	gap: 6px;
 	margin-top: 2px;
+	font-family: var(--cd-font-mono);
+	font-size: 10.5px;
+	color: rgba(230, 238, 246, 0.45);
+	white-space: nowrap;
+	overflow: hidden;
 }
-.settings-panel .aprs-location-row { width: 100%; margin-top: 2px; }
+.settings-panel .aprs-meta-row .aprs-last-time { flex: 0 0 auto; }
+.settings-panel .aprs-meta-row .aprs-meta-sep { flex: 0 0 auto; opacity: 0.6; }
+.settings-panel .aprs-meta-row .aprs-location { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+
 .settings-panel .aprs-detail-grid {
 	display: grid;
-	grid-template-columns: repeat(3, minmax(90px, 1fr));
-	gap: 1px 8px;
+	grid-template-columns: repeat(3, minmax(70px, 1fr));
+	gap: 8px;
+	margin-top: 10px;
 }
 .settings-panel .aprs-detail-row {
 	display: flex;
-	justify-content: space-between;
+	flex-direction: column;
+	gap: 2px;
 	font-size: 0.82em;
 	white-space: nowrap;
-	gap: 4px;
 }
-.settings-panel .aprs-detail-label { color: #9fb3c9; margin-right: 4px; flex: 0 0 auto; }
-.settings-panel .aprs-detail-value { color: #e6eef6; font-weight: 600; text-align: right; flex: 1; }
+.settings-panel .aprs-detail-label { color: rgba(230, 238, 246, 0.4); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; }
+.settings-panel .aprs-detail-value { color: #e6eef6; font-weight: 600; font-size: 13px; }
 .settings-panel .aprs-last-time {
 	white-space: nowrap;
 	flex: 0 0 auto;
-	text-align: right;
 }
 
 /* APRS Actions button styling - consolidated */
 /* Only the icon-only inline buttons (follow, kebab toggle) hide their text
-   fallback; menu items show icon + label since they have room in the dropdown. */
+   fallback; the always-visible actions row below shows icon + label. */
 .settings-panel .aprs-follow-btn .aprs-follow-fallback { display: none; }
 
 .settings-panel .list-group-item.aprs-item { position: relative; overflow: visible; }
@@ -1097,8 +1336,8 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	flex: 0 0 auto;
 }
 .settings-panel .aprs-icon-btn {
-	width: 32px;
-	height: 32px;
+	width: 28px;
+	height: 28px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
@@ -1115,48 +1354,47 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	background: rgba(255,255,255,0.16);
 }
 
-/* Overflow menu: a dropdown anchored under the kebab button, hidden until opened */
+/* Action row (View/Settings/Refresh/Recover/Remove): a static inline row,
+   always visible on the expanded card - visibility is inherited entirely
+   from the parent .aprs-row (see .aprs-is-following .aprs-row above), not
+   gated on the kebab menu. flex-wrap keeps it from overflowing narrow
+   panels instead of relying on a fixed min-width. */
 .settings-panel .aprs-actions-row {
-	display: none;
-	position: absolute;
-	top: 44px;
-	right: 12px;
-	z-index: 20;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 200px;
-	padding: 6px;
-	background: #1b2733;
-	border: 1px solid rgba(255,255,255,0.12);
-	border-radius: 12px;
-	box-shadow: 0 10px 28px rgba(0,0,0,0.4);
-}
-.settings-panel .aprs-item.aprs-menu-open .aprs-actions-row {
 	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 12px;
 }
 .settings-panel .aprs-actions-row .btn {
-	width: 100%;
+	flex: 1 1 auto;
+	min-width: 0;
 	height: auto;
-	justify-content: flex-start;
+	justify-content: center;
 	align-items: center;
-	gap: 10px;
-	padding: 8px 10px;
+	gap: 6px;
+	padding: 7px 8px;
 	border-radius: 8px;
-	font-size: 13px;
-	background: transparent !important;
+	font-size: 11px;
+	font-weight: 600;
+	background: rgba(255,255,255,0.06) !important;
 	border: none !important;
-	color: #e6eef6;
-	text-align: left;
+	color: rgba(230, 238, 246, 0.8);
+	text-align: center;
 }
 .settings-panel .aprs-actions-row .btn:hover,
 .settings-panel .aprs-actions-row .btn:focus-visible {
-	background: rgba(255,255,255,0.08) !important;
+	background: rgba(255,255,255,0.12) !important;
 }
-.settings-panel .aprs-actions-row .btn i { width: 16px; text-align: center; flex: 0 0 auto; }
-.settings-panel .aprs-actions-row .aprs-remove-btn { color: #ff8a80; }
-.settings-panel .aprs-actions-row .aprs-remove-btn i { color: #ff8a80; }
-.settings-panel .aprs-actions-row .aprs-recovery-btn i { color: #f0ad4e; }
-.settings-panel .aprs-actions-row .aprs-view-btn i { color: #57d38c; }
+/* Mockup's action row is text-only (no icons). */
+.settings-panel .aprs-actions-row .btn i { display: none; }
+.settings-panel .aprs-actions-row .aprs-recovery-btn {
+	background: rgba(255, 203, 5, 0.16) !important;
+	color: var(--cd-maize);
+}
+.settings-panel .aprs-actions-row .aprs-remove-btn {
+	background: rgba(224, 90, 90, 0.14) !important;
+	color: #e77;
+}
 
 .settings-panel .aprs-is-following {
 	box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
@@ -1241,13 +1479,14 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 }
 
 body.dark-theme .settings-panel .aprs-follow-btn {
-	background: rgba(56, 189, 248, 0.18);
-	border-color: rgba(56, 189, 248, 0.28);
-	color: #dff8ff;
+	background: rgba(255, 203, 5, 0.16);
+	border-color: rgba(255, 203, 5, 0.3);
+	color: var(--cd-maize);
 }
 body.dark-theme .settings-panel .aprs-follow-btn.is-active {
-	background: rgba(34, 197, 94, 0.2);
-	border-color: rgba(34, 197, 94, 0.35);
+	background: rgba(255, 203, 5, 0.9);
+	border-color: rgba(255, 203, 5, 0.9);
+	color: var(--cd-bg);
 }
 body:not(.dark-theme) .settings-panel .aprs-follow-btn {
 	background: rgba(15, 23, 42, 0.08);
@@ -1255,9 +1494,662 @@ body:not(.dark-theme) .settings-panel .aprs-follow-btn {
 	color: #0f172a;
 }
 body:not(.dark-theme) .settings-panel .aprs-follow-btn.is-active {
-	background: rgba(59, 130, 246, 0.16);
-	border-color: rgba(59, 130, 246, 0.34);
+	background: rgba(255, 203, 5, 0.9);
+	border-color: rgba(255, 203, 5, 0.9);
 	color: #0f172a;
+}
+
+/* Flight Deck telemetry readout card: bottom-left summary of the currently
+   followed payload (callsign, altitude, distance, ETA, descent rate). */
+.telem-readout-card {
+	position: fixed;
+	left: 24px;
+	bottom: 24px;
+	z-index: 9996;
+	width: min(400px, calc(100vw - 48px));
+	padding: 16px 20px;
+	border-radius: 14px;
+	background: rgba(10, 13, 22, 0.75);
+	border: 1px solid rgba(255, 203, 5, 0.25);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(14px) saturate(1.3);
+	-webkit-backdrop-filter: blur(14px) saturate(1.3);
+	color: var(--cd-fg);
+}
+.telem-readout-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	margin-bottom: 12px;
+	gap: 10px;
+}
+.telem-readout-callsign {
+	color: var(--cd-maize);
+	font-weight: 700;
+	font-size: 16px;
+	letter-spacing: 0.03em;
+}
+.telem-readout-alt {
+	color: rgba(230, 238, 246, 0.5);
+	font-size: 11px;
+	white-space: nowrap;
+}
+.telem-readout-stats {
+	display: flex;
+	gap: 30px;
+}
+.telem-readout-label {
+	color: rgba(230, 238, 246, 0.45);
+	font-size: 10px;
+	letter-spacing: 0.06em;
+	font-family: var(--cd-font-mono);
+	margin-bottom: 2px;
+}
+.telem-readout-value {
+	color: var(--cd-fg);
+	font-size: 24px;
+	font-weight: 600;
+}
+.telem-readout-value--accent {
+	color: var(--cd-blue-light);
+}
+.telem-readout-unit {
+	font-size: 12px;
+	font-weight: 400;
+	color: rgba(230, 238, 246, 0.5);
+}
+body:not(.dark-theme) .telem-readout-card {
+	background: rgba(255, 255, 255, 0.88);
+	border-color: rgba(15, 23, 42, 0.14);
+	color: #0f172a;
+	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+body:not(.dark-theme) .telem-readout-alt,
+body:not(.dark-theme) .telem-readout-label {
+	color: rgba(15, 23, 42, 0.55);
+}
+body:not(.dark-theme) .telem-readout-value {
+	color: #0f172a;
+}
+body:not(.dark-theme) .telem-readout-unit {
+	color: rgba(15, 23, 42, 0.55);
+}
+
+@media (max-width: 520px) {
+	.telem-readout-card { left: 10px; bottom: 84px; width: auto; right: 10px; }
+}
+
+/* DOA Bearing Panel: floating compass card, bottom-right on desktop. On
+   narrow viewports it collapses to a small pill near the top bar and
+   expands into a bottom sheet on tap - see .doa-panel-collapsed/.doa-expanded
+   below. Content is fully rendered by renderDoaPanel() in bearings.js. */
+.doa-panel {
+	position: fixed;
+	right: 24px;
+	bottom: 24px;
+	z-index: 9996;
+	width: 300px;
+	max-width: calc(100vw - 48px);
+	padding: 16px;
+	border-radius: 16px;
+	background: rgba(10, 13, 22, 0.88);
+	border: 1px solid rgba(255, 203, 5, 0.25);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(10px) saturate(1.3);
+	-webkit-backdrop-filter: blur(10px) saturate(1.3);
+	color: var(--cd-fg);
+}
+.doa-panel-backdrop { display: none; }
+.doa-panel-collapsed { display: none; }
+.doa-panel-full { display: block; }
+/* 08b: empty-state border is neutral, not the amber tint used once sources exist. */
+.doa-panel.doa-panel-empty-state { border-color: rgba(255, 255, 255, 0.1); }
+
+.doa-panel-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.doa-panel-title { color: #fff; font-weight: 700; font-size: 12.5px; letter-spacing: 0.03em; flex: 1 1 auto; }
+.doa-panel-count { color: rgba(230, 238, 246, 0.45); font-size: 10.5px; white-space: nowrap; }
+.doa-panel-close { display: none; }
+
+.doa-panel-compass-wrap { position: relative; width: 180px; height: 180px; margin: 0 auto 12px; }
+.doa-compass { display: block; }
+.doa-panel-empty {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+}
+.doa-panel-empty-title { color: rgba(230, 238, 246, 0.6); font-size: 11.5px; font-weight: 700; }
+.doa-panel-empty-sub { color: rgba(230, 238, 246, 0.35); font-size: 9.5px; margin-top: 3px; }
+
+.doa-panel-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 14px;
+	margin-bottom: 14px;
+	font-family: var(--cd-font-mono);
+	font-size: 10px;
+}
+.doa-legend-item { display: flex; align-items: center; gap: 5px; color: rgba(230, 238, 246, 0.7); }
+.doa-legend-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+.doa-panel-stats {
+	display: flex;
+	gap: 20px;
+	padding-top: 12px;
+	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	font-family: var(--cd-font-mono);
+}
+.doa-stat-label { color: rgba(230, 238, 246, 0.45); font-size: 9.5px; letter-spacing: 0.05em; margin-bottom: 2px; }
+.doa-stat-value { color: var(--cd-fg); font-size: 18px; font-weight: 600; }
+.doa-stat-value--accent { color: var(--cd-maize); }
+.doa-panel-empty-state .doa-stat-value { color: rgba(230, 238, 246, 0.35); }
+
+body:not(.dark-theme) .doa-panel {
+	background: rgba(255, 255, 255, 0.92);
+	border-color: rgba(15, 23, 42, 0.14);
+	color: #0f172a;
+	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+body:not(.dark-theme) .doa-panel-title,
+body:not(.dark-theme) .doa-stat-value { color: #0f172a; }
+body:not(.dark-theme) .doa-panel-count,
+body:not(.dark-theme) .doa-stat-label,
+body:not(.dark-theme) .doa-legend-item,
+body:not(.dark-theme) .doa-panel-empty-sub { color: rgba(15, 23, 42, 0.55); }
+body:not(.dark-theme) .doa-panel-empty-title { color: rgba(15, 23, 42, 0.65); }
+body:not(.dark-theme) .doa-panel-empty-state .doa-stat-value { color: rgba(15, 23, 42, 0.35); }
+
+@media (max-width: 720px) {
+	.doa-panel {
+		/* Left-anchored (not right, like the desktop card / mockup M10) - the
+		   right side below the topbar is already occupied by the map's own
+		   layers/3D/zoom/locate control stack. */
+		left: 12px;
+		right: auto;
+		bottom: auto;
+		top: calc(var(--topbar-height) + 12px);
+		width: auto;
+		max-width: none;
+		padding: 0;
+		background: none;
+		border: 0;
+		box-shadow: none;
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
+	}
+	.doa-panel-collapsed {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: rgba(10, 13, 22, 0.85);
+		border: 1px solid rgba(255, 203, 5, 0.3);
+		border-radius: 20px;
+		padding: 6px 10px 6px 8px;
+		color: #e6eef6;
+		font-size: 10.5px;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.doa-panel-full { display: none; }
+
+	.doa-panel.doa-expanded {
+		position: fixed;
+		inset: 0;
+		width: auto;
+	}
+	.doa-panel.doa-expanded .doa-panel-collapsed { display: none; }
+	.doa-panel .doa-panel-backdrop { display: none; }
+	.doa-panel.doa-expanded .doa-panel-backdrop {
+		display: block;
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.4);
+		z-index: 1;
+	}
+	.doa-panel.doa-expanded .doa-panel-full {
+		display: block;
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: #141a2c;
+		border-top: 1px solid rgba(255, 203, 5, 0.3);
+		border-radius: 20px 20px 0 0;
+		padding: 16px 20px calc(22px + env(safe-area-inset-bottom, 0px));
+		z-index: 2;
+		box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.4);
+		color: #e6eef6;
+	}
+	.doa-panel.doa-expanded .doa-panel-full::before {
+		content: '';
+		display: block;
+		width: 36px;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.2);
+		border-radius: 2px;
+		margin: 0 auto 14px;
+	}
+	.doa-panel.doa-expanded .doa-panel-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		border-radius: 8px;
+		background: rgba(255, 255, 255, 0.08);
+		color: #e6eef6;
+		border: 0;
+		font-size: 16px;
+		line-height: 1;
+		cursor: pointer;
+	}
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-panel-full {
+		background: #fff;
+		color: #0f172a;
+		border-color: rgba(15, 23, 42, 0.14);
+	}
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-panel-title,
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-stat-value { color: #0f172a; }
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-panel-count,
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-stat-label,
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-legend-item { color: rgba(15, 23, 42, 0.55); }
+	body:not(.dark-theme) .doa-panel.doa-expanded .doa-panel-close { background: rgba(15, 23, 42, 0.08); color: #0f172a; }
+}
+
+/* Legacy TDOA bearing plot (#bearing_plot, micropolar/d3 polar chart) — has no
+   equivalent in the Flight Deck mockups (see doc/design-prompt-flight-deck-missing-
+   screens.md), so this is the "reasonable-effort dark reskin" fallback it describes:
+   give the raw L.control.custom wrapper the same card chrome as every other floating
+   panel, and lighten the chart library's own default axis/legend text (set inline by
+   micropolar via d3 .style(), hence !important) so it's legible against the map. */
+#bearing_plot_control {
+	background: rgba(10, 13, 22, 0.85);
+	border: 1px solid rgba(255, 203, 5, 0.25);
+	border-radius: 14px;
+	padding: 8px;
+	box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+#bearing_plot .axis-text,
+#bearing_plot text {
+	fill: rgba(230, 238, 246, 0.55) !important;
+}
+
+#bearing_plot .grid-line,
+#bearing_plot .outside-circle,
+#bearing_plot .background-circle {
+	stroke: rgba(255, 255, 255, 0.12) !important;
+}
+
+body:not(.dark-theme) #bearing_plot_control {
+	background: rgba(255, 255, 255, 0.85);
+	border-color: rgba(15, 23, 42, 0.15);
+}
+
+body:not(.dark-theme) #bearing_plot .axis-text,
+body:not(.dark-theme) #bearing_plot text {
+	fill: rgba(15, 23, 42, 0.6) !important;
+}
+
+body:not(.dark-theme) #bearing_plot .grid-line,
+body:not(.dark-theme) #bearing_plot .outside-circle,
+body:not(.dark-theme) #bearing_plot .background-circle {
+	stroke: rgba(15, 23, 42, 0.12) !important;
+}
+
+/* Route panel: full turn-by-turn itinerary, shown while actively routing
+   (left-anchored side panel on desktop, matching the APRS/Settings panel
+   footprint; full-screen on mobile). Content is fully rendered by
+   renderRoutePanel() in chase_routing.js. Opens/closes via the same generic
+   .panel-open mechanism as .settings-panel/.log-panel (see openPanelWithAnimation
+   / closePanel in index.html), just with its own fixed positioning instead
+   of their JS-driven resizable height. */
+.route-panel {
+	position: fixed;
+	top: calc(var(--topbar-height) + 12px);
+	left: 24px;
+	bottom: 24px;
+	width: min(380px, calc(100vw - 48px));
+	z-index: 9997;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 18px;
+	border-radius: 16px;
+	background: rgba(10, 13, 22, 0.92);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	box-shadow: 0 22px 54px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(10px) saturate(1.3);
+	-webkit-backdrop-filter: blur(10px) saturate(1.3);
+	color: var(--cd-fg);
+	opacity: 0;
+	transform: translateY(-8px);
+	pointer-events: none;
+	transition: transform var(--panel-transition-duration) cubic-bezier(.2, .9, .2, 1), opacity 180ms ease;
+	overflow: hidden;
+}
+.route-panel:empty { display: none; }
+
+/* Collapsed state (chevron in the header): shrinks down to just the hero
+   "next turn" card, matching the design's compact Route view. The footer
+   moves to #routePanelFooter (see .route-panel-floating-footer below)
+   instead of rendering inside #routePanel, since #routePanel's own
+   backdrop-filter would otherwise make a nested position:fixed footer
+   position relative to its box instead of the viewport. */
+.route-panel.is-collapsed {
+	bottom: auto;
+	height: auto;
+}
+
+/* Floating footer bar, shown only while the route panel is collapsed -
+   full-width bar matching the design's compact Route view. Populated by
+   renderRoutePanel() in chase_routing.js. */
+.route-panel-floating-footer {
+	position: fixed;
+	left: 24px;
+	right: 24px;
+	bottom: 24px;
+	z-index: 9997;
+	background: rgba(10, 13, 22, 0.92);
+	border: 1px solid rgba(255, 203, 5, 0.25);
+	border-radius: 14px;
+	padding: 18px 24px;
+	backdrop-filter: blur(14px) saturate(1.3);
+	-webkit-backdrop-filter: blur(14px) saturate(1.3);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+}
+.route-panel-floating-footer .route-panel-footer {
+	border-top: 0;
+	margin-top: 0;
+	padding-top: 0;
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+}
+.route-panel-floating-footer .route-footer-stats { gap: 36px; }
+.route-panel-floating-footer .route-cta-btn { flex: 0 0 auto; width: auto; padding: 12px 22px; }
+body:not(.dark-theme) .route-panel-floating-footer {
+	background: rgba(255, 255, 255, 0.92);
+	border-color: rgba(15, 23, 42, 0.14);
+	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+
+@media (max-width: 720px) {
+	.route-panel.is-collapsed { bottom: auto; }
+	.route-panel-floating-footer { left: 10px; right: 10px; bottom: 76px; padding: 14px 16px; }
+	.route-panel-floating-footer .route-footer-stats { gap: 18px; }
+}
+
+.route-panel-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.route-panel-title { color: #fff; font-weight: 700; font-size: 14px; }
+.route-panel-collapse-btn {
+	width: 26px;
+	height: 26px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	border: 0;
+	color: #e6eef6;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+.route-panel-collapse-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
+.route-target-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 10px 12px;
+	border-radius: 10px;
+	background: rgba(255, 203, 5, 0.06);
+	border: 1px solid rgba(255, 203, 5, 0.2);
+	flex-shrink: 0;
+}
+.route-target-callsign { color: var(--cd-maize); font-weight: 700; font-size: 13px; }
+.route-target-meta { color: rgba(230, 238, 246, 0.5); font-size: 11px; }
+
+.route-alt-pills { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+.route-alt-pill {
+	padding: 6px 12px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	color: rgba(230, 238, 246, 0.6);
+	font-size: 11.5px;
+	font-weight: 700;
+	border: 0;
+	cursor: pointer;
+}
+.route-alt-pill.is-active { background: var(--cd-maize); color: #0a0d16; }
+
+.route-panel-waiting { color: rgba(230, 238, 246, 0.5); font-size: 13px; padding: 12px 0; }
+
+.route-hero-card {
+	border-radius: 12px;
+	background: rgba(255, 203, 5, 0.09);
+	border: 1px solid rgba(255, 203, 5, 0.3);
+	padding: 14px;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-shrink: 0;
+}
+.route-hero-icon {
+	width: 36px;
+	height: 36px;
+	border-radius: 10px;
+	background: rgba(255, 203, 5, 0.16);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+.route-hero-text { flex: 1; min-width: 0; }
+.route-hero-title { color: #e6eef6; font-weight: 700; font-size: 14px; }
+.route-hero-sub { color: rgba(230, 238, 246, 0.5); font-size: 11.5px; margin-top: 2px; }
+
+.route-stops-passed-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 9px 10px;
+	border-radius: 10px;
+	background: rgba(255, 255, 255, 0.03);
+	color: rgba(230, 238, 246, 0.45);
+	font-size: 11.5px;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+.route-stops-passed-chevron { transition: transform 160ms ease; }
+.route-stops-passed-chevron.is-open { transform: rotate(90deg); }
+
+.route-turn-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.route-turn-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; }
+.route-turn-row.is-next { background: rgba(255, 203, 5, 0.09); border: 1px solid rgba(255, 203, 5, 0.25); }
+.route-turn-row.is-passed { opacity: 0.55; }
+.route-turn-icon {
+	width: 28px;
+	height: 28px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+.route-turn-row.is-next .route-turn-icon { background: rgba(255, 203, 5, 0.16); }
+.route-turn-text { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: #e6eef6; }
+.route-turn-row.is-next .route-turn-text { font-weight: 700; }
+.route-turn-dist { font-size: 11px; color: rgba(230, 238, 246, 0.45); flex-shrink: 0; }
+.route-turn-row.is-next .route-turn-dist { color: var(--cd-maize); }
+
+.route-panel-footer { border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
+.route-footer-stats { display: flex; justify-content: space-between; }
+.route-stat-label { color: rgba(230, 238, 246, 0.45); font-size: 9.5px; letter-spacing: 0.05em; margin-bottom: 2px; }
+.route-stat-value { font-size: 17px; font-weight: 600; color: var(--cd-fg); }
+.route-stat-value--accent { color: var(--cd-blue-light); }
+.route-stat-value--maize { color: var(--cd-maize); }
+.route-cta-btn { padding: 10px; border-radius: 10px; background: var(--cd-maize); color: #0a0d16; font-weight: 700; font-size: 13px; text-align: center; border: 0; cursor: pointer; }
+.route-cta-btn:hover { filter: brightness(1.05); }
+
+body:not(.dark-theme) .route-panel {
+	background: rgba(255, 255, 255, 0.92);
+	border-color: rgba(15, 23, 42, 0.14);
+	color: #0f172a;
+	box-shadow: 0 22px 54px rgba(15, 23, 42, 0.16);
+}
+body:not(.dark-theme) .route-panel-title,
+body:not(.dark-theme) .route-hero-title,
+body:not(.dark-theme) .route-turn-text,
+body:not(.dark-theme) .route-stat-value { color: #0f172a; }
+body:not(.dark-theme) .route-panel-collapse-btn { background: rgba(15, 23, 42, 0.06); color: #0f172a; }
+body:not(.dark-theme) .route-alt-pill { background: rgba(15, 23, 42, 0.06); color: rgba(15, 23, 42, 0.65); }
+body:not(.dark-theme) .route-panel-waiting,
+body:not(.dark-theme) .route-hero-sub,
+body:not(.dark-theme) .route-turn-dist,
+body:not(.dark-theme) .route-stops-passed-row,
+body:not(.dark-theme) .route-stat-label { color: rgba(15, 23, 42, 0.55); }
+body:not(.dark-theme) .route-turn-icon { background: rgba(15, 23, 42, 0.06); }
+
+@media (max-width: 720px) {
+	.route-panel {
+		left: 0;
+		right: 0;
+		top: var(--topbar-height);
+		bottom: 66px;
+		width: auto;
+		border-radius: 0;
+		border-left: 0;
+		border-right: 0;
+		border-bottom: 0;
+		z-index: 2147483647;
+	}
+	/* The route panel is a full-screen takeover here - hide the other
+	   floating map chrome that would otherwise sit on top of it (Cesium's
+	   "moved" control container in particular uses a max z-index). */
+	body.route-panel-active .doa-panel,
+	body.route-panel-active .leaflet-control-container {
+		display: none !important;
+	}
+}
+
+/* Routing-active stop pill: compact indicator shown near the map while a
+   chase is in progress and the full Route panel is closed. Stacked above
+   #telemReadoutCard (also bottom-left) rather than sharing its slot, since
+   both can be visible at once (tracking a payload while routing to it). */
+.routing-active-pill {
+	position: fixed;
+	left: 24px;
+	bottom: 130px;
+	z-index: 9995;
+	width: min(320px, calc(100vw - 48px));
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	/* Opaque dark card (not the mockup's literal translucent glass) - the
+	   mockup assumes a near-black canvas behind it, but this sits over real
+	   colorful map tiles, same reasoning as .doa-panel/.telem-readout-card. */
+	background: rgba(10, 13, 22, 0.88);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(10px) saturate(1.3);
+	-webkit-backdrop-filter: blur(10px) saturate(1.3);
+	border-radius: 12px;
+	padding: 12px 14px;
+	cursor: pointer;
+}
+.routing-active-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--cd-maize);
+	box-shadow: 0 0 8px var(--cd-maize);
+	flex-shrink: 0;
+}
+.routing-active-text { flex: 1; min-width: 0; }
+.routing-active-title { color: #e6eef6; font-weight: 700; font-size: 12.5px; }
+.routing-active-sub { color: rgba(230, 238, 246, 0.45); font-size: 10.5px; margin-top: 1px; }
+.routing-active-stop-btn {
+	padding: 8px 14px;
+	border-radius: 8px;
+	background: rgba(224, 90, 90, 0.14);
+	color: #e77;
+	font-size: 11.5px;
+	font-weight: 700;
+	border: 0;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+.routing-active-stop-btn:hover { background: rgba(224, 90, 90, 0.22); }
+
+body:not(.dark-theme) .routing-active-pill {
+	background: rgba(255, 255, 255, 0.88);
+	border-color: rgba(15, 23, 42, 0.14);
+	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+body:not(.dark-theme) .routing-active-title { color: #0f172a; }
+body:not(.dark-theme) .routing-active-sub { color: rgba(15, 23, 42, 0.55); }
+
+@media (max-width: 720px) {
+	.routing-active-pill { left: 10px; right: 10px; width: auto; bottom: 176px; }
+}
+
+/* Mobile bottom tab bar: same 5 destinations as the top pill nav, shown on
+   narrow viewports in place of the (hidden) desktop pill group. */
+.mobile-tab-bar {
+	display: none;
+}
+@media (max-width: 720px) {
+	.mobile-tab-bar {
+		display: flex;
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 9998;
+		border-top: 1px solid rgba(255, 255, 255, 0.08);
+		background: rgba(10, 13, 22, 0.96);
+		backdrop-filter: blur(20px) saturate(1.3);
+		-webkit-backdrop-filter: blur(20px) saturate(1.3);
+		padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+	}
+	/* Give the map/panels room so content isn't hidden behind the tab bar. */
+	.log-panel { bottom: 76px; }
+	.telem-readout-card { bottom: 76px; }
+	/* The bottom-right Leaflet scale control otherwise sits directly on top
+	   of (and hides the label of) the mobile tab bar's last tab - the mockup
+	   mobile screens (M1-M12) don't show a scale bar either. */
+	.leaflet-bottom.leaflet-right .leaflet-control-scale { display: none !important; }
+}
+.mobile-tab-btn {
+	flex: 1 1 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 6px 2px;
+	border: 0;
+	background: transparent;
+	color: rgba(230, 238, 246, 0.5);
+	font-size: 10px;
+	font-weight: 700;
+	font-family: var(--cd-font-mono);
+	border-radius: 10px;
+}
+.mobile-tab-btn.is-selected {
+	color: var(--cd-maize);
+	background: rgba(255, 203, 5, 0.1);
 }
 
 #telem_display {
@@ -1403,6 +2295,14 @@ body.dark-theme #telem_display .tabulator .tabulator-row:hover {
 	border-radius: 18px;
 	overflow: hidden;
 	box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+	/* jQuery UI's default .ui-dialog padding otherwise leaves a ring of the
+	   base (light) theme's background visible around the titlebar/content. */
+	background: rgba(23, 30, 44, 0.98);
+	padding: 0;
+}
+body:not(.dark-theme) .ui-dialog.aprs-telemetry-dialog,
+body:not(.dark-theme) .ui-dialog.aprs-recovery-dialog {
+	background: rgba(255,255,255,0.98);
 }
 .ui-dialog.aprs-telemetry-dialog .ui-dialog-titlebar,
 .ui-dialog.aprs-recovery-dialog .ui-dialog-titlebar {
@@ -1456,6 +2356,71 @@ body:not(.dark-theme) .ui-dialog.aprs-recovery-dialog .ui-dialog-buttonpane butt
 	border-color: rgba(15, 23, 42, 0.12);
 }
 
+/* .chasemapper-ui-dialog is the default dialogClass every jQuery UI dialog
+   gets from ui_dialogs.js's showDialog() helper (e.g. the "Payload
+   Selection" popup opened by clicking a marker) — brand it the same way as
+   the two dialogs above so no jQuery UI dialog is left in the default
+   jquery-ui.css theme. */
+.ui-dialog.chasemapper-ui-dialog {
+	border: 0;
+	border-radius: 18px;
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+	background: rgba(23, 30, 44, 0.98);
+	padding: 0;
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog {
+	background: rgba(255,255,255,0.98);
+}
+.ui-dialog.chasemapper-ui-dialog .ui-dialog-titlebar {
+	background: rgba(17, 24, 39, 0.96);
+	color: #e6eef6;
+	border: 0;
+	border-bottom: 1px solid rgba(255,255,255,0.08);
+	padding: 12px 16px;
+}
+.ui-dialog.chasemapper-ui-dialog .ui-dialog-titlebar-close {
+	background: rgba(255,255,255,0.08);
+	border-radius: 8px;
+}
+.ui-dialog.chasemapper-ui-dialog .ui-dialog-content {
+	background: rgba(23, 30, 44, 0.98);
+	color: #e6eef6;
+}
+.ui-dialog.chasemapper-ui-dialog a {
+	color: var(--cd-maize);
+}
+.ui-dialog.chasemapper-ui-dialog .ui-dialog-buttonpane {
+	background: inherit;
+	border-top: 1px solid rgba(255,255,255,0.08);
+}
+.ui-dialog.chasemapper-ui-dialog .ui-dialog-buttonpane button {
+	background: rgba(255,255,255,0.08);
+	color: inherit;
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 10px;
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog .ui-dialog-titlebar {
+	background: rgba(245, 247, 250, 0.98);
+	color: #0f172a;
+	border-bottom: 1px solid rgba(15,23,42,0.12);
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog .ui-dialog-titlebar-close {
+	background: rgba(15,23,42,0.06);
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog .ui-dialog-content {
+	background: rgba(255,255,255,0.98);
+	color: #0f172a;
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog .ui-dialog-buttonpane {
+	border-top-color: rgba(15,23,42,0.12);
+}
+body:not(.dark-theme) .ui-dialog.chasemapper-ui-dialog .ui-dialog-buttonpane button {
+	background: rgba(15, 23, 42, 0.06);
+	color: #0f172a;
+	border-color: rgba(15, 23, 42, 0.12);
+}
+
 @keyframes aprsRefreshSpin {
 	from { transform: rotate(0deg); }
 	to { transform: rotate(360deg); }
@@ -1503,7 +2468,7 @@ body.dark-theme .settings-panel .form-control {
 }
 body.dark-theme .settings-panel .list-group-item { border-bottom-color: rgba(255,255,255,0.03); }
 body.dark-theme .settings-panel .aprs-last-time { color: #9fb3c9; }
-body.dark-theme .settings-panel .aprs-detail-label { color: #9fb3c9; }
+body.dark-theme .settings-panel .aprs-detail-label { color: rgba(230, 238, 246, 0.4); }
 body.dark-theme .settings-panel .aprs-detail-value { color: #e6eef6; }
 
 /* Simple 3D extrusion marker styles */
@@ -1644,15 +2609,15 @@ body.dark-theme .predictorModelTimeValue {
 }
 
 body.dark-theme .log-panel {
-	background: rgba(8, 12, 18, 0.9);
-	color: #dfe9f3;
-	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: rgba(10, 13, 22, 0.92);
+	color: var(--cd-fg);
+	border: 1px solid rgba(255, 255, 255, 0.1);
 	box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
 }
 body.dark-theme .settings-panel {
-	background: rgba(10, 15, 24, 0.92);
-	color:#dfe9f3;
-	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: rgba(10, 13, 22, 0.92);
+	color: var(--cd-fg);
+	border: 1px solid rgba(255, 255, 255, 0.1);
 	box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
 }
 body.dark-theme .log-panel .log-panel-header,
@@ -1680,32 +2645,19 @@ body.dark-theme .button-select-btn:hover,
 body.dark-theme .button-select-btn:focus {
 	background: rgba(255,255,255,0.09) !important;
 }
-body.dark-theme .log-filter-btn.is-active,
-body.dark-theme .button-select-btn.is-active {
+body.dark-theme .log-filter-btn.is-active {
 	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.24);
+}
+body.dark-theme .button-select-btn.is-active {
+	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34);
 }
 body.dark-theme .aprs-staleness-light {
 	box-shadow: 0 0 0 2px rgba(255,255,255,0.22);
 }
-body.dark-theme .topbar-action-group {
-	background: rgba(255, 255, 255, 0.04);
-	border-color: rgba(255, 255, 255, 0.06);
-}
-body.dark-theme .topbar-action-btn {
-	color: rgba(255, 255, 255, 0.9) !important;
-}
-body.dark-theme .topbar-action-btn:hover,
-body.dark-theme .topbar-action-btn:focus,
-body.dark-theme .topbar-action-btn:active {
-	background: rgba(255, 255, 255, 0.09) !important;
-}
-
-body.dark-theme .topbar-action-btn.is-selected,
-body.dark-theme .topbar-action-btn.is-selected:hover,
-body.dark-theme .topbar-action-btn.is-selected:focus {
-	background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.11)) !important;
-	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -1px 0 rgba(0, 0, 0, 0.3);
-}
+/* The top bar is a fixed brand element (the "Flight Deck" chrome) and keeps
+   its dark near-black styling regardless of the app's light/dark theme
+   toggle — only the map/panels/body follow that toggle. See the base
+   .topbar-shell / .topbar-action-btn rules above. */
 
 body.dark-theme .btn-close {
 	background: rgba(255, 255, 255, 0.08);
@@ -1728,53 +2680,6 @@ body:not(.dark-theme) {
 
 body:not(.dark-theme) .leaflet-container {
 	background: #dbe5ef;
-}
-
-body:not(.dark-theme) .menu-dock {
-	background: var(--glass-sheen-light), linear-gradient(180deg, rgba(250, 252, 255, 0.66), rgba(241, 246, 252, 0.58));
-	color: #0f172a;
-	border: 1px solid rgba(15, 23, 42, 0.1);
-	box-shadow: 0 8px 28px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-	backdrop-filter: blur(26px) saturate(1.8);
-	-webkit-backdrop-filter: blur(26px) saturate(1.8);
-}
-
-body:not(.dark-theme) .topbar-shell,
-body:not(.dark-theme) .topbar-title,
-body:not(.dark-theme) .topbar-status,
-body:not(.dark-theme) .topbar-status-label {
-	color: #0f172a;
-}
-
-body:not(.dark-theme) .topbar-subtitle {
-	color: #475569;
-	opacity: 1;
-}
-
-body:not(.dark-theme) .topbar-action-group {
-	background: rgba(15, 23, 42, 0.06);
-	border-color: rgba(15, 23, 42, 0.1);
-	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-body:not(.dark-theme) .topbar-action-btn {
-	color: #0f172a !important;
-}
-
-body:not(.dark-theme) .topbar-action-btn:hover,
-body:not(.dark-theme) .topbar-action-btn:focus,
-body:not(.dark-theme) .topbar-action-btn:active {
-	background: rgba(15, 23, 42, 0.08) !important;
-	color: #020617 !important;
-	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
-}
-
-body:not(.dark-theme) .topbar-action-btn.is-selected,
-body:not(.dark-theme) .topbar-action-btn.is-selected:hover,
-body:not(.dark-theme) .topbar-action-btn.is-selected:focus {
-	background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.94)) !important;
-	color: #0f172a !important;
-	box-shadow: 0 8px 16px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 -1px 0 rgba(148, 163, 184, 0.42);
 }
 
 body:not(.dark-theme) .log-panel {
@@ -1891,20 +2796,32 @@ body:not(.dark-theme) .settings-panel .aprs-detail-value {
 	color: #0f172a;
 }
 
-body:not(.dark-theme) .settings-panel .aprs-actions-row {
-	background: #ffffff;
-	border: 1px solid rgba(15, 23, 42, 0.14);
-	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
-}
-
 body:not(.dark-theme) .settings-panel .aprs-actions-row .btn {
+	background: rgba(15, 23, 42, 0.055) !important;
 	color: #0f172a;
 }
 
 body:not(.dark-theme) .settings-panel .aprs-actions-row .btn:hover,
 body:not(.dark-theme) .settings-panel .aprs-actions-row .btn:focus-visible {
-	background: rgba(15, 23, 42, 0.06) !important;
+	background: rgba(15, 23, 42, 0.1) !important;
 }
+
+body:not(.dark-theme) .settings-panel .aprs-actions-row .aprs-recovery-btn {
+	background: rgba(217, 119, 6, 0.14) !important;
+	color: #b45309;
+}
+body:not(.dark-theme) .settings-panel .aprs-actions-row .aprs-remove-btn {
+	background: rgba(220, 38, 38, 0.1) !important;
+	color: #b91c1c;
+}
+
+body:not(.dark-theme) .settings-panel .aprs-item.aprs-is-following {
+	background: rgba(255, 203, 5, 0.14);
+	border-color: rgba(217, 119, 6, 0.35);
+}
+body:not(.dark-theme) .settings-panel .aprs-meta-row { color: rgba(15, 23, 42, 0.5); }
+body:not(.dark-theme) .settings-panel .aprs-collapsed-name { color: #0f172a; }
+body:not(.dark-theme) .settings-panel .aprs-collapsed-time { color: rgba(15, 23, 42, 0.4); }
 
 body:not(.dark-theme) .settings-panel .aprs-menu-toggle {
 	background: rgba(15, 23, 42, 0.06);
@@ -1999,28 +2916,124 @@ body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
 .recovery-modal-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(4, 8, 15, 0.5);
+	background: rgba(4, 8, 15, 0.55);
 	backdrop-filter: blur(8px);
 	-webkit-backdrop-filter: blur(8px);
 }
 
 .recovery-modal-card {
 	position: relative;
-	width: min(560px, calc(100vw - 40px));
+	width: min(460px, calc(100vw - 40px));
 	max-height: calc(100vh - 40px);
 	overflow: auto;
-	border-radius: 20px;
-	border: 1px solid rgba(255,255,255,0.14);
-	background: linear-gradient(180deg, rgba(36, 44, 62, 0.66), rgba(17, 24, 39, 0.58));
-	box-shadow: 0 24px 64px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.2);
-	backdrop-filter: blur(30px) saturate(1.35);
-	-webkit-backdrop-filter: blur(30px) saturate(1.35);
-	color: #e6eef6;
+	border-radius: 18px;
+	border: 1px solid rgba(255, 203, 5, 0.3);
+	background: var(--cd-bg-elevated);
+	box-shadow: 0 30px 70px rgba(0,0,0,0.5);
+	color: var(--cd-fg);
 }
+/* Per-modal widths match the mockup's three distinct sizes rather than one
+   shared value: prediction settings (06) 420px, mark recovered (07) 460px
+   (the .recovery-modal-card default above), start routing (10) 440px. */
+.aprs-prediction-modal-card { width: min(420px, calc(100vw - 40px)); }
+.chase-routing-modal-card { width: min(440px, calc(100vw - 40px)); }
+/* Not part of the mockup's three modals - keep their previous wider footprint
+   since they hold more content (a full telemetry/prediction/landing grid,
+   and a plain confirm dialog respectively). */
+.aprs-callsign-modal-card,
+.destructive-confirm-modal-card { width: min(560px, calc(100vw - 40px)); }
 
 .recovery-modal-header {
-	padding: 12px 14px 10px;
-	border-bottom: 1px solid rgba(255,255,255,0.09);
+	padding: 26px 26px 4px;
+	border-bottom: 0;
+}
+
+/* Primary/secondary/danger buttons follow the Flight Deck accent system
+   everywhere inside one of these modal cards - not just the footer, since
+   some (Set/Get GPS in Start Routing) sit in the body instead. */
+.recovery-modal-card .btn-primary {
+	background: var(--cd-maize);
+	border-color: var(--cd-maize);
+	color: #0a0d16;
+	font-weight: 700;
+}
+.recovery-modal-card .btn-primary:hover,
+.recovery-modal-card .btn-primary:focus {
+	background: #e6b704;
+	border-color: #e6b704;
+	color: #0a0d16;
+}
+.recovery-modal-card .btn-secondary {
+	background: rgba(255, 255, 255, 0.08);
+	border-color: rgba(255, 255, 255, 0.12);
+	color: var(--cd-fg);
+}
+.recovery-modal-card .btn-secondary:hover,
+.recovery-modal-card .btn-secondary:focus {
+	background: rgba(255, 255, 255, 0.14);
+	color: #fff;
+}
+/* Destructive/"Confirm" and "Stop" buttons - same translucent red pill used
+   for Remove/Stop elsewhere in the design (e.g. .routing-active-stop-btn),
+   not Bootstrap's stock solid red or gray. */
+.recovery-modal-card .btn-danger {
+	background: rgba(224, 90, 90, 0.14);
+	border-color: rgba(224, 90, 90, 0.3);
+	color: #e77;
+	font-weight: 700;
+}
+.recovery-modal-card .btn-danger:hover,
+.recovery-modal-card .btn-danger:focus {
+	background: rgba(224, 90, 90, 0.24);
+	border-color: rgba(224, 90, 90, 0.4);
+	color: #e77;
+}
+/* "Export Route" - a tertiary action, Bootstrap's outline-secondary variant
+   restyled to the same glass-chip look instead of its default gray outline. */
+.recovery-modal-card .btn-outline-secondary {
+	background: transparent;
+	border-color: rgba(255, 255, 255, 0.18);
+	color: rgba(230, 238, 246, 0.75);
+	font-weight: 600;
+}
+.recovery-modal-card .btn-outline-secondary:hover,
+.recovery-modal-card .btn-outline-secondary:focus {
+	background: rgba(255, 255, 255, 0.06);
+	border-color: rgba(255, 255, 255, 0.3);
+	color: #fff;
+}
+
+/* On narrow viewports, modals become bottom sheets (mockup screens M7/M8:
+   "Sheet — prediction settings" / "Sheet — mark recovered") — anchored to
+   the bottom edge, full width, rounded top corners only, with a drag-handle
+   bar. The draggable Chase Routing card keeps its centered dialog treatment
+   since jQuery UI's .draggable() (see index.html) assumes a free-floating,
+   not edge-anchored, card. */
+@media (max-width: 640px) {
+	.recovery-modal:not(.chase-routing-modal) {
+		align-items: flex-end;
+		padding: 0;
+	}
+	.recovery-modal-card:not(.chase-routing-modal-card) {
+		width: 100%;
+		max-width: none;
+		max-height: 86vh;
+		border-radius: 20px 20px 0 0;
+		border-bottom: 0;
+		margin: 0;
+	}
+	.recovery-modal-card:not(.chase-routing-modal-card)::before {
+		content: '';
+		display: block;
+		width: 36px;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.2);
+		border-radius: 2px;
+		margin: 10px auto 6px;
+	}
+	body:not(.dark-theme) .recovery-modal-card:not(.chase-routing-modal-card)::before {
+		background: rgba(15, 23, 42, 0.2);
+	}
 }
 
 /* The Chase Routing card is draggable (see index.html) so it can be moved
@@ -2029,17 +3042,119 @@ body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
 	cursor: move;
 }
 
+.chase-routing-modal-header { display: flex; flex-direction: column; gap: 4px; }
+.chase-routing-subtitle { font-size: 0.78rem; color: rgba(255, 255, 255, 0.5); }
+body:not(.dark-theme) .chase-routing-subtitle { color: rgba(15, 23, 42, 0.55); }
+
+.chase-routing-field { display: flex; flex-direction: column; gap: 8px; }
+.chase-routing-field-label { font-size: 0.78rem; color: #b8c6d8; font-weight: 600; }
+body:not(.dark-theme) .chase-routing-field-label { color: #334155; }
+
+.pill-toggle-group {
+	display: flex;
+	gap: 2px;
+	padding: 4px;
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.06);
+}
+.pill-toggle-group--inline { display: inline-flex; }
+.pill-toggle-btn {
+	flex: 1 1 0;
+	text-align: center;
+	border: 0;
+	border-radius: 9px;
+	padding: 8px 14px;
+	font-size: 0.78rem;
+	font-weight: 700;
+	background: transparent;
+	color: rgba(255, 255, 255, 0.6);
+	cursor: pointer;
+	transition: background-color 140ms ease, color 140ms ease;
+	white-space: nowrap;
+}
+.pill-toggle-group--inline .pill-toggle-btn { flex: 0 0 auto; }
+.pill-toggle-btn:hover { color: #fff; }
+.pill-toggle-btn.is-active { background: var(--cd-maize); color: #0a0d16; }
+body:not(.dark-theme) .pill-toggle-group { background: rgba(15, 23, 42, 0.06); }
+body:not(.dark-theme) .pill-toggle-btn { color: rgba(15, 23, 42, 0.65); }
+body:not(.dark-theme) .pill-toggle-btn:hover { color: #0a0d16; }
+body:not(.dark-theme) .pill-toggle-btn.is-active { color: #0a0d16; }
+
+.chase-routing-manual-row { display: flex; gap: 8px; align-items: center; }
+.chase-routing-manual-row .form-control { flex: 1 1 0; min-width: 0; }
+
+.chase-routing-status-row { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.chase-routing-status-text { font-size: 0.78rem; color: rgba(255, 255, 255, 0.55); }
+body:not(.dark-theme) .chase-routing-status-text { color: rgba(15, 23, 42, 0.55); }
+
+.chase-routing-modal-footer { flex-direction: column; align-items: stretch; gap: 8px; }
+.chase-routing-footer-secondary,
+.chase-routing-footer-primary { display: flex; justify-content: flex-end; gap: 8px; }
+.chase-routing-footer-secondary {
+	padding-bottom: 8px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+body:not(.dark-theme) .chase-routing-footer-secondary { border-bottom-color: rgba(15, 23, 42, 0.1); }
+
+/* Chase Routing modal on mobile: a real bottom sheet (matching mockup M12),
+   unlike the desktop draggable card. .draggable() is guarded to desktop
+   widths in index.html so it never fights this fixed layout. */
+@media (max-width: 640px) {
+	.chase-routing-modal-card {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		top: auto;
+		width: 100%;
+		max-width: none;
+		max-height: 86vh;
+		border-radius: 20px 20px 0 0;
+		border-bottom: 0;
+		margin: 0;
+	}
+	.chase-routing-modal-card::before {
+		content: '';
+		display: block;
+		width: 36px;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.2);
+		border-radius: 2px;
+		margin: 10px auto 6px;
+	}
+	body:not(.dark-theme) .chase-routing-modal-card::before {
+		background: rgba(15, 23, 42, 0.2);
+	}
+	.chase-routing-modal-card .recovery-modal-header { cursor: default; }
+}
+
 .recovery-modal-title {
 	margin: 0;
 	font-size: 1rem;
 	font-weight: 700;
+	color: #fff;
+}
+.recovery-modal-subtitle {
+	margin-top: 4px;
+	font-size: 12.5px;
+	color: rgba(230, 238, 246, 0.5);
+	font-family: var(--cd-font-mono);
+}
+/* Buttons inside a modal card get explicit sizing instead of falling back to
+   Bootstrap's .btn defaults (padding .375rem .75rem / radius .375rem /
+   font-size 1rem), which rendered every modal's buttons visibly larger and
+   rounder than the mockup's 10px/18px, 9px radius, 13px text. */
+.recovery-modal-card .btn {
+	padding: 10px 18px;
+	border-radius: 9px;
+	font-size: 13px;
 }
 
 .recovery-modal-body {
-	padding: 12px 14px;
+	padding: 6px 26px;
 	display: flex;
 	flex-direction: column;
-	gap: 10px;
+	gap: 14px;
 }
 
 .recovery-row,
@@ -2060,29 +3175,27 @@ body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
 	font-weight: 600;
 }
 
+/* Label sits above a full-width field, matching the mockup's stacked field
+   layout rather than a label-left/input-right form row. */
 .recovery-input-row {
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 6px;
 	width: 100%;
 }
 
 .recovery-input-row label {
-	font-size: 0.84rem;
-	font-weight: 600;
-	color: #b8c6d8;
+	font-size: 12px;
+	font-weight: 400;
+	color: rgba(230, 238, 246, 0.6);
 	margin: 0;
-	flex: 0 0 auto;
-	min-width: 140px;
 	text-align: left;
 }
 
 .recovery-input-row .input-right {
-	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
-	justify-content: flex-end;
 	gap: 8px;
 	min-width: 0;
 }
@@ -2098,12 +3211,16 @@ body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
 	color: #b8c6d8;
 }
 
+.recovery-position-row .form-control { flex: 1 1 auto; }
+.recovery-position-row .btn { flex: 0 0 auto; white-space: nowrap; padding: 11px 14px; }
+.recovery-notes { min-height: 40px; resize: vertical; font-family: var(--cd-font-display); font-size: 13px; }
+
 .recovery-modal-footer {
-	padding: 11px 14px 13px;
+	padding: 16px 26px 22px;
 	display: flex;
 	justify-content: flex-end;
-	gap: 8px;
-	border-top: 1px solid rgba(255,255,255,0.09);
+	gap: 10px;
+	border-top: 0;
 }
 
 body:not(.dark-theme) .recovery-modal-backdrop {
@@ -2425,28 +3542,37 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	min-width: 140px;
 }
 
+/* These live inside a .leaflet-control glass chip (see "Liquid Glass UI
+   Enhancements" below), which always renders as a blurred dark-on-map
+   overlay regardless of the app's light/dark theme toggle — so, like the
+   topbar and other map-overlay chrome, they use a fixed light-on-dark
+   palette rather than a body.dark-theme-conditional one. */
 .timeToLanding {
-	color:red;
-	font-weight: bold;
-	font-size:5em;
+	color: #ff6b6b;
+	font-weight: 700;
+	font-size: 5em;
+	font-family: var(--cd-font-mono);
 }
 
 .chaseCarSpeed {
-	color:black;
-	font-weight: bold;
-	font-size:3em;
+	color: var(--cd-fg);
+	font-weight: 700;
+	font-size: 3em;
+	font-family: var(--cd-font-mono);
 }
 
 .logTimeData {
-	color:black;
-	font-weight: bold;
-	font-size:3em;
+	color: var(--cd-fg);
+	font-weight: 700;
+	font-size: 3em;
+	font-family: var(--cd-font-mono);
 }
 
 .bearingData {
-	color:red;
-	font-weight: bold;
-	font-size:5em;
+	color: #ff6b6b;
+	font-weight: 700;
+	font-size: 5em;
+	font-family: var(--cd-font-mono);
 }
 
 .dataAgeHeader {
@@ -2658,10 +3784,11 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	outline: none;
 }
 
-/* Dark theme overrides */
-body.dark-theme .leaflet-top.leaflet-right .leaflet-bar { background: rgba(12,16,22,0.72); border-color: rgba(255,255,255,0.12); }
+/* Dark theme overrides — matches the Flight Deck mockup's compact dark
+   rounded-rect control stack (rgba white-on-near-black chip, not opaque). */
+body.dark-theme .leaflet-top.leaflet-right .leaflet-bar { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); box-shadow: 0 10px 24px rgba(0,0,0,0.3); }
 body.dark-theme .leaflet-top.leaflet-right .leaflet-bar a,
-body.dark-theme .leaflet-top.leaflet-right .leaflet-control-layers-toggle { color: #dfe9f3; border-bottom: 0; }
+body.dark-theme .leaflet-top.leaflet-right .leaflet-control-layers-toggle { color: #e6eef6; border-bottom: 0; }
 body.dark-theme .leaflet-top.leaflet-right .leaflet-bar .easy-button-button.leaflet-bar-part,
 body.dark-theme .leaflet-top.leaflet-right .leaflet-bar button.easy-button-button.leaflet-bar-part {
 	background: transparent;
@@ -2844,4 +3971,24 @@ body:not(.dark-theme) .log-panel-body::-webkit-scrollbar-thumb:hover,
 body:not(.dark-theme) .recovery-modal-card::-webkit-scrollbar-thumb:hover,
 body:not(.dark-theme) .aprs-callsign-modal-body::-webkit-scrollbar-thumb:hover {
 	background: rgba(15, 23, 42, 0.36);
+}
+
+/* Leaflet's control container (and its .leaflet-top/.leaflet-bottom
+   children, and the individual controls within) sit at the maximum
+   possible z-index so they stay clickable over the Cesium canvas — but
+   that also puts them above any modal, so a control's hit-area (e.g. the
+   bottom-right scale control) can swallow clicks meant for a modal button
+   near that screen edge, notably a bottom-sheet modal's right-aligned
+   footer button on narrow viewports. Disable all of them while any modal
+   is open — a modal is meant to block the map underneath anyway. This must
+   stay the last rule in the file: it repeats the same selectors as the
+   pointer-events:auto !important rules near the top, and needs to win the
+   same-specificity tie by source order. */
+body:has(.recovery-modal.is-open) .leaflet-control-container,
+body:has(.recovery-modal.is-open) .leaflet-top,
+body:has(.recovery-modal.is-open) .leaflet-bottom,
+body:has(.recovery-modal.is-open) .leaflet-control-container .leaflet-control,
+body:has(.recovery-modal.is-open) .leaflet-control-container a,
+body:has(.recovery-modal.is-open) .leaflet-control-container button {
+	pointer-events: none !important;
 }

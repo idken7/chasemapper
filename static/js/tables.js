@@ -52,7 +52,7 @@ function markPayloadRecovered(callsign){
 
     // Populate fields in the dialog window.
     $('#customRecoveryTitle').val(_recovery_data.recovery_title);
-    $('#recoveryPosition').html(_recovery_data.last_pos[0].toFixed(5) + ", " + _recovery_data.last_pos[1].toFixed(5));
+    $('#recoveryPosition').val(_recovery_data.last_pos[0].toFixed(5) + ", " + _recovery_data.last_pos[1].toFixed(5));
 
     if (chase_config.profiles[chase_config.selected_profile].online_tracker === "sondehub"){
         // Only allow the serial number for sondehub uploads
@@ -72,7 +72,7 @@ function setRecoveryCarPosition(){
     if (!chase_car_position || !chase_car_position.latest_data || chase_car_position.latest_data.length < 2) {
         return;
     }
-    $('#recoveryPosition').html(chase_car_position.latest_data[0].toFixed(5) + ", " + chase_car_position.latest_data[1].toFixed(5));
+    $('#recoveryPosition').val(chase_car_position.latest_data[0].toFixed(5) + ", " + chase_car_position.latest_data[1].toFixed(5));
 }
 
 function openRecoveryModal() {
@@ -117,9 +117,14 @@ function submitRecoveryModal() {
     recovery_modal_state.recovery_title = $('#customRecoveryTitle').val();
     recovery_modal_state.recovered = $('#recoverySuccessful').is(':checked');
 
-    // If the user has requested to use the chase car position, override the last position with it.
-    if ($('#recoveryCarPosition').is(':checked') && chase_car_position && chase_car_position.latest_data) {
-        recovery_modal_state.last_pos = chase_car_position.latest_data;
+    // The position field is a free-editable "lat, lon" string (pre-filled with the
+    // payload's last position, or the chase car's via the "Use my position"
+    // button) - parse whatever's currently in it, falling back to the original
+    // last_pos if it's not valid, and preserving the original altitude since the
+    // field only edits lat/lon.
+    var posParts = ($('#recoveryPosition').val() || '').split(',').map(function(s){ return parseFloat(s.trim()); });
+    if (posParts.length === 2 && isFinite(posParts[0]) && isFinite(posParts[1])) {
+        recovery_modal_state.last_pos = [posParts[0], posParts[1], recovery_modal_state.last_pos[2] || 0];
     }
 
     if (chase_config.profiles[chase_config.selected_profile].online_tracker === 'sondehub') {
@@ -140,12 +145,8 @@ function submitRecoveryModal() {
     closeRecoveryModal();
 }
 
-$(document).on('click', '#recoveryCarPosition', function(){
-    if (this.checked) {
-        setRecoveryCarPosition();
-    } else if (recovery_modal_state && recovery_modal_state.last_pos) {
-        $('#recoveryPosition').html(recovery_modal_state.last_pos[0].toFixed(5) + ', ' + recovery_modal_state.last_pos[1].toFixed(5));
-    }
+$(document).on('click', '#recoveryUseCarPositionBtn', function(){
+    setRecoveryCarPosition();
 });
 
 $(document).on('click', '#recoveryModalCancelBtn', function(){
@@ -252,23 +253,9 @@ function initTables(){
     }
 
 
-    $("#bearing_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        //selectable:1, // TODO...
-        columns:[ //Define Table Columns
-            {title:"Valid", field:'valid_bearing', headerSort:false},
-            {title:"Bearing", field:"bearing", headerSort:false},
-            {title:"Score", field:'confidence', headerSort:false},
-            {title:"Power", field:'power', headerSort:false}
-        ],
-        data:[{id: 1, valid_bearing:"NO", bearing:0.0, confidence:0.0, power:0.0}]
-    });
-
-    $("#bearing_table").hide();
 }
 
-// Initialise tables in Imperial - Vertical velocity feet/min, Horizontal velocity Miles/hr, Range Miles then feet for Range < config setting 
+// Initialise tables in Imperial - Vertical velocity feet/min, Horizontal velocity Miles/hr, Range Miles then feet for Range < config setting
 function initTablesImperial(){
     // Telemetry data table
     // Only initialise the telemetry table if the element exists (table may be removed)
@@ -306,20 +293,6 @@ function initTablesImperial(){
     }
 
 
-    $("#bearing_table").tabulator({
-        layout:"fitData", 
-        layoutColumnsOnNewData:true,
-        //selectable:1, // TODO...
-        columns:[ //Define Table Columns
-            {title:"Valid", field:'valid_bearing', headerSort:false},
-            {title:"Bearing", field:"bearing", headerSort:false},
-            {title:"Score", field:'confidence', headerSort:false},
-            {title:"Power", field:'power', headerSort:false}
-        ],
-        data:[{id: 1, valid_bearing:"NO", bearing:0.0, confidence:0.0, power:0.0}]
-    });
-
-    $("#bearing_table").hide();
 }
 
 
@@ -329,7 +302,7 @@ function updateTelemetryTable(){
     if (jQuery.isEmptyObject(balloon_positions)){
         telem_data = [{callsign:'None'}];
     }else{
-        for (balloon_call in balloon_positions){
+        for (var balloon_call in balloon_positions){
             var balloon_call_data = Object.assign({},balloon_positions[balloon_call].latest_data);
             var balloon_call_age = balloon_positions[balloon_call].age;
 
@@ -380,7 +353,7 @@ function updateTelemetryTableImperial(){
     if (jQuery.isEmptyObject(balloon_positions)){
         telem_data = [{callsign:'None'}];
     }else{
-        for (balloon_call in balloon_positions){
+        for (var balloon_call in balloon_positions){
             var balloon_call_data = Object.assign({},balloon_positions[balloon_call].latest_data);
             var balloon_call_age = balloon_positions[balloon_call].age;
 

@@ -16,7 +16,7 @@ var balloonLandingIcons = {};
 var balloonPayloadIcons = {};
 
 // TODO: Make these /static URLS be filled in with templates (or does it not matter?)
-for (_col in colour_values){
+for (var _col in colour_values){
 	balloonAscentIcons[colour_values[_col]] =  L.icon({
         iconUrl: "/static/img/balloon-" + colour_values[_col] + '.png',
         iconSize: [46, 85],
@@ -79,7 +79,7 @@ var car_colour_values = ['red', 'green', 'yellow'];
 var car_colour_idx = 0;
 var habitat_car_icons = {};
 var habitat_car_icons_flipped = {};
-for (_col in car_colour_values){
+for (var _col in car_colour_values){
     habitat_car_icons[car_colour_values[_col]] = L.icon({
     iconUrl: "/static/img/car-"+car_colour_values[_col]+".png",
     iconSize: [55,25],
@@ -171,6 +171,22 @@ function calculate_lookangles(a, b) {
         'range': distance,
         'bearing': str_bearing
     };
+}
+
+// Append a point to a Leaflet polyline while keeping its point count bounded,
+// so a multi-hour session (balloon flight, or a chase-car track spanning the
+// whole drive) doesn't grow the track polyline - and the browser's per-point
+// render/pan/zoom cost - without limit. Trims in batches (only once the track
+// is `overshoot` points past the cap) rather than on every call, so the O(n)
+// rebuild this requires stays rare instead of running on every single message.
+function addBoundedLatLng(polyline, latlng, maxPoints, overshoot) {
+    maxPoints = maxPoints || 8000;
+    overshoot = overshoot || Math.max(200, Math.round(maxPoints * 0.05));
+    polyline.addLatLng(latlng);
+    var _latlngs = polyline.getLatLngs();
+    if (_latlngs.length > maxPoints + overshoot) {
+        polyline.setLatLngs(_latlngs.slice(_latlngs.length - maxPoints));
+    }
 }
 
 function textToClipboard(text) {

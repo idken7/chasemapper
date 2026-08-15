@@ -171,7 +171,7 @@ function createAprsActionButton(htmlIcon, fallbackLabel, csKey, btnClass, testSu
                fallbackLabel === 'aprs-recovery-fallback' ? 'Recover' :
                fallbackLabel === 'aprs-settings-fallback' ? 'Settings' :
                fallbackLabel === 'aprs-view-fallback' ? 'View' :
-               fallbackLabel === 'aprs-remove-fallback' ? 'Del' : fallbackLabel) + '</span>')
+               fallbackLabel === 'aprs-remove-fallback' ? 'Remove' : fallbackLabel) + '</span>')
         .addClass('btn btn-sm ' + btnClass)
         .data('callsign', csKey)
         .attr('title', title)
@@ -548,6 +548,18 @@ function createAprsListItem(cs, collecting) {
     li.attr('data-callsign', csKey);
     li.attr('data-test', 'aprs-item-' + csKey);
 
+    // Compact single-line summary, shown for every item that isn't the
+    // followed/expanded one (see .aprs-is-following in CSS): dot + name +
+    // last-heard time, nothing else. Clicking it follows that callsign.
+    var collapsedRow = $('<div>').addClass('aprs-collapsed-row');
+    collapsedRow.append($('<span>').addClass('aprs-staleness-light aprs-staleness-red').attr('title', 'No APRS data yet'));
+    collapsedRow.append($('<div>').addClass('aprs-collapsed-name').text(csKey));
+    var collapsedTime = $('<div>').addClass('aprs-collapsed-time text-muted').text('\u2014');
+    if (collecting) {
+        collapsedTime.addClass('collecting').text('Collecting...');
+    }
+    collapsedRow.append(collapsedTime);
+
     var row = $('<div>').addClass('d-flex flex-column aprs-row');
     var left = $('<div>').addClass('d-flex flex-column');
     var titleRow = $('<div>').addClass('d-flex justify-content-between align-items-center aprs-title-row');
@@ -577,21 +589,20 @@ function createAprsListItem(cs, collecting) {
     titleRight.append(followBtn).append(menuToggleBtn);
     titleRow.append(titleRight);
 
-    // Last-heard timestamp gets its own line so it never has to compete with
-    // the callsign and buttons for horizontal space on the title row.
-    var timeSpan = $('<div>').addClass('aprs-last-time text-muted').text('\u2014');
+    // Last-heard + location share a single line (matches the Flight Deck
+    // design: "last heard 4s ago \u00b7 42.281\u00b0N, 83.749\u00b0W") instead of stacking.
+    var metaRow = $('<div>').addClass('aprs-meta-row');
+    var timeSpan = $('<span>').addClass('aprs-last-time text-muted').text('\u2014');
     if (collecting) {
         timeSpan.addClass('collecting').text('Collecting...');
     }
-    var timeRow = $('<div>').addClass('aprs-last-time-row').append(timeSpan);
-
-    var locationRow = $('<div>').addClass('aprs-location-row aprs-detail-row');
-    locationRow.append($('<span>').addClass('aprs-detail-label').text('Location'));
-    locationRow.append($('<span>').addClass('aprs-detail-value aprs-location').text('\u2014'));
+    metaRow.append(timeSpan);
+    metaRow.append($('<span>').addClass('aprs-meta-sep').text('\u00b7'));
+    metaRow.append($('<span>').addClass('aprs-location').text('\u2014'));
 
     var detailGrid = createAprsDetailGrid();
 
-    left.append(titleRow).append(timeRow).append(locationRow).append(detailGrid);
+    left.append(titleRow).append(metaRow).append(detailGrid);
 
     var actionsRow = $('<div>').addClass('aprs-actions aprs-actions-row').attr('role', 'menu');
     var viewBtn = createAprsActionButton(
@@ -623,7 +634,7 @@ function createAprsListItem(cs, collecting) {
 
     // Arrange: data + inline actions on top, overflow menu anchored under the kebab button
     row.append(left).append(actionsRow);
-    li.append(row);
+    li.append(collapsedRow).append(row);
 
     return li;
 }
@@ -665,12 +676,17 @@ function updateAprsRowStaleness(csKey) {
 
 function updateAllAprsRowStaleness() {
     var calls = chase_config.aprs_callsigns || [];
+    var list = getAprsListElement();
     calls.forEach(function(cs) {
         var key = normalizeCallsign(cs);
         if (!key) {
             return;
         }
         updateAprsRowStaleness(key);
+        // "Xs/Xm ago" on the collapsed row keeps ticking even between
+        // telemetry packets, so it needs its own periodic refresh.
+        list.find('li[data-callsign="' + key + '"] .aprs-collapsed-time')
+            .removeClass('collecting').text(formatAprsTimeAgo(key));
     });
 }
 
@@ -739,6 +755,12 @@ function setFollowedCallsign(callsign) {
     if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(csKey)) {
         var latest = balloon_positions[csKey].latest_data;
         if (latest && latest.position && latest.position.length >= 2) {
+            // Keep the bottom-left telemetry readout in sync with whichever
+            // callsign is now followed/expanded in the APRS list, instead of
+            // waiting for that payload's next live telemetry update.
+            if (typeof window.updateTelemReadoutCard === 'function') {
+                window.updateTelemReadoutCard(latest);
+            }
             if (get3DMapViewEnabled() && typeof window.focusCesiumOnCallsign === 'function' && window.focusCesiumOnCallsign(csKey, {duration: 1.2, alignToFollowViewport: true})) {
                 return;
             }
@@ -881,6 +903,26 @@ function formatAprsLocation(telem) {
     }
 
     return lat.toFixed(5) + ', ' + lon.toFixed(5);
+}
+
+// Short relative "how long ago" string (12s / 31s / 4m / 2h) for the
+// collapsed APRS row, matching the compact style the design uses for every
+// entry except the followed/expanded one (which shows the full timestamp).
+function formatAprsTimeAgo(csKey) {
+    var key = normalizeCallsign(csKey);
+    if (!key || !aprs_last_rx_ms.hasOwnProperty(key)) {
+        return '—';
+    }
+    var ageMs = Date.now() - aprs_last_rx_ms[key];
+    if (!isFinite(ageMs) || ageMs < 0) {
+        return '—';
+    }
+    var ageS = Math.floor(ageMs / 1000);
+    if (ageS < 60) return ageS + 's';
+    var ageM = Math.floor(ageS / 60);
+    if (ageM < 60) return ageM + 'm';
+    var ageH = Math.floor(ageM / 60);
+    return ageH + 'h';
 }
 
 function formatAprsTimestamp(telem) {
@@ -1283,6 +1325,7 @@ function renderAprsTelemetryRow(cs) {
     // Batch DOM updates to reduce layout thrashing
     item.find('.aprs-location').text(formatAprsLocation(telem));
     item.find('.aprs-last-time').removeClass('collecting').text(formatAprsTimestamp(telem));
+    item.find('.aprs-collapsed-time').removeClass('collecting').text(formatAprsTimeAgo(csKey));
     item.find('.aprs-val-alt').text(values.alt);
     item.find('.aprs-val-speed').text(values.speed);
     item.find('.aprs-val-ascent').text(values.ascent);
@@ -1437,7 +1480,7 @@ function serverSettingsUpdate(data){
     setButtonGroupValue('#unitSelection', localStorage.getItem('chasemapper_units') || chase_config.unitselection || 'metric', 'value');
     $('#timezoneSelection').val(chase_config.aprs_timezone || 'local');
     populateTimezoneOptions();
-    setButtonGroupValue('#themeSelect', localStorage.getItem('chasemapper_theme') || 'light', 'value');
+    setButtonGroupValue('#themeSelect', localStorage.getItem('chasemapper_theme') || 'dark', 'value');
     if (typeof populateCesiumMapModeSelect === 'function') {
         populateCesiumMapModeSelect();
     }
@@ -1644,6 +1687,12 @@ $(document).on('click', '#aprsAddBtn', function(){
         socket.emit('aprs_callsign_add', {callsign: cs});
     }
     $('#aprsCallInput').val('');
+    // Nobody followed yet - make the newly-added callsign the followed/expanded
+    // entry (the APRS list only shows full detail + actions for whichever one
+    // is followed; a brand new list otherwise starts with everything collapsed).
+    if (getFollowedCallsign() === 'NONE') {
+        setFollowedCallsign(cs);
+    }
     updateAprsFollowIndicators();
     updateAprsStatusIndicator();
 });
@@ -1674,6 +1723,22 @@ $(document).on('click', '.aprs-follow-btn', function(e){
         return;
     }
     toggleFollowedCallsign(cs);
+});
+
+// Clicking a collapsed row expands it (makes it the followed callsign) -
+// the primary way to switch which entry shows full detail, since collapsed
+// rows carry no buttons of their own (matches the Flight Deck design).
+$(document).on('click', '.aprs-collapsed-row', function(e){
+    // Without this, the click also bubbles to the .aprs-item handler below,
+    // which opens the View summary modal - here it should just expand the
+    // row, matching the design (clicking a collapsed row makes it primary).
+    if (e.stopPropagation) e.stopPropagation();
+    var li = $(this).closest('.aprs-item');
+    var cs = (li.data('callsign') || '').toString().toUpperCase();
+    if (!cs) {
+        return;
+    }
+    setFollowedCallsign(cs);
 });
 
 $(document).on('click', '.aprs-refresh-btn', function(e){
@@ -2026,24 +2091,17 @@ window.setInterval(function(){
 // ===== Panel Resizing with Snap Points =====
 (function() {
     function computeMaxOpenHeight() {
-        var dock = document.getElementById('menuDock');
+        // The Log/Settings panels now hang below the fixed top bar (rather
+        // than growing upward from a bottom-anchored dock), so the max open
+        // height is "viewport height minus the top bar's own height minus a
+        // small top gap minus a matching bottom margin" — see the panels'
+        // `top`/`bottom` offsets in chasemapper.css.
         var topbar = document.getElementById('topbar');
+        var topOffset = topbar ? Math.max(0, topbar.getBoundingClientRect().bottom) : 56;
+        var topGap = 12;
+        var bottomMargin = 24;
 
-        if (!dock) {
-            return Math.max(180, Math.floor(window.innerHeight - 80));
-        }
-
-        var style = window.getComputedStyle(dock);
-        var bottom = parseFloat(style.bottom);
-        var bottomPx = isFinite(bottom) ? bottom : 14;
-        var paddingTop = parseFloat(style.paddingTop) || 0;
-        var paddingBottom = parseFloat(style.paddingBottom) || 0;
-        var borderTop = parseFloat(style.borderTopWidth) || 0;
-        var borderBottom = parseFloat(style.borderBottomWidth) || 0;
-        var topbarHeight = topbar ? topbar.offsetHeight : 56;
-        var dockChrome = paddingTop + paddingBottom + borderTop + borderBottom + topbarHeight;
-
-        return Math.max(180, Math.floor(window.innerHeight - bottomPx - dockChrome));
+        return Math.max(180, Math.floor(window.innerHeight - topOffset - topGap - bottomMargin));
     }
 
     window.getSettingsPanelSnapOpenHeight = computeMaxOpenHeight;

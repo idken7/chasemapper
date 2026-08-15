@@ -240,7 +240,9 @@ function handlePrediction(data){
         }
     }catch(e){ /* ignore */ }
 
-    if (typeof syncCesiumAfterPredictionUpdate === 'function') {
+    // buildCesiumPredictionSyncData copies the balloon's entire (unbounded) path -
+    // skip it entirely when the 3D view isn't active to consume it.
+    if (typeof syncCesiumAfterPredictionUpdate === 'function' && (typeof isCesiumActive !== 'function' || isCesiumActive())) {
         syncCesiumAfterPredictionUpdate(_callsign, buildCesiumPredictionSyncData(
             _callsign,
             _pred_path,

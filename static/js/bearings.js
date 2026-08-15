@@ -36,6 +36,15 @@ var manual_bearing_sources = ["BPI", "manual", "EasyBearing"];
 
 var bearing_large_plot = false;
 
+// How recent a bearing has to be to count as an "active source" in the DOA
+// Bearing Panel (the compass card / legend / stat readout). Deliberately
+// much shorter than bearing_max_age (which only governs how long a bearing
+// *line* stays visible/fading on the map, default 10 minutes) - the panel is
+// meant to read as "who's live right now", not a long history.
+var doa_panel_stale_after_s = 120;
+var doa_panel_max_sources = 6;
+var doa_panel_expanded = false;
+
 // Store for the latest server timestamp.
 // Start out with just our own local timestamp.
 var latest_server_timestamp = Date.now()/1000.0;
@@ -115,6 +124,7 @@ function destroyAllBearings(){
 
 	bearing_store = {};
 	//bearing_sources = [];
+	renderDoaPanel();
 }
 
 
@@ -251,16 +261,8 @@ function addBearing(timestamp, bearing, live){
 	}
 
 	if ( (live == true) && (getCheckboxState("bearingsEnabled", true) == true) ){
-		
-		if(_raw_bearing_angles.length > 0){
-			if (bearing_store[timestamp].confidence > bearing_confidence_threshold){
-				_valid_text = "YES";
-			}else {
-				_valid_text = "NO";
-			}
-			$("#bearing_table").tabulator("setData", [{id:1, valid_bearing:_valid_text, bearing: bearing_store[timestamp].raw_bearing.toFixed(0), confidence: bearing_store[timestamp].confidence.toFixed(1), power: bearing_store[timestamp].power.toFixed(0)}]);
-			$("#bearing_table").show();
 
+		if(_raw_bearing_angles.length > 0){
 			if(getCheckboxState("tdoaEnabled", true) == true){
 				_valid_tdoa = bearing_store[timestamp].confidence > bearing_confidence_threshold;
 				bearingPlotRender(_raw_bearing_angles, _raw_doa, _valid_tdoa);
@@ -271,6 +273,7 @@ function addBearing(timestamp, bearing, live){
 		}
 	}
 
+	renderDoaPanel();
 }
 
 
@@ -397,6 +400,7 @@ function toggleBearingsEnabled(){
 	if ((_bearings_enabled == true) && (bearings_on == false)){
 		// Show all bearings.
 		redrawBearings();
+		$("#doaBearingPanel").show();
 		bearings_on = true;
 
 
@@ -407,8 +411,8 @@ function toggleBearingsEnabled(){
 
 		// Hide the bearing plot
 		$("#bearing_plot").hide();
-		// Hide the bearing table
-		$("#bearing_table").hide();
+		// Hide the DOA Bearing Panel
+		$("#doaBearingPanel").hide();
 
 		bearings_on = false;
 
@@ -592,6 +596,150 @@ function calculateBearingOpacity(bearing_timestamp){
 	}
 
 }
+
+
+// ---------------------------------------------------------------------------
+// DOA Bearing Panel - the floating compass card (desktop) / collapsed pill +
+// expanded sheet (mobile) showing the most recent bearing per active source.
+// ---------------------------------------------------------------------------
+
+function getActiveDoaSources(){
+	// Latest bearing per source, restricted to sources heard from within
+	// doa_panel_stale_after_s, newest-first, capped to doa_panel_max_sources.
+	var _latest_by_source = {};
+	$.each(bearing_store, function(timestamp, bearing){
+		var _existing = _latest_by_source[bearing.source];
+		if (!_existing || timestamp > _existing.timestamp){
+			_latest_by_source[bearing.source] = {
+				source: bearing.source,
+				timestamp: parseFloat(timestamp),
+				bearing: bearing.true_bearing,
+				confidence: bearing.confidence,
+				power: bearing.power,
+				color: getBearingLineColour(bearing.source)
+			};
+		}
+	});
+
+	var _active = [];
+	$.each(_latest_by_source, function(source, entry){
+		if ((latest_server_timestamp - entry.timestamp) <= doa_panel_stale_after_s){
+			_active.push(entry);
+		}
+	});
+
+	_active.sort(function(a, b){ return b.timestamp - a.timestamp; });
+	return _active.slice(0, doa_panel_max_sources);
+}
+
+function doaCompassPoint(cx, cy, radius, bearingDeg){
+	var _rad = (bearingDeg || 0) * Math.PI / 180;
+	return { x: cx + radius * Math.sin(_rad), y: cy - radius * Math.cos(_rad) };
+}
+
+function buildDoaCompassSvg(sources){
+	var _cx = 130, _cy = 130;
+	var _ringColor = sources.length ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.06)';
+	var _labelColor = sources.length ? 'rgba(230,238,246,.4)' : 'rgba(230,238,246,.3)';
+	var _crossColor = sources.length ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.05)';
+
+	var _svg = '<circle cx="' + _cx + '" cy="' + _cy + '" r="35" fill="none" stroke="' + _ringColor + '"></circle>';
+	_svg += '<circle cx="' + _cx + '" cy="' + _cy + '" r="70" fill="none" stroke="' + _ringColor + '"></circle>';
+	if (sources.length){
+		_svg += '<circle cx="' + _cx + '" cy="' + _cy + '" r="100" fill="none" stroke="' + _ringColor + '"></circle>';
+	} else {
+		_svg += '<circle cx="' + _cx + '" cy="' + _cy + '" r="100" fill="none" stroke="rgba(255,255,255,.15)" stroke-dasharray="4 5"></circle>';
+	}
+	_svg += '<line x1="' + _cx + '" y1="30" x2="' + _cx + '" y2="230" stroke="' + _crossColor + '"></line>';
+	_svg += '<line x1="30" y1="' + _cy + '" x2="230" y2="' + _cy + '" stroke="' + _crossColor + '"></line>';
+
+	$.each(sources, function(i, entry){
+		var _halfAngle = 8;
+		var _edge1 = doaCompassPoint(_cx, _cy, 100, entry.bearing - _halfAngle);
+		var _edge2 = doaCompassPoint(_cx, _cy, 100, entry.bearing + _halfAngle);
+		var _tip = doaCompassPoint(_cx, _cy, 100, entry.bearing);
+		_svg += '<path d="M' + _cx + ',' + _cy + ' L' + _edge1.x.toFixed(1) + ',' + _edge1.y.toFixed(1) +
+			' A100,100 0 0 1 ' + _edge2.x.toFixed(1) + ',' + _edge2.y.toFixed(1) + ' Z" fill="' + entry.color + '" opacity="0.18"></path>';
+		_svg += '<line x1="' + _cx + '" y1="' + _cy + '" x2="' + _tip.x.toFixed(1) + '" y2="' + _tip.y.toFixed(1) + '" stroke="' + entry.color + '" stroke-width="2"></line>';
+		_svg += '<circle cx="' + _tip.x.toFixed(1) + '" cy="' + _tip.y.toFixed(1) + '" r="4" fill="' + entry.color + '"></circle>';
+	});
+
+	if (sources.length){
+		_svg += '<circle cx="' + _cx + '" cy="' + _cy + '" r="2.5" fill="rgba(255,255,255,.3)"></circle>';
+	}
+
+	_svg += '<text x="' + _cx + '" y="20" text-anchor="middle" fill="' + _labelColor + '" class="mono" font-size="11">N</text>';
+	_svg += '<text x="' + _cx + '" y="248" text-anchor="middle" fill="' + _labelColor + '" class="mono" font-size="11">S</text>';
+	_svg += '<text x="242" y="134" text-anchor="middle" fill="' + _labelColor + '" class="mono" font-size="11">E</text>';
+	_svg += '<text x="18" y="134" text-anchor="middle" fill="' + _labelColor + '" class="mono" font-size="11">W</text>';
+
+	return '<svg class="doa-compass" width="180" height="180" viewBox="0 0 260 260">' + _svg + '</svg>';
+}
+
+function renderDoaPanel(){
+	var $panel = $('#doaBearingPanel');
+	if ($panel.length === 0) return;
+
+	var _sources = getActiveDoaSources();
+	var _hasSources = _sources.length > 0;
+	var _primary = _hasSources ? _sources[0] : null;
+
+	var _collapsedHtml = '<div class="doa-panel-collapsed">' +
+		'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="6"></line></svg>' +
+		'<span class="mono">DOA &middot; ' + _sources.length + '</span>' +
+		'</div>';
+
+	var _legendHtml = '';
+	if (_hasSources){
+		$.each(_sources, function(i, entry){
+			_legendHtml += '<div class="doa-legend-item"><span class="doa-legend-dot" style="background:' + entry.color + '"></span>' +
+				escapeHtml(entry.source) + ' ' + Math.round(entry.bearing) + '&deg;</div>';
+		});
+	}
+
+	var _bodyHtml =
+		'<div class="doa-panel-full">' +
+			'<div class="doa-panel-header">' +
+				'<span class="doa-panel-title">DOA BEARING</span>' +
+				'<span class="doa-panel-count mono">' + _sources.length + ' SOURCE' + (_sources.length === 1 ? '' : 'S') + '</span>' +
+				'<button type="button" class="doa-panel-close" aria-label="Close">&times;</button>' +
+			'</div>' +
+			'<div class="doa-panel-compass-wrap">' +
+				buildDoaCompassSvg(_sources) +
+				(_hasSources ? '' :
+					'<div class="doa-panel-empty">' +
+						'<div class="doa-panel-empty-title">No bearings yet</div>' +
+						'<div class="doa-panel-empty-sub mono">Waiting for signal&hellip;</div>' +
+					'</div>') +
+			'</div>' +
+			(_hasSources ? '<div class="doa-panel-legend">' + _legendHtml + '</div>' : '') +
+			'<div class="doa-panel-stats">' +
+				'<div class="doa-stat"><div class="doa-stat-label">BRG</div><div class="doa-stat-value doa-stat-value--accent mono">' + (_primary ? (Math.round(_primary.bearing) + '&deg;') : '&mdash;') + '</div></div>' +
+				'<div class="doa-stat"><div class="doa-stat-label">CONF</div><div class="doa-stat-value mono">' + (_primary && typeof _primary.confidence === 'number' ? (_primary.confidence.toFixed(0) + '%') : '&mdash;') + '</div></div>' +
+				'<div class="doa-stat"><div class="doa-stat-label">PWR</div><div class="doa-stat-value mono">' + (_primary && typeof _primary.power === 'number' ? (_primary.power.toFixed(0) + 'dBm') : '&mdash;') + '</div></div>' +
+			'</div>' +
+		'</div>';
+
+	$panel.toggleClass('doa-panel-empty-state', !_hasSources);
+	$panel.html('<div class="doa-panel-backdrop"></div>' + _collapsedHtml + _bodyHtml);
+}
+
+$(document).on('click', '.doa-panel-collapsed', function(){
+	doa_panel_expanded = true;
+	$('#doaBearingPanel').addClass('doa-expanded');
+});
+$(document).on('click', '.doa-panel-close', function(){
+	doa_panel_expanded = false;
+	$('#doaBearingPanel').removeClass('doa-expanded');
+});
+$(document).on('click', '.doa-panel-backdrop', function(){
+	doa_panel_expanded = false;
+	$('#doaBearingPanel').removeClass('doa-expanded');
+});
+
+// Age the panel out to its empty state / refresh "how recent" styling even
+// when no new bearings are arriving.
+setInterval(function(){ renderDoaPanel(); }, 5000);
 
 
 function manualBearing(){

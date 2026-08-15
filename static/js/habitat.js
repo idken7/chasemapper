@@ -57,6 +57,7 @@ function process_habitat_vehicles(data){
 					//console.log("Updating: " + vcallsign);
 					// Update the position ID.
 					chase_vehicles[vcallsign].position_id = position.position_id;
+					chase_vehicles[vcallsign].last_seen = Date.now();
 
 					// Since we don't always get a heading with the vehicle position, calculate it.
 					var old_v_pos = {lat:chase_vehicles[vcallsign].latest_data[0],
@@ -109,6 +110,7 @@ function process_habitat_vehicles(data){
 				chase_vehicles[vcallsign].heading = 90;
 				chase_vehicles[vcallsign].latest_data = [v_lat, v_lon, v_alt];
 				chase_vehicles[vcallsign].position_id = position.position_id;
+				chase_vehicles[vcallsign].last_seen = Date.now();
 
 				// Get an index for the car icon. This is incremented for each vehicle,
 				// giving each a different colour.
@@ -153,6 +155,13 @@ function get_habitat_vehicles(){
 	      async: true, // Yes, this is deprecated...
 	      success: function(data) {
 	        process_habitat_vehicles(data);
+	      },
+	      error: function(xhr, status, error) {
+	        // Without this, a failed/timed-out request (likely on a flaky cell
+	        // connection) leaves snear_request_running stuck true forever,
+	        // permanently disabling this polling path for the rest of the session.
+	        console.warn('Habitat vehicle request failed: ' + status);
+	        snear_request_running = false;
 	      }
 		});
 	}

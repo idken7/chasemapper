@@ -429,6 +429,47 @@ function add_new_balloon(data){
 
 }
 
+// Updates the bottom-left "Flight Deck" telemetry readout card (callsign,
+// altitude, distance-to-chase-car, ETA, descent rate) for whichever payload
+// is currently being followed. Called on every telemetry update for that
+// payload; falls back to '—' for any value we can't compute yet.
+function updateTelemReadoutCard(data){
+    var $card = $('#telemReadoutCard');
+    if ($card.length === 0) {
+        return;
+    }
+
+    $card.show();
+    $('#telemReadoutCallsign').text(data.callsign || '—');
+
+    var alt = (Array.isArray(data.position) && data.position.length > 2) ? data.position[2] : null;
+    $('#telemReadoutAlt').text(isFinite(alt) ? ('ALT ' + Math.round(alt) + 'm') : '—');
+
+    var descent = isFinite(data.vel_v) ? data.vel_v : NaN;
+    if (isFinite(descent)) {
+        $('#telemReadoutDescent').html(Math.abs(descent).toFixed(1) + '<span class="telem-readout-unit">m/s</span>');
+    } else {
+        $('#telemReadoutDescent').text('—');
+    }
+
+    $('#telemReadoutEta').text(data.time_to_landing || '—');
+
+    try {
+        if (typeof chase_car_position !== 'undefined' && Array.isArray(chase_car_position.latest_data) && chase_car_position.latest_data.length >= 2 && Array.isArray(data.position) && typeof L !== 'undefined') {
+            var carLatLng = L.latLng(chase_car_position.latest_data[0], chase_car_position.latest_data[1]);
+            var payloadLatLng = L.latLng(data.position[0], data.position[1]);
+            var distMetres = carLatLng.distanceTo(payloadLatLng);
+            var distKm = distMetres / 1000.0;
+            $('#telemReadoutDist').html(distKm.toFixed(1) + '<span class="telem-readout-unit">km</span>');
+        } else {
+            $('#telemReadoutDist').text('—');
+        }
+    } catch (e) {
+        $('#telemReadoutDist').text('—');
+    }
+}
+window.updateTelemReadoutCard = updateTelemReadoutCard;
+
 function handleTelemetry(data){
     // Telemetry Event messages contain a dictionary of position data.
     // It should have the fields:
@@ -541,7 +582,7 @@ function handleTelemetry(data){
                 chase_car_position.path.addTo(map);
             }
         } else {
-            chase_car_position.path.addLatLng(chase_car_position.latest_data);
+            addBoundedLatLng(chase_car_position.path, chase_car_position.latest_data);
             chase_car_position.marker.setLatLng(chase_car_position.latest_data).update();
         }
 
@@ -591,12 +632,15 @@ function handleTelemetry(data){
             // Yep - update the sonde_positions entry.
             balloon_positions[data.callsign].latest_data = data;
             balloon_positions[data.callsign].age = Date.now();
-            balloon_positions[data.callsign].path.addLatLng(data.position);
+            addBoundedLatLng(balloon_positions[data.callsign].path, data.position);
             balloon_positions[data.callsign].marker.setLatLng(data.position).update();
 
             updateBalloonMarkerIcon(data.callsign, data);
 
-                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+                // Building pathData/predPathData/abortPathData below copies the entire
+                // (unbounded, multi-hour) polyline on every single telemetry message.
+                // Skip that work entirely when the 3D view isn't even active to consume it.
+                if (typeof syncCesiumAfterBalloonUpdate === 'function' && (typeof isCesiumActive !== 'function' || isCesiumActive())) {
                     syncCesiumAfterBalloonUpdate(data.callsign, {
                         telem: data,
                         pathData: balloon_positions[data.callsign].path.getLatLngs(),
@@ -627,6 +671,7 @@ function handleTelemetry(data){
         // Update the Summary and time-to-landing displays
         if (balloon_currently_following === data.callsign){
             $('#time_to_landing').text(data.time_to_landing);
+            updateTelemReadoutCard(data);
             payload_data_age = 0.0;
         }
     }

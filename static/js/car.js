@@ -250,6 +250,25 @@ function stopSharingMyLocation(){
 	try{ localStorage.setItem('chasemapper_share_location', '0'); }catch(e){}
 }
 
+// Mobile browsers can throttle or fully suspend an active watchPosition() call
+// while the tab is backgrounded (screen locked, user switches to a nav app) -
+// with no event telling the app it happened. There's nothing to detect that
+// *during* the background period, but on resume we can defensively restart the
+// watch so a suspended one can't leave "Share My Location" silently stalled
+// for the rest of the chase.
+if (typeof document !== 'undefined' && document.addEventListener){
+	document.addEventListener('visibilitychange', function(){
+		if (document.visibilityState === 'visible' && my_device_watch_id !== null){
+			navigator.geolocation.clearWatch(my_device_watch_id);
+			my_device_watch_id = navigator.geolocation.watchPosition(
+				devicePositionCallback,
+				devicePositionError,
+				{enableHighAccuracy: true, maximumAge: 2000, timeout: 15000}
+			);
+		}
+	});
+}
+
 function clearMyCarTrack(){
 	socket.emit('client_car_clear', {client_id: my_car_client_id});
 }
@@ -320,6 +339,12 @@ function handleOtherChaserTelemetry(data){
 		}
 		chase_vehicles[_key].marker.setLatLng(_latest_data).update();
 	}
+
+	// Shares the pruneStaleChaseVehicles() sweep (see sondehub.js) with
+	// SondeHub/Habitat-sourced vehicles - there is otherwise no signal at all
+	// telling this browser when another chaser disconnects, so without this
+	// their marker would stay on the map forever.
+	chase_vehicles[_key].last_seen = Date.now();
 
 	var _car_heading = chase_vehicles[_key].heading - 90.0;
 	if (_car_heading <= 90.0){

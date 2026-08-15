@@ -27,6 +27,7 @@ function handleSondeHubWebSocketPacket(data){
                 //console.log("Updating: " + vcallsign);
                 // Update the position ID.
                 chase_vehicles[vcallsign].position_id = data.ts;
+                chase_vehicles[vcallsign].last_seen = Date.now();
 
                 // Since we don't always get a heading with the vehicle position, calculate it.
                 var old_v_pos = {lat:chase_vehicles[vcallsign].latest_data[0],
@@ -80,6 +81,7 @@ function handleSondeHubWebSocketPacket(data){
                     chase_vehicles[vcallsign].heading = 90;
                     chase_vehicles[vcallsign].latest_data = [v_lat, v_lon, v_alt];
                     chase_vehicles[vcallsign].position_id = data.ts;
+                    chase_vehicles[vcallsign].last_seen = Date.now();
 
                     // Get an index for the car icon. This is incremented for each vehicle,
                     // giving each a different colour.
@@ -111,6 +113,28 @@ function handleSondeHubWebSocketPacket(data){
         }
     }
 }
+
+// Other chasers' markers (chase_vehicles, populated above and by the dormant
+// habitat.js polling path) are only ever added/updated, never removed for
+// staleness. A chaser who goes offline or drives out of range would otherwise
+// stay shown on the map indefinitely - misleading during a live recovery, and
+// an unbounded set of map objects over a many-hour flight. Sweep out anything
+// that hasn't reported in a while.
+var CHASE_VEHICLE_STALE_MS = 15 * 60 * 1000;
+
+function pruneStaleChaseVehicles(){
+    var _now = Date.now();
+    $.each(chase_vehicles, function(vcallsign, vehicle){
+        if (vehicle.last_seen && (_now - vehicle.last_seen) > CHASE_VEHICLE_STALE_MS){
+            if (vehicle.marker){
+                vehicle.marker.remove();
+            }
+            delete chase_vehicles[vcallsign];
+        }
+    });
+}
+
+window.setInterval(pruneStaleChaseVehicles, 60000);
 
 
 function flush_sondehub_vehicles(){

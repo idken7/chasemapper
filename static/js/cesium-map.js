@@ -1894,21 +1894,33 @@
             return null;
         }
 
-        var dock = document.getElementById('menuDock');
-        if (!dock) {
+        // Nav/panels are no longer one bottom-left "dock" — the APRS/Settings
+        // panel hangs top-left or top-right below the top bar, and the Log
+        // panel spans the bottom. Bias the follow anchor away from whichever
+        // panel is actually open (index.html's getOpenDockPanel()), instead
+        // of assuming a fixed dock position.
+        var panel = (typeof window.getOpenDockPanel === 'function') ? window.getOpenDockPanel() : null;
+        if (!panel) {
             return {x: width / 2, y: height / 2};
         }
 
-        var rect = dock.getBoundingClientRect();
-        if (!rect || !isFinite(rect.right)) {
+        var rect = panel.getBoundingClientRect();
+        if (!rect) {
             return {x: width / 2, y: height / 2};
         }
 
-        var rightEdge = Math.min(Math.max(rect.right, 0), width);
-        return {
-            x: (rightEdge + width) / 2,
-            y: height / 2
-        };
+        if (panel.id === 'logPanel') {
+            var bottomEdge = Math.min(Math.max(rect.top, 0), height);
+            return {x: width / 2, y: bottomEdge / 2};
+        }
+
+        var onLeft = rect.left < (width / 2);
+        if (onLeft) {
+            var rightEdge = Math.min(Math.max(rect.right, 0), width);
+            return {x: (rightEdge + width) / 2, y: height / 2};
+        }
+        var leftEdge = Math.min(Math.max(rect.left, 0), width);
+        return {x: leftEdge / 2, y: height / 2};
     }
 
     function alignTargetToScreenPoint(targetPosition, desiredPoint) {
@@ -2189,6 +2201,10 @@
         }
     }
 
+    function isCesiumActive() {
+        return !!cesiumState.active;
+    }
+
     function syncCesiumAfterBalloonUpdate(callsign, payload) {
         if (!cesiumState.active) {
             return;
@@ -2217,6 +2233,7 @@
         syncOtherChaserEntity(key, name, vehicle);
     }
 
+    window.isCesiumActive = isCesiumActive;
     window.syncAllCesiumStateFromStore = syncAllCesiumStateFromStore;
     window.applyCesiumMapViewState = applyCesiumMapViewState;
     window.getCesiumMapModes = getCesiumMapModes;
