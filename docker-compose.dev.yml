@@ -1,0 +1,9 @@
+services:
+  chasemapper:
+    # Mount local source into the container so template/static/js edits are live.
+    # WARNING: this shadows the compiled offline-prediction `pred` binary (built into
+    # the image) with the host repo, which doesn't contain one - offline predictions
+    # will not work while this override is active. Fine for UI/backend development,
+    # not for testing offline-prediction behaviour or field/production use.
+    volumes:
+      - ./:/opt/chasemapper/:rw

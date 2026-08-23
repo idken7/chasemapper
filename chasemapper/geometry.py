@@ -22,6 +22,12 @@ class GenericTrack(object):
     The track history can be exported to a LineString using the to_line_string method.
     """
 
+    # Hard ceiling on stored track history so a long-running (multi-hour, or
+    # multi-day if left running) session doesn't grow this list without bound.
+    # Trimming only ever removes the oldest points, which every calculation in
+    # this class only reads relative to the *end* of the list, so this is safe.
+    MAX_TRACK_HISTORY = 20000
+
     def __init__(
         self, ascent_averaging=6, landing_rate=5.0, heading_gate_threshold=0.0, turn_rate_threshold=4.0
     ):
@@ -87,6 +93,8 @@ class GenericTrack(object):
                 _comment = ""
 
             self.track_history.append([_datetime, _lat, _lon, _alt, _comment])
+            if len(self.track_history) > self.MAX_TRACK_HISTORY:
+                del self.track_history[: len(self.track_history) - self.MAX_TRACK_HISTORY]
 
             # If we have been supplied a 'true' heading with the position, override the state to use that.
             # In this case we are assuming that the heading is being provided by some form of magnetic compass,
@@ -309,7 +317,7 @@ class GenericTrack(object):
             self.landing_rate = seaLevelDescentRate(self.ascent_rate, _current_alt)
 
     def to_polyline(self):
-        """ Generate and return a Leaflet PolyLine compatible array """
+        """ Generate and return a [[lat, lon, alt], ...] array of track points """
         # Copy array into a numpy representation for easier slicing.
         if len(self.track_history) == 0:
             return []

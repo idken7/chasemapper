@@ -227,8 +227,17 @@ class Bearings(object):
 
         # We now have our bearing - now we need to store it
         with self.bearing_lock:
-            # Try and ensure the key is going to be consistent between client and server
+            # Try and ensure the key is going to be consistent between client and server.
+            # Two bearings (plausibly from different people, now that multiple chasers
+            # can submit at once) arriving within the same 10ms tick would otherwise
+            # collide on this key and silently overwrite each other - disambiguate with
+            # a suffix on collision instead of losing one.
             _new_key = "%.2f" % _arrival_time
+            if _new_key in self.bearings:
+                _suffix = 1
+                while f"{_new_key}-{_suffix}" in self.bearings:
+                    _suffix += 1
+                _new_key = f"{_new_key}-{_suffix}"
             _new_bearing["key"] = _new_key
 
             self.bearings[_new_key] = _new_bearing
@@ -256,9 +265,12 @@ class Bearings(object):
                 _bearing_list = _bearing_list[1:]
 
             # Now we need to remove *old* bearings.
+            # Read the actual stored arrival time rather than parsing it back out of
+            # the key string - the key may now carry a "-N" collision-disambiguation
+            # suffix (see above), which isn't a valid float.
             _min_time = time.time() - self.max_age
 
-            _curr_time = float(_bearing_list[0])
+            _curr_time = self.bearings[_bearing_list[0]]["timestamp"]
 
             while _curr_time < _min_time:
                 # Current entry is older than our limit, remove it.
@@ -267,7 +279,7 @@ class Bearings(object):
                 _bearing_list = _bearing_list[1:]
 
                 # Advance to the next entry in the list.
-                _curr_time = float(_bearing_list[0])
+                _curr_time = self.bearings[_bearing_list[0]]["timestamp"]
 
         # Add in any raw DOA data we may have been given.
         if "raw_bearing_angles" in bearing:
@@ -287,3 +299,33 @@ class Bearings(object):
         """ Clear the bearing store """
         with self.bearing_lock:
             self.bearings = {}
+
+    def remove_source(self, source):
+        """ Remove all stored bearings from a single source, leaving other
+        sources' data intact - e.g. to discard a misbehaving DOA feed
+        without clearing everyone else's readings (see flush() for a full
+        clear). Returns the list of removed bearing keys. """
+        with self.bearing_lock:
+            _removal_list = [
+                _key
+                for _key, _entry in self.bearings.items()
+                if _entry.get("source") == source
+            ]
+            for _key in _removal_list:
+                self.bearings.pop(_key)
+
+            if source in self.bearing_sources:
+                self.bearing_sources.remove(source)
+
+        if _removal_list and self.sio:
+            self.sio.emit(
+                "bearing_source_removed",
+                {
+                    "source": source,
+                    "removed": _removal_list,
+                    "server_timestamp": time.time(),
+                },
+                namespace="/chasemapper",
+            )
+
+        return _removal_list

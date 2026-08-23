@@ -1,125 +1,108 @@
-.circle {
-	position: relative;
-	left: 0;
-	border: 1px solid black;
-	padding: 0;
-	width: 20em;
-    height: 20em;
-	border-radius: 50%;
-	list-style: none;
-    overflow: hidden;
-}
-li {
-	overflow: hidden;
-	position: absolute;
-	top: 0; right: 0;
-	width: 50%; height: 50%;
-	transform-origin: 0% 100%;      
-}
-.text {
-	position: absolute;
-	left: -100%;
-	width: 200%; height: 200%;
+/* O'Clock (`/oclock`) - relative bearing entry. See
+   doc/design-prompt-manual-bearing-entry.md (screen 12 desktop, M14
+   mobile) and static/css/bearing_pages.css for shared page chrome.
+
+   The ring is 12 absolutely-positioned buttons (one per clock position),
+   placed by a small trig helper in oclock.html, rather than the old
+   skewed-<li> CSS-only ring - that approach couldn't give large, evenly
+   sized touch targets. */
+
+.oclock-wrap {
+	position: fixed;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -46%);
 	text-align: center;
-    -webkit-transform: skewY(60deg) rotate(15deg);
-    -ms-transform: skewY(60deg) rotate(15deg);
-    transform: skewY(60deg) rotate(15deg);
-    padding-top: 20px;
+	z-index: 1000;
 }
 
-li:first-child {
-    -webkit-transform: rotate(15deg) skewY(-60deg);
-    -ms-transform: rotate(15deg) skewY(-60deg);
-	transform: rotate(15deg) skewY(-60deg);     
+.oclock-hint {
+	color: rgba(230, 238, 246, 0.45);
+	font-family: var(--cd-font-mono);
+	font-size: 11px;
+	letter-spacing: 0.1em;
+	margin-bottom: 14px;
 }
-li:nth-child(2) {
-    -webkit-transform: rotate(45deg) skewY(-60deg);
-    -ms-transform: rotate(45deg) skewY(-60deg);
-	transform: rotate(45deg) skewY(-60deg);     
+
+.oclock-ring {
+	position: relative;
+	width: 400px;
+	height: 400px;
+	margin: 0 auto;
 }
-li:nth-child(3) {
-    -webkit-transform: rotate(75deg) skewY(-60deg);
-    -ms-transform: rotate(75deg) skewY(-60deg);
-	transform: rotate(75deg) skewY(-60deg);    
+
+.oclock-ring-svg { position: absolute; inset: 0; }
+
+.oclock-heading {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	text-align: center;
+	pointer-events: none;
 }
-li:nth-child(4) {
-    -webkit-transform: rotate(105deg) skewY(-60deg);
-    -ms-transform: rotate(105deg) skewY(-60deg);
-	transform: rotate(105deg) skewY(-60deg);    
+.oclock-heading-label {
+	color: rgba(230, 238, 246, 0.4);
+	font-family: var(--cd-font-mono);
+	font-size: 9px;
+	letter-spacing: 0.08em;
 }
-li:nth-child(5) {
-    -webkit-transform: rotate(135deg) skewY(-60deg);
-    -ms-transform: rotate(135deg) skewY(-60deg);
-	transform: rotate(135deg) skewY(-60deg);    
+.oclock-heading-value {
+	color: var(--cd-blue-light);
+	font-family: var(--cd-font-mono);
+	font-size: 15px;
+	font-weight: 600;
 }
-li:nth-child(6) {
-    -webkit-transform: rotate(165deg) skewY(-60deg);
-    -ms-transform: rotate(165deg) skewY(-60deg);
-	transform: rotate(165deg) skewY(-60deg);    
+
+.oclock-btn {
+	position: absolute;
+	width: 56px;
+	height: 56px;
+	margin: -28px 0 0 -28px;
+	border-radius: 50%;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	color: var(--cd-fg);
+	font-family: var(--cd-font-mono);
+	font-weight: 700;
+	font-size: 16px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
 }
-li:nth-child(7) {
-    -webkit-transform: rotate(195deg) skewY(-60deg);
-    -ms-transform: rotate(195deg) skewY(-60deg);
-	transform: rotate(195deg) skewY(-60deg);    
+.oclock-btn:hover, .oclock-btn:focus {
+	background: rgba(255, 255, 255, 0.12);
 }
-li:nth-child(8) {
-    -webkit-transform: rotate(225deg) skewY(-60deg);
-    -ms-transform: rotate(225deg) skewY(-60deg);
-	transform: rotate(225deg) skewY(-60deg);    
+.oclock-btn:active {
+	transform: scale(0.94);
 }
-li:nth-child(9) {
-    -webkit-transform: rotate(255deg) skewY(-60deg);
-    -ms-transform: rotate(255deg) skewY(-60deg);
-	transform: rotate(255deg) skewY(-60deg);    
+.oclock-btn.oclock-btn--twelve {
+	background: rgba(255, 203, 5, 0.18);
+	border: 1.5px solid rgba(255, 203, 5, 0.5);
+	color: var(--cd-maize);
 }
-li:nth-child(10) {
-    -webkit-transform: rotate(285deg) skewY(-60deg);
-    -ms-transform: rotate(285deg) skewY(-60deg);
-	transform: rotate(285deg) skewY(-60deg);    
+.oclock-btn.is-flash {
+	background: var(--cd-maize);
+	border-color: var(--cd-maize);
+	color: var(--cd-bg);
 }
-li:nth-child(11) {
-    -webkit-transform: rotate(315deg) skewY(-60deg);
-    -ms-transform: rotate(315deg) skewY(-60deg);
-	transform: rotate(315deg) skewY(-60deg);    
-}
-li:nth-child(12) {
-    -webkit-transform: rotate(345deg) skewY(-60deg);
-    -ms-transform: rotate(345deg) skewY(-60deg);
-	transform: rotate(345deg) skewY(-60deg);    
-}
-li:first-child .text {
-    background: green; 
-}
-li:nth-child(2) .text {
-	background: tomato; 
-}
-li:nth-child(3) .text {
-	background: aqua; 
-}
-li:nth-child(4) .text {
-	background: yellow;  
-}
-li:nth-child(5) .text {
-	background: orange;  
-}
-li:nth-child(6) .text {
-	background: purple;  
-}
-li:nth-child(7) .text {
-	background: cyan;  
-}
-li:nth-child(8) .text {
-	background: brown;  
-}
-li:nth-child(9) .text {
-	background: gray;  
-}
-li:nth-child(10) .text {
-	background: pink;  
-}
-li:nth-child(11) .text {
-	background: maroon;  
-}
-li:nth-child(12) .text {
-	background: gold;  
+
+.bp-last-bearing { margin-top: 18px; }
+
+/* Warning state: hide the ring, show the shared warning card in its place.
+   Both states share the .oclock-wrap positioning rule above; only one is
+   ever displayed at a time. */
+.bp-normal-state.oclock-wrap { display: block; }
+.bp-warning-state.oclock-wrap { display: none; }
+#oclockPanel.bp-sheet--warning .bp-normal-state.oclock-wrap { display: none; }
+#oclockPanel.bp-sheet--warning .bp-warning-state.oclock-wrap { display: block; }
+
+@media (max-width: 640px) {
+	.oclock-wrap { top: auto; bottom: 0; left: 0; right: 0; transform: none; width: 100%; }
+	.oclock-hint { margin-bottom: 16px; }
+	.oclock-ring { width: 264px; height: 264px; }
+	.oclock-btn { width: 48px; height: 48px; margin: -24px 0 0 -24px; font-size: 14px; }
+	.oclock-last { flex-direction: column; gap: 3px; padding: 9px 16px; }
 }

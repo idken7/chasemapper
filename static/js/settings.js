@@ -373,6 +373,88 @@ function setPredictorModelDisplay(model, modelTime) {
     }
 }
 
+function formatPredictorAltitude(altM) {
+    var units = chase_config.unitselection || 'metric';
+    altM = parseFloat(altM);
+    if (isNaN(altM)) {
+        return '—';
+    }
+    return (units === 'imperial') ? ((altM * 3.28084).toFixed(0) + ' ft') : (altM.toFixed(0) + ' m');
+}
+
+function formatPredictorRate(rateMs) {
+    var units = chase_config.unitselection || 'metric';
+    rateMs = parseFloat(rateMs);
+    if (isNaN(rateMs)) {
+        return '—';
+    }
+    return (units === 'imperial') ? ((rateMs * 196.850394).toFixed(0) + ' ft/min') : (rateMs.toFixed(1) + ' m/s');
+}
+
+function formatPredictorSpeed(speedMs) {
+    var units = chase_config.unitselection || 'metric';
+    speedMs = parseFloat(speedMs);
+    if (isNaN(speedMs)) {
+        return '—';
+    }
+    return (units === 'imperial') ? ((speedMs * 2.236936).toFixed(0) + ' mph') : ((speedMs * 3.6).toFixed(0) + ' kph');
+}
+
+function updatePredictorDetailsPanel(data) {
+    var inputs = data && data.pred_inputs;
+    if (inputs && typeof inputs === 'object' && Object.keys(inputs).length > 0) {
+        $('#predAscentRateValue').text(formatPredictorRate(inputs.ascent_rate));
+        $('#predDescentRateValue').text(formatPredictorRate(inputs.descent_rate));
+        $('#predBurstAltitudeValue').text(formatPredictorAltitude(inputs.burst_altitude));
+
+        var lat = parseFloat(inputs.launch_lat);
+        var lon = parseFloat(inputs.launch_lon);
+        $('#predLaunchPositionValue').text(
+            (!isNaN(lat) && !isNaN(lon)) ? (lat.toFixed(5) + ', ' + lon.toFixed(5)) : '—'
+        );
+
+        var launchTimeText = '—';
+        if (inputs.launch_time) {
+            var launchDate = new Date(inputs.launch_time);
+            if (!isNaN(launchDate.getTime())) {
+                launchTimeText = launchDate.toISOString().replace('T', ' ').replace('.000Z', 'Z');
+            }
+        }
+        $('#predLaunchTimeValue').text(launchTimeText);
+    }
+
+    var windProfile = (data && Array.isArray(data.wind_profile)) ? data.wind_profile : [];
+    var $table = $('#windProfileTable');
+    var $unavailable = $('#windProfileUnavailable');
+    var $tbody = $('#windProfileTableBody');
+
+    if (windProfile.length === 0) {
+        $table.hide();
+        $unavailable.show();
+        return;
+    }
+
+    var sortedProfile = windProfile.slice().sort(function(a, b) {
+        return (b.altitude_m || 0) - (a.altitude_m || 0);
+    });
+
+    $tbody.empty();
+    sortedProfile.forEach(function(level) {
+        var direction = parseFloat(level.direction_deg) || 0;
+        var $row = $('<tr>');
+        $row.append($('<td>').text(formatPredictorAltitude(level.altitude_m)));
+        $row.append($('<td>').text(formatPredictorSpeed(level.speed_ms)));
+        var $dirCell = $('<td>').addClass('wind-direction-cell');
+        $dirCell.append($('<span>').addClass('wind-direction-arrow').css('transform', 'rotate(' + direction + 'deg)'));
+        $dirCell.append(document.createTextNode(' ' + direction.toFixed(0) + '°'));
+        $row.append($dirCell);
+        $tbody.append($row);
+    });
+
+    $unavailable.hide();
+    $table.show();
+}
+
 function get3DMapViewEnabled() {
     try {
         var stored = localStorage.getItem('enable_3d_map_view');
@@ -408,18 +490,6 @@ function set3DMapViewEnabled(enabled, persistStorage) {
     return next;
 }
 
-function update3DButtonVisual() {
-    var active = get3DMapViewEnabled();
-    var button = $('#toggle3DButton');
-    if (button.length === 0) {
-        return;
-    }
-
-    button.toggleClass('is-active', active);
-    button.find('a, button').toggleClass('is-active', active).attr('aria-pressed', active ? 'true' : 'false');
-    button.attr('title', active ? 'Disable 3D view' : 'Enable 3D view');
-}
-
 function apply3DMapViewState() {
     var active = get3DMapViewEnabled();
     $('#map').toggleClass('map-3d-view', active);
@@ -437,8 +507,6 @@ function apply3DMapViewState() {
         }
         window.applyCesiumMapMode(selectedMode || chase_config.cesium_map_mode || 'standard', {persist: false});
     }
-
-    update3DButtonVisual();
 
     try {
         var $cesiumMode = $('#cesiumMapModeSelect');
@@ -568,25 +636,17 @@ function createAprsListItem(cs, collecting) {
     titleLeft.append($('<strong>').text(csKey));
     titleRow.append(titleLeft);
 
-    // Only the two most-used actions live inline: follow (toggle) and a
-    // kebab menu that reveals the rest. Everything else moves into that menu.
+    // Only the follow toggle lives inline in the title row; the rest of the
+    // actions (View/Settings/Refresh/Recover/Remove) are always visible in
+    // the row below - see .aprs-actions-row.
     var followBtn = createAprsActionButton(
         '<i class="fa fa-location-arrow" aria-hidden="true"></i>',
         'aprs-follow-fallback', csKey, 'btn-primary aprs-follow-btn aprs-icon-btn',
         'follow', 'Follow callsign', 'Follow callsign ' + csKey
     ).attr('aria-pressed', 'false');
 
-    var menuToggleBtn = $('<button type="button">')
-        .addClass('btn btn-secondary aprs-icon-btn aprs-menu-toggle')
-        .html('<i class="fa fa-ellipsis-v" aria-hidden="true"></i>')
-        .attr('title', 'More actions')
-        .attr('aria-label', 'More actions for ' + csKey)
-        .attr('aria-haspopup', 'true')
-        .attr('aria-expanded', 'false')
-        .attr('data-test', 'aprs-menu-toggle-' + csKey);
-
     var titleRight = $('<div>').addClass('d-flex align-items-center gap-1 aprs-title-right');
-    titleRight.append(followBtn).append(menuToggleBtn);
+    titleRight.append(followBtn);
     titleRow.append(titleRight);
 
     // Last-heard + location share a single line (matches the Flight Deck
@@ -1484,6 +1544,7 @@ function serverSettingsUpdate(data){
     if (typeof populateCesiumMapModeSelect === 'function') {
         populateCesiumMapModeSelect();
     }
+    setButtonGroupValue('#cameraAngleGroup', (typeof getStored2DMode === 'function' && getStored2DMode()) ? '2d' : '3d', 'value');
     
     // Chase Car Speedometer
     $('#showCarSpeed').prop('checked', chase_config.chase_car_speed);
@@ -1549,7 +1610,7 @@ function serverSettingsUpdate(data){
     $('#bearingConfidenceThreshold').val(chase_config.doa_confidence_threshold.toFixed(1));
 
     $('#bearingsOnlyMode').prop('checked', chase_config.bearings_only_mode);
-    toggleBearingsOnlyMode()
+    if (typeof toggleBearingsOnlyMode === 'function') { toggleBearingsOnlyMode(); }
     // Add new time sync bearing settings here
 
     timeSeqEnabled = chase_config.time_seq_enabled;
@@ -1557,7 +1618,7 @@ function serverSettingsUpdate(data){
     timeSeqActive = chase_config.time_seq_active;
     timeSeqCycle = chase_config.time_seq_cycle;
     timeSeqTimes = chase_config.time_seq_times;
-    updateTimeSeqStatus();
+    if (typeof updateTimeSeqStatus === 'function') { updateTimeSeqStatus(); }
 
 
     // Clear and populate the profile selection.
@@ -1789,28 +1850,6 @@ $(document).on('click', '.aprs-view-btn', function(e){
     openAprsCallsignSummaryModal(cs);
 });
 
-$(document).on('click', '.aprs-menu-toggle', function(e){
-    e = e || window.event;
-    if (e.stopPropagation) e.stopPropagation();
-    if (e.preventDefault) e.preventDefault();
-    var $btn = $(this);
-    var $item = $btn.closest('.aprs-item');
-    var willOpen = !$item.hasClass('aprs-menu-open');
-
-    $('.aprs-item.aprs-menu-open').not($item).removeClass('aprs-menu-open')
-        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
-
-    $item.toggleClass('aprs-menu-open', willOpen);
-    $btn.attr('aria-expanded', willOpen ? 'true' : 'false');
-});
-
-// Selecting any action in the overflow menu closes it; the action's own
-// handler (bound above) still runs since both are delegated on document.
-$(document).on('click', '.aprs-actions-row button', function(){
-    $(this).closest('.aprs-item').removeClass('aprs-menu-open')
-        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
-});
-
 // Clicking the body of a callsign row (but not its buttons) opens the
 // summary view. Button handlers above call stopPropagation, so this only
 // fires for clicks that weren't already handled.
@@ -1824,20 +1863,6 @@ $(document).on('click', '.aprs-item', function(e){
         return;
     }
     openAprsCallsignSummaryModal(cs);
-});
-
-// Any click that reaches here wasn't on a kebab toggle or menu action
-// (those stop propagation), so it's safe to close any open overflow menu.
-$(document).on('click', function(){
-    $('.aprs-item.aprs-menu-open').removeClass('aprs-menu-open')
-        .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
-});
-
-$(document).on('keydown', function(e){
-    if (e.key === 'Escape' || e.which === 27) {
-        $('.aprs-item.aprs-menu-open').removeClass('aprs-menu-open')
-            .find('.aprs-menu-toggle').attr('aria-expanded', 'false');
-    }
 });
 
 $(document).on('input change', '#cesiumCameraSliderInput', function(){
@@ -2001,6 +2026,18 @@ $(document).on('click', '#themeSelect .button-select-btn', function(){
     if (val === 'dark') applyTheme(true); else applyTheme(false);
 });
 
+// Camera angle (2D top-down / 3D tilted) — replaces the old floating
+// map button; toggles the Cesium camera pitch via cesium-map.js.
+$(document).on('click', '#cameraAngleGroup .button-select-btn', function(){
+    var val = $(this).data('value');
+    setButtonGroupValue('#cameraAngleGroup', val, 'value');
+    if (val === '2d') {
+        if (typeof set2DMode === 'function') set2DMode();
+    } else {
+        if (typeof set3DMode === 'function') set3DMode();
+    }
+});
+
 $(document).on('click', '#timezoneOptions option', function(){
     clientSettingsUpdate();
 });
@@ -2088,14 +2125,14 @@ window.setInterval(function(){
     }
 }, 2000);
 
-// ===== Panel Resizing with Snap Points =====
+// ===== Panel height (fixed, dependent on viewport size) =====
 (function() {
-    function computeMaxOpenHeight() {
-        // The Log/Settings panels now hang below the fixed top bar (rather
-        // than growing upward from a bottom-anchored dock), so the max open
+    function computeOpenHeight() {
+        // The Log/Settings panels hang below the fixed top bar, so the open
         // height is "viewport height minus the top bar's own height minus a
         // small top gap minus a matching bottom margin" — see the panels'
-        // `top`/`bottom` offsets in chasemapper.css.
+        // `top`/`bottom` offsets in chasemapper.css. There's no drag-to-resize;
+        // this is always the panel's full height.
         var topbar = document.getElementById('topbar');
         var topOffset = topbar ? Math.max(0, topbar.getBoundingClientRect().bottom) : 56;
         var topGap = 12;
@@ -2104,230 +2141,20 @@ window.setInterval(function(){
         return Math.max(180, Math.floor(window.innerHeight - topOffset - topGap - bottomMargin));
     }
 
-    window.getSettingsPanelSnapOpenHeight = computeMaxOpenHeight;
+    window.getSettingsPanelOpenHeight = computeOpenHeight;
 
-    function getActivePanelElement() {
-        var settingsPanel = document.getElementById('settingsPanel');
-        if (settingsPanel && settingsPanel.classList.contains('panel-open')) {
-            return settingsPanel;
-        }
-
-        var logPanel = document.getElementById('logPanel');
-        if (logPanel && logPanel.classList.contains('panel-open')) {
-            return logPanel;
-        }
-
-        return settingsPanel || logPanel || null;
-    }
-
-    function getPanelChromeHeight(panel) {
-        if (!panel) {
-            return 52;
-        }
-
-        var header = panel.querySelector('.settings-header, .log-panel-header');
-        var handle = panel.querySelector('.panel-resize-handle');
-        var borderTop = parseFloat(window.getComputedStyle(panel).borderTopWidth) || 0;
-        var borderBottom = parseFloat(window.getComputedStyle(panel).borderBottomWidth) || 0;
-        var headerHeight = header ? header.offsetHeight : 48;
-        var handleHeight = handle ? handle.offsetHeight : 4;
-
-        return Math.round(headerHeight + handleHeight + borderTop + borderBottom);
-    }
-
-    function getAprsItemStepHeight() {
-        var items = document.querySelectorAll('#aprsList .aprs-item');
-        if (items.length >= 2) {
-            var step = items[1].offsetTop - items[0].offsetTop;
-            if (step > 0) {
-                return step;
-            }
-        }
-
-        if (items.length === 1) {
-            var style = window.getComputedStyle(items[0]);
-            var margins = (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
-            return Math.max(64, Math.round(items[0].offsetHeight + margins));
-        }
-
-        return 92;
-    }
-
-    function getSnapHeights(panel) {
-        var maxOpen = computeMaxOpenHeight();
-        var chrome = getPanelChromeHeight(panel);
-        var itemStep = getAprsItemStepHeight();
-        var heights = [0, maxOpen];
-        var n = 1;
-
-        while (n <= 60) {
-            var candidate = Math.round(chrome + (itemStep * n));
-            if (candidate >= maxOpen) {
-                break;
-            }
-            heights.push(candidate);
-            n += 1;
-        }
-
-        heights.sort(function(a, b) { return a - b; });
-        return heights;
-    }
-
-    function findNearestSnapHeight(height, panel) {
-        var snaps = getSnapHeights(panel);
-        var candidate = Math.max(0, Math.round(height || 0));
-        var nearest = snaps[0];
-        var bestDelta = Math.abs(candidate - nearest);
-
-        for (var i = 1; i < snaps.length; i++) {
-            var delta = Math.abs(candidate - snaps[i]);
-            if (delta < bestDelta) {
-                bestDelta = delta;
-                nearest = snaps[i];
-            }
-        }
-
-        return nearest;
-    }
-
-    function applySharedPanelHeight(height, persistHeight, panel) {
-        var panelId = panel && panel.id ? panel.id : null;
-        if (typeof window.setDockPanelHeight === 'function') {
-            return window.setDockPanelHeight(height, persistHeight, panelId);
-        }
-
-        var safeHeight = Math.max(0, Math.min(computeMaxOpenHeight(), Math.round(height || 0)));
-        var settingsPanel = document.getElementById('settingsPanel');
-        var logPanel = document.getElementById('logPanel');
-
-        if (settingsPanel) {
-            settingsPanel.style.height = safeHeight + 'px';
-            settingsPanel.style.maxHeight = safeHeight + 'px';
-        }
-        if (logPanel) {
-            logPanel.style.height = safeHeight + 'px';
-            logPanel.style.maxHeight = safeHeight + 'px';
-        }
-        return safeHeight;
-    }
-
-    function initResizer() {
-        var resizeHandles = Array.prototype.slice.call(document.querySelectorAll('.panel-resize-handle[data-resize-target]'));
-        var isDragging = false;
-        var startY = 0;
-        var startHeight = 0;
-        var lastDragClientY = 0;
-        var activeHandle = null;
-        var activePanel = null;
-
-        if (resizeHandles.length === 0) {
+    function reapplyOpenPanelHeight() {
+        if (typeof window.setDockPanelHeight !== 'function') {
             return;
         }
 
-        function bindHandle(resizeHandle) {
-            if (!resizeHandle || resizeHandle.dataset.resizeBound === '1') {
-                return;
-            }
-
-            resizeHandle.dataset.resizeBound = '1';
-
-            resizeHandle.addEventListener('mousedown', function(e) {
-                if (e.button !== 0) {
-                    return;
-                }
-
-                var panelId = (resizeHandle.dataset.resizeTarget || '').trim();
-                var panel = panelId ? document.getElementById(panelId) : getActivePanelElement();
-                if (!panel) {
-                    return;
-                }
-
-                isDragging = true;
-                activeHandle = resizeHandle;
-                activePanel = panel;
-                startY = e.clientY;
-                lastDragClientY = e.clientY;
-                startHeight = panel.clientHeight;
-
-                resizeHandle.classList.add('is-dragging');
-                document.body.style.userSelect = 'none';
-                document.body.style.cursor = 'ns-resize';
-
-                e.preventDefault();
-            });
-        }
-
-        resizeHandles.forEach(bindHandle);
-
-        function applyHeight(height, persistHeight, panel) {
-            var safeHeight = applySharedPanelHeight(height, persistHeight, panel || activePanel);
-
-            if (safeHeight === 0) {
-                var settingsPanel = document.getElementById('settingsPanel');
-                var logPanel = document.getElementById('logPanel');
-                if (settingsPanel) {
-                    settingsPanel.classList.remove('panel-open');
-                }
-                if (logPanel) {
-                    logPanel.classList.remove('panel-open');
-                }
-                if (typeof setTopbarSelection === 'function') {
-                    setTopbarSelection('none');
-                }
-            }
-
-            return safeHeight;
-        }
-
-        document.addEventListener('mousemove', function(e) {
-            if (!isDragging) {
-                return;
-            }
-
-            lastDragClientY = e.clientY;
-            var delta = startY - e.clientY;
-            applyHeight(startHeight + delta, false, activePanel);
-        });
-
-        document.addEventListener('mouseup', function(e) {
-            if (!isDragging) {
-                return;
-            }
-
-            isDragging = false;
-            if (activeHandle) {
-                activeHandle.classList.remove('is-dragging');
-            }
-            document.body.style.userSelect = '';
-            document.body.style.cursor = '';
-
-            lastDragClientY = e && typeof e.clientY === 'number' ? e.clientY : lastDragClientY;
-            var dragCandidateHeight = startHeight + (startY - lastDragClientY);
-            var snappedHeight = findNearestSnapHeight(dragCandidateHeight, activePanel || getActivePanelElement());
-            applyHeight(snappedHeight, true, activePanel);
-
-            activeHandle = null;
-            activePanel = null;
-        });
-
-        window.addEventListener('resize', function() {
-            var activePanelEl = getActivePanelElement();
-            if (!activePanelEl || !activePanelEl.classList.contains('panel-open')) {
-                return;
-            }
-            var current = 0;
-            if (typeof window.getDockPanelHeight === 'function') {
-                current = parseFloat(window.getDockPanelHeight() || '0');
-            }
-            if (isFinite(current) && current > 0) {
-                applyHeight(Math.min(current, computeMaxOpenHeight()), false, activePanelEl);
+        ['settingsPanel', 'logPanel'].forEach(function(id) {
+            var panel = document.getElementById(id);
+            if (panel && panel.classList.contains('panel-open')) {
+                window.setDockPanelHeight(computeOpenHeight(), id);
             }
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initResizer);
-    } else {
-        initResizer();
-    }
+    window.addEventListener('resize', reapplyOpenPanelHeight);
 })();

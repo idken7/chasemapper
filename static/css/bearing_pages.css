@@ -1,0 +1,209 @@
+/* Shared chrome for the standalone manual-bearing-entry pages (EasyBearing
+   `/bearing`, O'Clock `/oclock`) - Flight Deck visual language applied to
+   pages that live outside the main index.html SPA shell. Both pages are
+   always dark (no theme toggle is offered here, matching the design), so
+   `<body class="dark-theme">` is set directly in the templates to pick up
+   the shared dark-theme rules already in chasemapper.css (map tint, etc).
+
+   See doc/design-prompt-manual-bearing-entry.md for the design brief this
+   implements (screens 11/11b/12 desktop, M13/M14 mobile). */
+
+html, body {
+	height: 100%;
+	margin: 0;
+	overflow: hidden;
+	background: var(--cd-bg);
+	color: var(--cd-fg);
+	font-family: var(--cd-font-display);
+}
+
+.bp-map {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	background: var(--cd-bg);
+}
+
+/* Header bar: back button + page title, floating over the map. */
+.bp-header {
+	position: fixed;
+	top: 16px;
+	left: 16px;
+	right: 16px;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	pointer-events: none;
+}
+.bp-header > * { pointer-events: auto; }
+
+.bp-back {
+	width: 38px;
+	height: 38px;
+	border-radius: 10px;
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--cd-fg);
+	text-decoration: none;
+	flex-shrink: 0;
+}
+.bp-back:hover, .bp-back:focus { background: rgba(255, 255, 255, 0.14); color: #fff; }
+
+.bp-header-title {
+	color: #fff;
+	font-weight: 700;
+	font-size: 14px;
+	letter-spacing: 0.01em;
+	text-align: center;
+	flex: 1 1 auto;
+}
+
+.bp-header-spacer { width: 38px; flex-shrink: 0; }
+
+/* Fox time-sequenced-transmitter status chip (O'Clock header, right side). */
+.bp-foxchip {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	background: rgba(10, 13, 22, 0.85);
+	border: 1px solid rgba(255, 203, 5, 0.35);
+	border-radius: 16px;
+	padding: 6px 12px 6px 8px;
+	color: var(--cd-fg);
+	font-size: 11px;
+	font-weight: 700;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+.bp-foxchip.is-active { display: flex; }
+.bp-foxchip svg { flex-shrink: 0; color: var(--cd-maize); }
+
+/* Confirmation toast: "Bearing sent · 042°". */
+.bp-toast {
+	position: fixed;
+	top: 68px;
+	left: 50%;
+	transform: translateX(-50%) translateY(-8px);
+	z-index: 1001;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: rgba(10, 13, 22, 0.92);
+	border: 1px solid rgba(255, 203, 5, 0.4);
+	border-radius: 20px;
+	padding: 8px 14px 8px 10px;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 200ms ease, transform 200ms ease;
+}
+.bp-toast.is-visible {
+	opacity: 1;
+	transform: translateX(-50%) translateY(0);
+}
+.bp-toast-check {
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	background: var(--cd-maize);
+	color: var(--cd-bg);
+	font-size: 11px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+.bp-toast-text { color: var(--cd-fg); font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+/* Transient error toast (replaces the old alert() on bearing_rejected for
+   reasons other than "no known position", which gets the persistent
+   warning card instead). */
+.bp-error-toast {
+	position: fixed;
+	top: 68px;
+	left: 50%;
+	transform: translateX(-50%) translateY(-8px);
+	z-index: 1001;
+	background: rgba(38, 12, 12, 0.92);
+	border: 1px solid rgba(224, 90, 90, 0.5);
+	color: #ff8a8a;
+	border-radius: 20px;
+	padding: 9px 16px;
+	font-size: 12px;
+	font-weight: 700;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 200ms ease, transform 200ms ease;
+}
+.bp-error-toast.is-visible {
+	opacity: 1;
+	transform: translateX(-50%) translateY(0);
+}
+
+/* Location-sharing warning: shown instead of the normal control content
+   whenever the browser isn't reporting a device position yet. */
+.bp-warning-box {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 12px;
+	border-radius: 12px;
+	background: rgba(255, 203, 5, 0.1);
+	border: 1px solid rgba(255, 203, 5, 0.35);
+	margin-bottom: 14px;
+	text-align: left;
+}
+.bp-warning-box svg { flex-shrink: 0; margin-top: 1px; color: var(--cd-maize); }
+.bp-warning-title { color: var(--cd-maize); font-size: 12.5px; font-weight: 700; margin-bottom: 3px; }
+.bp-warning-sub { color: rgba(230, 238, 246, 0.6); font-size: 11.5px; line-height: 1.4; }
+
+.bp-warning-btn {
+	display: block;
+	width: 100%;
+	padding: 12px;
+	border-radius: 10px;
+	background: var(--cd-maize);
+	color: var(--cd-bg);
+	font-weight: 700;
+	font-size: 13px;
+	text-align: center;
+	border: none;
+	cursor: pointer;
+}
+.bp-warning-btn:hover, .bp-warning-btn:focus { filter: brightness(1.05); }
+
+.bp-warning-ghost {
+	opacity: 0.3;
+	pointer-events: none;
+	margin-top: 16px;
+	text-align: center;
+}
+.bp-warning-ghost-label {
+	color: rgba(230, 238, 246, 0.45);
+	font-size: 9.5px;
+	letter-spacing: 0.08em;
+	margin-bottom: 8px;
+}
+
+/* Last-bearing-sent readout chip, reused by both pages. */
+.bp-last-bearing {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	background: rgba(10, 13, 22, 0.85);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 14px;
+	padding: 9px 16px;
+	font-size: 12px;
+	color: rgba(230, 238, 246, 0.5);
+}
+.bp-last-bearing-value { color: var(--cd-maize); font-weight: 700; }
+.bp-last-bearing-age { color: rgba(230, 238, 246, 0.35); }

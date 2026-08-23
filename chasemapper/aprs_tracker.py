@@ -87,8 +87,17 @@ class APRSTracker(Thread):
         logger.info("APRS tracker started for: %s", ", ".join(self._snapshot_callsigns()) or "<none>")
         self._running = True
 
-        if not self._run_aprsis() and self._running:
-            self._run_polling()
+        try:
+            _streamed = self._run_aprsis()
+        except Exception:
+            logger.exception("APRS-IS streaming failed unexpectedly; falling back to aprs.fi polling.")
+            _streamed = False
+
+        if not _streamed and self._running:
+            try:
+                self._run_polling()
+            except Exception:
+                logger.exception("APRS polling failed unexpectedly; APRS tracking has stopped.")
 
     def stop(self) -> None:
         """Request that the tracker stop and close any active APRS-IS stream."""

@@ -32,7 +32,7 @@ uuids = []
 
 
 def ISOStringNow():
-    return "%sZ" % datetime.datetime.utcnow().isoformat()
+    return "%sZ" % datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def postListenerData(doc, timeout=10):

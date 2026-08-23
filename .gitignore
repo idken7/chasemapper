@@ -46,3 +46,7 @@ log_files
 
 # Generated APRS prediction override sidecar
 aprs_prediction_overrides.json
+
+# Self-hosted Cesium build (downloaded by the Docker build or
+# scripts/fetch_cesium.sh - see templates/index.html's CESIUM_BASE_URL)
+/static/vendor/cesium/

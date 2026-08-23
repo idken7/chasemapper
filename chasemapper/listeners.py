@@ -13,7 +13,7 @@ import logging
 import socket, json
 from threading import Thread
 from dateutil.parser import parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 MAX_JSON_LEN = 32768
 
@@ -24,7 +24,7 @@ def fix_datetime(datetime_str, local_dt_str=None):
     """
 
     if local_dt_str is None:
-        _now = datetime.utcnow()
+        _now = datetime.now(timezone.utc).replace(tzinfo=None)
     else:
         _now = parse(local_dt_str)
 
@@ -244,7 +244,7 @@ class OziListener(object):
         # Timestamp Handling
         # The 'short' timestamp (HH:MM:SS) is always assumed to be in UTC time.
         # To build up a complete datetime object, we use the system's current UTC time, and replace the HH:MM:SS part.
-        _full_time = datetime.utcnow().strftime("%Y-%m-%dT") + _short_time + "Z"
+        _full_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT") + _short_time + "Z"
         _time_dt = parse(_full_time)
 
         _time_dt = fix_datetime(_short_time)
@@ -268,7 +268,7 @@ class OziListener(object):
         _lon = float(_fields[3])
         _comment = _fields[4]
 
-        _time_dt = datetime.utcnow()
+        _time_dt = datetime.now(timezone.utc).replace(tzinfo=None)
 
         _output = {
             "time": _time_dt,

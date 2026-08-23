@@ -57,7 +57,6 @@ body,
 .log-panel,
 .settings-panel,
 .log-panel .log-panel-header,
-.settings-panel .settings-header,
 .log-panel-body,
 .settings-panel .settings-body,
 .settings-panel .list-group-item,
@@ -123,6 +122,149 @@ html, body, #map, #cesiumMap {
 #cesiumMap.cesium-active {
 	display: block;
 	pointer-events: auto;
+}
+
+/* Map corner controls - plain DOM overlays (speed/heading/TTL/log-time/
+   bearing-plot readouts, zoom, measure), replacing the old Leaflet
+   L.control.custom/L.easyButton corner widgets. Same "liquid glass" chip
+   language as .cesium-measure-card/.cesium-camera-slider-card above. */
+.map-corner-controls {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	pointer-events: none;
+}
+
+.map-corner {
+	position: fixed;
+	display: flex;
+	gap: 8px;
+	pointer-events: none;
+}
+
+.map-corner-bottom-left {
+	left: 12px;
+	bottom: 24px;
+	flex-direction: column;
+	align-items: flex-start;
+}
+
+.map-corner-bottom-center {
+	left: 50%;
+	bottom: 24px;
+	transform: translateX(-50%);
+	flex-direction: column;
+	align-items: center;
+}
+
+.map-corner-bottom-right {
+	right: 12px;
+	bottom: 24px;
+	flex-direction: column;
+	align-items: flex-end;
+}
+
+.map-corner-top-right {
+	right: 12px;
+	top: calc(var(--topbar-height) + 12px);
+	flex-direction: column;
+	align-items: flex-end;
+}
+
+.map-corner-widget {
+	background: var(--glass-sheen), rgba(10, 16, 26, 0.72);
+	backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+	-webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+	border-radius: 12px;
+	padding: 5px 10px;
+	pointer-events: auto;
+}
+
+.map-corner-widget:empty,
+.map-corner-widget:has(> #chase_car_speed_header:empty),
+.map-corner-widget:has(> #chase_car_heading_header:empty),
+.map-corner-widget:has(> #time_to_landing:empty),
+.map-corner-widget:has(> #timeseq_notice:empty),
+.map-corner-widget:has(> #log_time:empty),
+.map-corner-widget:has(> #bearing_plot:empty) {
+	display: none;
+}
+
+/* Graphical scale bar (mirrors Leaflet's L.control.scale look: a bracket-
+   shaped ruler whose WIDTH is the actual on-screen distance for the labelled
+   value) rather than a bare number with nothing to relate it to the map. */
+.map-scale-control {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	pointer-events: none;
+}
+
+.map-scale-bar {
+	height: 6px;
+	border: 2px solid rgba(255, 255, 255, 0.85);
+	border-top: none;
+	background: rgba(10, 16, 26, 0.35);
+}
+
+.map-scale-label {
+	color: rgba(255, 255, 255, 0.85);
+	font-size: 0.72rem;
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.map-icon-btn-group {
+	display: flex;
+	flex-direction: column;
+	border-radius: 12px;
+	overflow: hidden;
+	pointer-events: auto;
+}
+
+.map-icon-btn {
+	width: 34px;
+	height: 34px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--glass-sheen), rgba(10, 16, 26, 0.72);
+	backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+	-webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	border-radius: 12px;
+	color: rgba(255, 255, 255, 0.9);
+	font-size: 1.1rem;
+	line-height: 1;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 200ms ease, color 200ms ease;
+}
+
+.map-icon-btn-group .map-icon-btn {
+	border-radius: 0;
+	border-bottom-width: 0;
+}
+
+.map-icon-btn-group .map-icon-btn:last-child {
+	border-bottom-width: 1px;
+}
+
+.map-icon-btn:hover {
+	background: rgba(255, 255, 255, 0.15);
+	color: #fff;
+}
+
+@media (max-width: 520px) {
+	.map-corner-bottom-left,
+	.map-corner-bottom-right {
+		bottom: 88px;
+	}
+	.map-corner-bottom-center {
+		bottom: 88px;
+	}
 }
 
 .cesium-camera-slider-panel {
@@ -636,17 +778,14 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
 	transform: rotate(45deg);
 }
 
-/* The Log/Settings/APRS panels take over the right (or, for Log, full)
-   width of the screen and collide with the zoom +/- control there - the
-   Flight Deck design never shows it on those screens (only Track/Route).
-   Only the zoom buttons are hidden, not the whole right-side control stack:
-   the 3D toggle/measure/locate/route buttons stay reachable regardless of
-   which panel is open, since those are real distinct actions rather than a
-   pure map-viewport control. body.side-panel-open is toggled by
-   updateMapControlsVisibility() in index.html whenever #settingsPanel or
-   #logPanel is open. */
-body.side-panel-open .leaflet-control-zoom {
-	display: none;
+/* The Log/Settings panels take over the right (or, for Log, full) width of
+   the screen and collide with the top-right zoom/measure control stack
+   there - the Flight Deck design never shows map viewport controls on
+   those screens (only Track/Route). Hide the whole stack, not just zoom.
+   body.side-panel-open is toggled by updateMapControlsVisibility() in
+   index.html whenever #settingsPanel or #logPanel is open. */
+body.side-panel-open .leaflet-top.leaflet-right {
+	display: none !important;
 }
 
 /* Stack right-side leaflet control buttons vertically and add spacing */
@@ -662,12 +801,12 @@ body.side-panel-open .leaflet-control-zoom {
 }
 /* Flight Deck top bar: fixed full-width, brand mark on the left, the nav
    pill group centered, live/chaser status on the right. */
-/* Flight Deck top nav: floats directly over the map (brand / centered nav
-   pills / live status) - no full-width background bar, matching the design
-   mockup exactly (every screen shows this as three items positioned at
-   top:20/left:24/right:24, not a bar spanning the viewport). Grid (not
-   flex+space-between) is what actually centers the middle column regardless
-   of how wide the brand/status siblings are. */
+/* Flight Deck top nav: one continuous card spanning left:24/right:24 at the
+   top of the map, matching the visual language of #telemReadoutCard (same
+   background/border/radius/shadow/blur) instead of three separate floating
+   pills. Brand, nav buttons, and live status all sit inside this single bar.
+   Grid (not flex+space-between) is what actually centers the middle column
+   regardless of how wide the brand/status siblings are. */
 .topbar-shell {
 	position: fixed;
 	top: 20px;
@@ -679,14 +818,14 @@ body.side-panel-open .leaflet-control-zoom {
 	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
 	gap: 16px;
-	background: none;
+	padding: 10px 18px;
+	border-radius: 14px;
+	background: rgba(10, 13, 22, 0.75);
+	border: 1px solid rgba(255, 203, 5, 0.25);
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(14px) saturate(1.3);
+	-webkit-backdrop-filter: blur(14px) saturate(1.3);
 	color: #fff;
-	border-radius: 0;
-	padding: 0 !important;
-	box-shadow: none;
-	border: 0;
-	backdrop-filter: none;
-	-webkit-backdrop-filter: none;
 	z-index: 9998;
 }
 .topbar-brand {
@@ -721,30 +860,17 @@ body.side-panel-open .leaflet-control-zoom {
 	font-weight: 700;
 	font-size: 12.5px;
 	letter-spacing: 0.03em;
-	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-subtitle {
 	display: block;
 	color: rgba(230, 238, 246, 0.75);
 	font-size: 9.5px;
 	font-family: var(--cd-font-display);
-	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-action-group {
 	flex: 0 0 auto;
 	display: inline-flex;
 	gap: 4px;
-	padding: 5px;
-	border-radius: 10px;
-	/* Opaque dark pill (not the mockup's literal 5% white tint) - with the
-	   background bar gone, this now sits directly over real map tiles rather
-	   than the mockup's near-black canvas, so it needs real contrast to stay
-	   legible. Same reasoning as .doa-panel/.routing-active-pill. */
-	background: rgba(10, 13, 22, 0.7);
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-	backdrop-filter: blur(10px) saturate(1.3);
-	-webkit-backdrop-filter: blur(10px) saturate(1.3);
 }
 .topbar-action-btn {
 	border: 0;
@@ -762,8 +888,17 @@ body.side-panel-open .leaflet-control-zoom {
 	transition: transform 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 180ms ease;
 }
 .nav-pill-icon {
+	/* Narrow-viewport fallback for .nav-pill-label (see the max-width:900px
+	   rule below) - hidden on desktop so the full word is the only thing
+	   shown there. Without this, hiding the label at narrow widths left
+	   buttons with no visible content at all, collapsing the whole group
+	   down to near-invisible padding. */
+	display: none;
 	flex: 0 0 auto;
-	display: inline-flex;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.03em;
+	white-space: nowrap;
 }
 .nav-pill-label {
 	white-space: nowrap;
@@ -803,7 +938,6 @@ body.side-panel-open .leaflet-control-zoom {
 	color: var(--cd-blue-light);
 	font-size: 0.72rem;
 	letter-spacing: 0.02em;
-	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7), 0 1px 12px rgba(0, 0, 0, 0.4);
 }
 .topbar-status-label {
 	opacity: 0.95;
@@ -826,25 +960,16 @@ body.side-panel-open .leaflet-control-zoom {
 @media (max-width: 900px) {
 	.topbar-subtitle { display: none; }
 	.nav-pill-label { display: none; }
+	.nav-pill-icon { display: inline-flex; }
 	.topbar-action-btn { padding: 0.5rem 0.6rem; }
 }
 
 /* Below the mobile-tab-bar breakpoint (see .mobile-tab-bar) the bottom tab
-   bar takes over as the primary way to navigate, but the top pills stay
-   visible/clickable (icon-only) rather than disappearing entirely — some
-   redundancy is preferable to losing keyboard/assistive/automation access
-   to Track/Route/APRS/Log/Settings on narrow viewports. */
+   bar takes over as the only way to navigate - the top bar would just be a
+   redundant, cramped duplicate of it, so it's hidden entirely rather than
+   squeezed down to icons. */
 @media (max-width: 720px) {
-	.topbar-shell {
-		left: 10px;
-		right: 10px;
-		gap: 8px;
-	}
-	.topbar-title { display: none; }
-	.topbar-status-label { display: none; }
-	.topbar-status-sep { display: none; }
-	.topbar-action-group { gap: 2px; padding: 3px; }
-	.topbar-action-btn { padding: 0.42rem 0.46rem; }
+	.topbar-shell { display: none; }
 }
 
 /* Floating panels */
@@ -903,15 +1028,6 @@ body.side-panel-open .leaflet-control-zoom {
 	flex: 0 0 auto;
 }
 
-/* The log panel spans edge-to-edge, but the floating zoom/measure/3D-toggle
-   control stack (top-right, always on top via its own very high z-index)
-   sits over that same right edge. Without this the level-filter pills get
-   visually clipped/unclickable under the control stack. */
-@media (min-width: 721px) {
-	.log-panel .log-panel-header {
-		padding-right: 96px;
-	}
-}
 .log-panel-title {
 	flex: 0 0 auto;
 	font-size: 0.9rem;
@@ -941,8 +1057,7 @@ body.side-panel-open .leaflet-control-zoom {
 	white-space: nowrap;
 	transition: transform 140ms ease, background-color 140ms ease, box-shadow 180ms ease, color 140ms ease;
 }
-.log-filter-btn:hover,
-.log-filter-btn:focus {
+.log-filter-btn:hover {
 	background: rgba(255,255,255,0.08) !important;
 	color: #fff !important;
 	outline: none;
@@ -955,8 +1070,26 @@ body.side-panel-open .leaflet-control-zoom {
 .log-filter-btn:focus-visible {
 	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35), inset 0 1px 0 rgba(255,255,255,0.2) !important;
 }
+/* Tint each filter pill to match the color used for that level's log lines
+   (see .log-level-* below), so the pill you're toggling visually maps to
+   the messages it controls. Dimmed when off, full color when on/hovered -
+   theme-specific overrides follow further down alongside the other
+   .log-filter-btn dark/light rules. */
+.log-filter-btn[data-log-level="debug"] { color: rgba(123, 223, 246, 0.65) !important; }
+.log-filter-btn[data-log-level="info"] { color: rgba(229, 238, 248, 0.65) !important; }
+.log-filter-btn[data-log-level="warn"] { color: rgba(255, 206, 107, 0.65) !important; }
+.log-filter-btn[data-log-level="error"] { color: rgba(255, 138, 138, 0.65) !important; }
+.log-filter-btn[data-log-level="debug"]:hover,
+.log-filter-btn[data-log-level="debug"].is-active { color: #7bdff6 !important; }
+.log-filter-btn[data-log-level="info"]:hover,
+.log-filter-btn[data-log-level="info"].is-active { color: #e5eef8 !important; }
+.log-filter-btn[data-log-level="warn"]:hover,
+.log-filter-btn[data-log-level="warn"].is-active { color: #ffce6b !important; }
+.log-filter-btn[data-log-level="error"]:hover,
+.log-filter-btn[data-log-level="error"].is-active { color: #ff8a8a !important; font-weight: 700; }
 .log-panel-body { padding:18px 22px; overflow:auto; max-height:none; min-height:0; flex:1 1 auto; font-family: var(--cd-font-mono); font-size:13px; background: transparent; }
-.log-line { padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05); }
+.log-line { padding:7px 0; }
+.log-line + .log-line { border-top:1px solid rgba(255,255,255,0.05); }
 .log-level-error { color: #ff8a8a; font-weight:700; }
 .log-level-warn { color: #ffce6b; }
 .log-level-debug { color: #7bdff6; }
@@ -1024,33 +1157,6 @@ body.side-panel-open .leaflet-control-zoom {
 	height: 100%;
 	overflow: hidden;
 }
-.panel-resize-handle {
-	height: 8px;
-	background: rgba(255, 255, 255, 0.12);
-	cursor: ns-resize;
-	transition: background-color 180ms ease;
-	user-select: none;
-	flex-shrink: 0;
-	pointer-events: auto;
-}
-.panel-resize-handle:hover {
-	background: rgba(255, 255, 255, 0.24);
-}
-.panel-resize-handle.is-dragging {
-	background: rgba(6, 182, 212, 0.4);
-}
-.settings-panel .settings-header {
-	padding:8px 12px 7px;
-	font-weight:700;
-	background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
-	display:flex;
-	justify-content:space-between;
-	align-items:center;
-	color:#fff;
-	border-bottom: 1px solid rgba(255,255,255,0.08);
-	cursor: pointer;
-}
-
 #logPanelClose,
 #settingsPanelClose {
 	display: none !important;
@@ -1260,11 +1366,12 @@ body.side-panel-open .leaflet-control-zoom {
 	border-radius: 50%;
 	box-shadow: 0 0 0 2px rgba(255,255,255,0.18);
 }
-/* Semantic colors match the mockup's chaser-dot scheme: live telemetry = blue,
-   stale = light grey, no data = faded red. (The followed/expanded row is
-   additionally flagged via its own maize card border, .aprs-is-following.) */
+/* Traffic-light staleness: live telemetry = blue (matches the app's LIVE
+   accent elsewhere), stale = amber/yellow (matches .log-level-warn), no data
+   = red. (The followed/expanded row is additionally flagged via its own
+   maize card border, .aprs-is-following.) */
 .aprs-staleness-green { background: var(--cd-blue); }
-.aprs-staleness-yellow { background: #d0d4dc; }
+.aprs-staleness-yellow { background: #ffce6b; }
 .aprs-staleness-red { background: #e05a5a; }
 .settings-panel .aprs-row {
 	gap: 10px;
@@ -1330,7 +1437,8 @@ body.side-panel-open .leaflet-control-zoom {
 
 .settings-panel .list-group-item.aprs-item { position: relative; overflow: visible; }
 
-/* Inline title-row actions: follow toggle + kebab menu trigger */
+/* Inline title-row action: follow toggle (the rest live in the always-visible
+   actions row below - see .aprs-actions-row). */
 .settings-panel .aprs-title-right {
 	gap: 6px;
 	flex: 0 0 auto;
@@ -1345,20 +1453,11 @@ body.side-panel-open .leaflet-control-zoom {
 	border-radius: 9px;
 	font-size: 14px;
 }
-.settings-panel .aprs-menu-toggle {
-	background: rgba(255,255,255,0.06);
-	border-color: rgba(255,255,255,0.12);
-	color: inherit;
-}
-.settings-panel .aprs-menu-toggle[aria-expanded="true"] {
-	background: rgba(255,255,255,0.16);
-}
-
 /* Action row (View/Settings/Refresh/Recover/Remove): a static inline row,
    always visible on the expanded card - visibility is inherited entirely
-   from the parent .aprs-row (see .aprs-is-following .aprs-row above), not
-   gated on the kebab menu. flex-wrap keeps it from overflowing narrow
-   panels instead of relying on a fixed min-width. */
+   from the parent .aprs-row (see .aprs-is-following .aprs-row above).
+   flex-wrap keeps it from overflowing narrow panels instead of relying on a
+   fixed min-width. */
 .settings-panel .aprs-actions-row {
 	display: flex;
 	flex-wrap: wrap;
@@ -1592,11 +1691,11 @@ body:not(.dark-theme) .telem-readout-unit {
 	max-width: calc(100vw - 48px);
 	padding: 16px;
 	border-radius: 16px;
-	background: rgba(10, 13, 22, 0.88);
+	background: rgba(10, 13, 22, 0.75);
 	border: 1px solid rgba(255, 203, 5, 0.25);
 	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
-	backdrop-filter: blur(10px) saturate(1.3);
-	-webkit-backdrop-filter: blur(10px) saturate(1.3);
+	backdrop-filter: blur(14px) saturate(1.3);
+	-webkit-backdrop-filter: blur(14px) saturate(1.3);
 	color: var(--cd-fg);
 }
 .doa-panel-backdrop { display: none; }
@@ -1639,6 +1738,29 @@ body:not(.dark-theme) .telem-readout-unit {
 }
 .doa-legend-item { display: flex; align-items: center; gap: 5px; color: rgba(230, 238, 246, 0.7); }
 .doa-legend-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.doa-legend-label { white-space: nowrap; }
+.doa-legend-clear {
+	flex-shrink: 0;
+	width: 15px;
+	height: 15px;
+	border-radius: 50%;
+	border: 0;
+	padding: 0;
+	background: rgba(255, 255, 255, 0.08);
+	color: rgba(230, 238, 246, 0.55);
+	font-size: 11px;
+	line-height: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+.doa-legend-clear:hover,
+.doa-legend-clear:focus {
+	background: rgba(224, 90, 90, 0.25);
+	color: #ff8a8a;
+	outline: none;
+}
 
 .doa-panel-stats {
 	display: flex;
@@ -1652,8 +1774,187 @@ body:not(.dark-theme) .telem-readout-unit {
 .doa-stat-value--accent { color: var(--cd-maize); }
 .doa-panel-empty-state .doa-stat-value { color: rgba(230, 238, 246, 0.35); }
 
+/* Panel 14: Readings / EasyBearing / O'Clock tab strip - reuses the
+   segmented pill-toggle control already established for the Route panel's
+   start-mode selector (see .pill-toggle-group in the chase-routing rules
+   below), just resized to fit three labels in the DOA card's 300px width. */
+.doa-tab-row { margin-bottom: 12px; }
+.doa-tab-row .pill-toggle-btn { padding: 7px 4px; font-size: 10.5px; }
+
+/* EasyBearing tab: compact absolute-bearing dial, ported from the standalone
+   /bearing page's #bpDialSheet (bearing_entry.html/.css) down to the DOA
+   card's width - drag/nudge logic lives in bearings.js. */
+.doa-eb-wrap { display: flex; flex-direction: column; align-items: center; }
+.doa-eb-dial-wrap {
+	position: relative;
+	width: 172px;
+	height: 172px;
+	touch-action: none;
+	cursor: grab;
+	margin-bottom: 12px;
+}
+.doa-eb-dial-wrap:active { cursor: grabbing; }
+.doa-eb-dial-svg { display: block; width: 100%; height: 100%; }
+.doa-eb-dial-readout {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: none;
+	color: var(--cd-maize);
+	font-size: 28px;
+	font-weight: 600;
+	line-height: 1;
+}
+.doa-eb-nudge-row { display: flex; gap: 4px; width: 100%; margin-bottom: 10px; }
+.doa-eb-nudge-btn {
+	flex: 1 1 0;
+	text-align: center;
+	padding: 8px 0;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.07);
+	border: none;
+	color: var(--cd-fg);
+	font-size: 11px;
+	font-weight: 700;
+	cursor: pointer;
+}
+.doa-eb-nudge-btn:hover, .doa-eb-nudge-btn:focus { background: rgba(255, 255, 255, 0.13); }
+.doa-eb-nudge-btn:active { background: rgba(255, 203, 5, 0.2); color: var(--cd-maize); }
+.doa-eb-send-btn {
+	width: 100%;
+	padding: 11px;
+	border-radius: 10px;
+	background: var(--cd-maize);
+	color: var(--cd-bg);
+	font-weight: 700;
+	font-size: 13px;
+	text-align: center;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	border: none;
+	cursor: pointer;
+}
+.doa-eb-send-btn:hover, .doa-eb-send-btn:focus { filter: brightness(1.05); }
+.doa-eb-send-btn svg { flex-shrink: 0; }
+
+/* O'Clock tab: compact relative-bearing ring, ported from the standalone
+   /oclock page (oclock.html/.css) - ring layout math lives in bearings.js
+   (buildDoaOclockHtml), same percentage-based positioning as the original
+   so it scales cleanly at this smaller size. */
+.doa-oclock-wrap { display: flex; flex-direction: column; align-items: center; }
+.doa-oclock-fox-row { display: flex; justify-content: flex-end; width: 100%; margin-bottom: 8px; }
+.doa-oclock-fox-chip {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	background: rgba(255, 203, 5, 0.12);
+	border: 1px solid rgba(255, 203, 5, 0.35);
+	border-radius: 14px;
+	padding: 4px 9px 4px 7px;
+	color: var(--cd-fg);
+	font-size: 10px;
+	font-weight: 700;
+}
+.doa-oclock-fox-chip svg { flex-shrink: 0; color: var(--cd-maize); }
+.doa-oclock-ring { position: relative; width: 172px; height: 172px; margin: 0 auto 12px; }
+.doa-oclock-ring-svg { position: absolute; inset: 0; }
+.doa-oclock-heading {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	text-align: center;
+	pointer-events: none;
+}
+.doa-oclock-heading-label { color: rgba(230, 238, 246, 0.4); font-size: 8px; letter-spacing: 0.06em; }
+.doa-oclock-heading-value { color: var(--cd-blue-light); font-size: 13px; font-weight: 600; }
+.doa-oclock-btn {
+	position: absolute;
+	width: 34px;
+	height: 34px;
+	margin: -17px 0 0 -17px;
+	border-radius: 50%;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	color: var(--cd-fg);
+	font-weight: 700;
+	font-size: 11px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+.doa-oclock-btn:hover, .doa-oclock-btn:focus { background: rgba(255, 255, 255, 0.12); }
+.doa-oclock-btn:active { transform: scale(0.94); }
+.doa-oclock-btn.doa-oclock-btn--twelve {
+	background: rgba(255, 203, 5, 0.18);
+	border: 1.5px solid rgba(255, 203, 5, 0.5);
+	color: var(--cd-maize);
+}
+.doa-oclock-btn.is-flash { background: var(--cd-maize); border-color: var(--cd-maize); color: var(--cd-bg); }
+.doa-oclock-last {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	background: rgba(255, 255, 255, 0.05);
+	border-radius: 10px;
+	padding: 8px 10px;
+	width: 100%;
+	box-sizing: border-box;
+	font-size: 10px;
+	color: rgba(230, 238, 246, 0.5);
+}
+.doa-oclock-last-value { color: var(--cd-maize); font-weight: 700; font-size: 11.5px; }
+.doa-oclock-last-age { color: rgba(230, 238, 246, 0.35); }
+
+/* Shared by EasyBearing/O'Clock: location-sharing warning, shown instead of
+   the controls (see doaTabNeedsLocationWarning in bearings.js) - compact
+   version of the standalone pages' .bp-warning-box/.bp-warning-btn. */
+.doa-warning-box {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 10px;
+	border-radius: 10px;
+	background: rgba(255, 203, 5, 0.1);
+	border: 1px solid rgba(255, 203, 5, 0.35);
+	margin-bottom: 10px;
+	text-align: left;
+}
+.doa-warning-box svg { flex-shrink: 0; margin-top: 1px; color: var(--cd-maize); }
+.doa-warning-title { color: var(--cd-maize); font-size: 11.5px; font-weight: 700; margin-bottom: 2px; }
+.doa-warning-sub { color: rgba(230, 238, 246, 0.6); font-size: 10.5px; line-height: 1.4; }
+.doa-warning-btn {
+	display: block;
+	width: 100%;
+	padding: 10px;
+	border-radius: 9px;
+	background: var(--cd-maize);
+	color: var(--cd-bg);
+	font-weight: 700;
+	font-size: 12px;
+	text-align: center;
+	border: none;
+	cursor: pointer;
+}
+.doa-warning-btn:hover, .doa-warning-btn:focus { filter: brightness(1.05); }
+
+body:not(.dark-theme) .doa-eb-nudge-btn,
+body:not(.dark-theme) .doa-oclock-fox-chip,
+body:not(.dark-theme) .doa-oclock-heading-label,
+body:not(.dark-theme) .doa-oclock-last,
+body:not(.dark-theme) .doa-oclock-last-age { color: rgba(15, 23, 42, 0.55); }
+body:not(.dark-theme) .doa-warning-sub { color: rgba(15, 23, 42, 0.6); }
+body:not(.dark-theme) .doa-oclock-btn { color: #0f172a; }
+
 body:not(.dark-theme) .doa-panel {
-	background: rgba(255, 255, 255, 0.92);
+	background: rgba(255, 255, 255, 0.88);
 	border-color: rgba(15, 23, 42, 0.14);
 	color: #0f172a;
 	box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
@@ -1889,8 +2190,6 @@ body:not(.dark-theme) .route-panel-floating-footer {
 	.route-panel-floating-footer .route-footer-stats { gap: 18px; }
 }
 
-.route-panel-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
-.route-panel-title { color: #fff; font-weight: 700; font-size: 14px; }
 .route-panel-collapse-btn {
 	width: 26px;
 	height: 26px;
@@ -1906,18 +2205,27 @@ body:not(.dark-theme) .route-panel-floating-footer {
 }
 .route-panel-collapse-btn:hover { background: rgba(255, 255, 255, 0.12); }
 
+/* Doubles as the panel header - no separate "Route" title bar (the design
+   doesn't have one), just the routed callsign + ALT/DESC stats with a
+   divider below, matching the telemetry-card-style header used elsewhere
+   in the mockup (e.g. the desktop Route & ETA screen). The collapse toggle
+   is app-specific (not in the design) and is tucked into this row's corner
+   instead of getting its own header. */
 .route-target-row {
 	display: flex;
 	justify-content: space-between;
-	align-items: center;
-	padding: 10px 12px;
-	border-radius: 10px;
-	background: rgba(255, 203, 5, 0.06);
-	border: 1px solid rgba(255, 203, 5, 0.2);
+	align-items: baseline;
+	padding-bottom: 12px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 	flex-shrink: 0;
 }
-.route-target-callsign { color: var(--cd-maize); font-weight: 700; font-size: 13px; }
-.route-target-meta { color: rgba(230, 238, 246, 0.5); font-size: 11px; }
+.route-target-callsign { color: var(--cd-maize); font-weight: 700; font-size: 14px; }
+.route-target-row-right { display: flex; align-items: center; gap: 14px; }
+.route-target-stats { display: flex; gap: 14px; }
+.route-target-stat { display: flex; align-items: baseline; gap: 4px; }
+.route-target-stat-label { color: rgba(230, 238, 246, 0.4); font-size: 9.5px; }
+.route-target-stat-value { color: #e6eef6; font-size: 12px; font-weight: 600; }
+.route-target-stat-value--accent { color: var(--cd-blue-light); }
 
 .route-alt-pills { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 .route-alt-pill {
@@ -2008,18 +2316,41 @@ body:not(.dark-theme) .route-panel {
 	color: #0f172a;
 	box-shadow: 0 22px 54px rgba(15, 23, 42, 0.16);
 }
-body:not(.dark-theme) .route-panel-title,
 body:not(.dark-theme) .route-hero-title,
 body:not(.dark-theme) .route-turn-text,
-body:not(.dark-theme) .route-stat-value { color: #0f172a; }
+body:not(.dark-theme) .route-stat-value,
+body:not(.dark-theme) .route-target-stat-value { color: #0f172a; }
 body:not(.dark-theme) .route-panel-collapse-btn { background: rgba(15, 23, 42, 0.06); color: #0f172a; }
 body:not(.dark-theme) .route-alt-pill { background: rgba(15, 23, 42, 0.06); color: rgba(15, 23, 42, 0.65); }
 body:not(.dark-theme) .route-panel-waiting,
 body:not(.dark-theme) .route-hero-sub,
 body:not(.dark-theme) .route-turn-dist,
 body:not(.dark-theme) .route-stops-passed-row,
-body:not(.dark-theme) .route-stat-label { color: rgba(15, 23, 42, 0.55); }
+body:not(.dark-theme) .route-stat-label,
+body:not(.dark-theme) .route-target-stat-label,
+body:not(.dark-theme) .route-target-row { border-bottom-color: rgba(15, 23, 42, 0.1); color: rgba(15, 23, 42, 0.55); }
 body:not(.dark-theme) .route-turn-icon { background: rgba(15, 23, 42, 0.06); }
+
+/* The design doesn't show the DOA panel or telemetry readout card while
+   routing is active - both would collide with the route panel's own space
+   (DOA floats bottom-right, close to where the route panel's footer/CTA
+   sits; the telemetry card's bottom-left slot is where the route panel
+   itself docks). Bearing tracking keeps running underneath; only the
+   floating card is hidden. */
+body.route-panel-active .doa-panel,
+body.route-panel-active .telem-readout-card {
+	display: none !important;
+}
+
+/* Same reasoning as route-panel-active above: the Log/Settings panels can
+   span nearly the full viewport height (top:84 to bottom:24), so at
+   in-between viewport widths they overlap both the bottom-right DOA panel
+   and the bottom-left telemetry readout card. The design never shows those
+   floating cards on the Log/Settings screens either - only Track/Route. */
+body.side-panel-open .doa-panel,
+body.side-panel-open .telem-readout-card {
+	display: none !important;
+}
 
 @media (max-width: 720px) {
 	.route-panel {
@@ -2037,8 +2368,8 @@ body:not(.dark-theme) .route-turn-icon { background: rgba(15, 23, 42, 0.06); }
 	/* The route panel is a full-screen takeover here - hide the other
 	   floating map chrome that would otherwise sit on top of it (Cesium's
 	   "moved" control container in particular uses a max z-index). */
-	body.route-panel-active .doa-panel,
-	body.route-panel-active .leaflet-control-container {
+	body.route-panel-active .leaflet-control-container,
+	body.route-panel-active .map-corner-controls {
 		display: none !important;
 	}
 }
@@ -2497,6 +2828,52 @@ body.dark-theme .settings-panel input[type=number]::-webkit-inner-spin-button, b
 }
 .settings-panel input[type=number] { appearance: textfield; -moz-appearance: textfield; }
 
+/* Boolean settings (Share My Live Location, Show Other Connected Chasers)
+   render as a pill switch, matching the Flight Deck design, instead of a
+   bare native checkbox. */
+.settings-panel input[type=checkbox] {
+	appearance: none;
+	-webkit-appearance: none;
+	position: relative;
+	width: 34px;
+	height: 19px;
+	flex: 0 0 auto;
+	margin: 0;
+	border-radius: 10px;
+	background: rgba(255,255,255,0.14);
+	border: 1px solid rgba(255,255,255,0.18);
+	cursor: pointer;
+	transition: background-color 160ms ease, border-color 160ms ease;
+}
+.settings-panel input[type=checkbox]::before {
+	content: "";
+	position: absolute;
+	top: 1px;
+	left: 1px;
+	width: 15px;
+	height: 15px;
+	border-radius: 50%;
+	background: #fff;
+	box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+	transition: transform 160ms ease, background-color 160ms ease;
+}
+.settings-panel input[type=checkbox]:checked {
+	background: var(--cd-maize);
+	border-color: var(--cd-maize);
+}
+.settings-panel input[type=checkbox]:checked::before {
+	transform: translateX(15px);
+	background: var(--cd-bg);
+}
+.settings-panel input[type=checkbox]:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.35);
+}
+body:not(.dark-theme) .settings-panel input[type=checkbox] {
+	background: rgba(15, 23, 42, 0.12);
+	border-color: rgba(15, 23, 42, 0.18);
+}
+
 .btn-close {
 	width: 34px;
 	height: 34px;
@@ -2547,14 +2924,6 @@ body.dark-theme .settings-panel input[type=number]::-webkit-inner-spin-button, b
 body.dark-theme .menu-dock {
 	background: linear-gradient(180deg, rgba(12, 19, 31, 0.94), rgba(8, 13, 22, 0.9));
 	border-color: rgba(255, 255, 255, 0.06);
-}
-
-#toggle3DButton.is-active,
-#toggle3DButton a.is-active,
-#toggle3DButton button.is-active {
-	background: rgba(255,255,255,0.18);
-	border-color: rgba(255,255,255,0.35);
-	box-shadow: 0 10px 24px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.18);
 }
 
 .toggle-switch-label {
@@ -2620,8 +2989,7 @@ body.dark-theme .settings-panel {
 	border: 1px solid rgba(255, 255, 255, 0.1);
 	box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
 }
-body.dark-theme .log-panel .log-panel-header,
-body.dark-theme .settings-panel .settings-header {
+body.dark-theme .log-panel .log-panel-header {
 	background: rgba(255, 255, 255, 0.04);
 	border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
@@ -2640,15 +3008,36 @@ body.dark-theme .button-select-btn {
 	color: rgba(255,255,255,0.88) !important;
 }
 body.dark-theme .log-filter-btn:hover,
-body.dark-theme .log-filter-btn:focus,
 body.dark-theme .button-select-btn:hover,
 body.dark-theme .button-select-btn:focus {
 	background: rgba(255,255,255,0.09) !important;
 }
+/* Must redeclare background here (not just box-shadow): the :hover/:focus
+   rule just above is also `body.dark-theme .foo:hover` (same specificity as
+   this .is-active rule), and beats the lower-specificity base .is-active
+   rule on its own - without this the active/checked highlight visually
+   disappears for as long as the cursor lingers on the button after a click,
+   reading as an unresponsive/laggy toggle. */
 body.dark-theme .log-filter-btn.is-active {
+	background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.1)) !important;
 	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.24);
 }
+/* Match the pills to the actual dark-theme .log-level-* colors above (line
+   536) - info there is #cfe6ff, not the base rule's #e5eef8. */
+body.dark-theme .log-filter-btn[data-log-level="debug"] { color: rgba(123, 223, 246, 0.65) !important; }
+body.dark-theme .log-filter-btn[data-log-level="info"] { color: rgba(207, 230, 255, 0.65) !important; }
+body.dark-theme .log-filter-btn[data-log-level="warn"] { color: rgba(255, 206, 107, 0.65) !important; }
+body.dark-theme .log-filter-btn[data-log-level="error"] { color: rgba(255, 138, 138, 0.65) !important; }
+body.dark-theme .log-filter-btn[data-log-level="debug"]:hover,
+body.dark-theme .log-filter-btn[data-log-level="debug"].is-active { color: #7bdff6 !important; }
+body.dark-theme .log-filter-btn[data-log-level="info"]:hover,
+body.dark-theme .log-filter-btn[data-log-level="info"].is-active { color: #cfe6ff !important; }
+body.dark-theme .log-filter-btn[data-log-level="warn"]:hover,
+body.dark-theme .log-filter-btn[data-log-level="warn"].is-active { color: #ffce6b !important; }
+body.dark-theme .log-filter-btn[data-log-level="error"]:hover,
+body.dark-theme .log-filter-btn[data-log-level="error"].is-active { color: #ff8a8a !important; font-weight: 700; }
 body.dark-theme .button-select-btn.is-active {
+	background: var(--cd-maize) !important;
 	box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34);
 }
 body.dark-theme .aprs-staleness-light {
@@ -2696,8 +3085,7 @@ body:not(.dark-theme) .settings-panel {
 	-webkit-backdrop-filter: blur(36px) saturate(1.8);
 }
 
-body:not(.dark-theme) .log-panel .log-panel-header,
-body:not(.dark-theme) .settings-panel .settings-header {
+body:not(.dark-theme) .log-panel .log-panel-header {
 	background: rgba(248, 250, 252, 0.55);
 	color: #0f172a;
 	border-bottom: 1px solid rgba(15, 23, 42, 0.1);
@@ -2728,7 +3116,6 @@ body:not(.dark-theme) .button-select-btn {
 }
 
 body:not(.dark-theme) .log-filter-btn:hover,
-body:not(.dark-theme) .log-filter-btn:focus,
 body:not(.dark-theme) .button-select-btn:hover,
 body:not(.dark-theme) .button-select-btn:focus {
 	background: rgba(15, 23, 42, 0.08) !important;
@@ -2741,13 +3128,29 @@ body:not(.dark-theme) .button-select-btn.is-active {
 	color: #0f172a !important;
 	box-shadow: 0 8px 16px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 -1px 0 rgba(148, 163, 184, 0.42);
 }
+/* Match the pills to the light-theme .log-level-* colors below. */
+body:not(.dark-theme) .log-filter-btn[data-log-level="debug"] { color: rgba(11, 107, 132, 0.65) !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="info"] { color: rgba(15, 23, 42, 0.65) !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="warn"] { color: rgba(154, 52, 18, 0.65) !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="error"] { color: rgba(185, 28, 28, 0.65) !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="debug"]:hover,
+body:not(.dark-theme) .log-filter-btn[data-log-level="debug"].is-active { color: #0b6b84 !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="info"]:hover,
+body:not(.dark-theme) .log-filter-btn[data-log-level="info"].is-active { color: #0f172a !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="warn"]:hover,
+body:not(.dark-theme) .log-filter-btn[data-log-level="warn"].is-active { color: #9a3412 !important; }
+body:not(.dark-theme) .log-filter-btn[data-log-level="error"]:hover,
+body:not(.dark-theme) .log-filter-btn[data-log-level="error"].is-active { color: #b91c1c !important; font-weight: 700; }
 body:not(.dark-theme) .aprs-staleness-light {
 	box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.18);
 }
 
 body:not(.dark-theme) .log-line {
 	color: #0f172a;
-	border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+body:not(.dark-theme) .log-line + .log-line {
+	border-top: 1px solid rgba(15, 23, 42, 0.1);
 }
 
 body:not(.dark-theme) .log-level-info {
@@ -2822,16 +3225,6 @@ body:not(.dark-theme) .settings-panel .aprs-item.aprs-is-following {
 body:not(.dark-theme) .settings-panel .aprs-meta-row { color: rgba(15, 23, 42, 0.5); }
 body:not(.dark-theme) .settings-panel .aprs-collapsed-name { color: #0f172a; }
 body:not(.dark-theme) .settings-panel .aprs-collapsed-time { color: rgba(15, 23, 42, 0.4); }
-
-body:not(.dark-theme) .settings-panel .aprs-menu-toggle {
-	background: rgba(15, 23, 42, 0.06);
-	border-color: rgba(15, 23, 42, 0.16);
-	color: #0f172a;
-}
-
-body:not(.dark-theme) .settings-panel .aprs-menu-toggle[aria-expanded="true"] {
-	background: rgba(15, 23, 42, 0.14);
-}
 
 :root {
 	--map-control-size: 48px;
@@ -3250,12 +3643,6 @@ body:not(.dark-theme) .recovery-input-units {
 	color: #475569;
 }
 
-body:not(.dark-theme) .settings-panel .settings-header {
-	background: rgba(245, 247, 250, 0.98);
-	color: #0f172a;
-	border-bottom: 1px solid rgba(15, 23, 42, 0.12);
-}
-
 body:not(.dark-theme) .settings-panel .settings-body {
 	color: #0f172a;
 }
@@ -3373,13 +3760,12 @@ body.dark-theme .leaflet-popup-content-wrapper {
 /* Dialog and modal glass styling for Chase Routing modal */
 /* Chase routing modal uses the default recovery-modal styles for exact parity with other dialogs. */
 
-/* Chase status bar: flush header strip inside the (always light-themed)
-   Leaflet Routing Machine panel, rounded to match its top corners only. */
+/* #chase-status is a hidden data store (Chasing/ETA/Distance text) read by
+   renderRoutingActivePill()/renderRoutePanel() in chase_routing.js - the
+   visible "routing active" summary is the topbar pill, so this never
+   renders on screen regardless of the .show()/.hide() calls on it. */
 #chase-status {
-	background: rgba(0, 0, 0, 0.045) !important;
-	border-bottom: 1px solid rgba(0, 0, 0, 0.12) !important;
-	border-radius: 4px 4px 0 0 !important;
-	color: #1f2d3d !important;
+	display: none !important;
 }
 
 @media (max-width: 520px) {
@@ -3542,6 +3928,48 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 	min-width: 140px;
 }
 
+.predictor-detail-value {
+	display: inline-block;
+	margin-left: auto;
+	text-align: right;
+	font-weight: 600;
+}
+
+.wind-profile-unavailable {
+	margin-top: 0.4em;
+}
+
+.wind-profile-table {
+	width: 100%;
+	margin-top: 0.4em;
+	font-size: 0.9em;
+}
+
+.wind-profile-table th,
+.wind-profile-table td {
+	padding: 0.2em 0.5em;
+	text-align: right;
+}
+
+.wind-profile-table th:first-child,
+.wind-profile-table td:first-child {
+	text-align: left;
+}
+
+.wind-direction-cell {
+	white-space: nowrap;
+}
+
+.wind-direction-arrow {
+	display: inline-block;
+	width: 0;
+	height: 0;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-bottom: 8px solid var(--cd-blue-light);
+	transform-origin: 50% 70%;
+}
+
 /* These live inside a .leaflet-control glass chip (see "Liquid Glass UI
    Enhancements" below), which always renders as a blurred dark-on-map
    overlay regardless of the app's light/dark theme toggle — so, like the
@@ -3633,26 +4061,6 @@ body:not(.dark-theme) .leaflet-top.leaflet-left .leaflet-control-layers-toggle:f
 }
 
 
-
-.measureDistanceButton, #measureDistanceButton {
-	width:48px;
-	height:48px;
-	font-size:20px;
-	line-height:48px;
-}
-
-.measureDistanceButton .button-state, #measureDistanceButton .button-state {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 100%;
-	height: 100%;
-}
-
-.measureDistanceButton svg, #measureDistanceButton svg {
-	width: 24px;
-	height: 24px;
-}
 
 /* Follow button removed */
 

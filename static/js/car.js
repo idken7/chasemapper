@@ -5,17 +5,13 @@
 //   Released under GNU GPL v3 or later
 //
 
-var range_rings = [];
 var range_rings_on = false;
 
 
 function destroyRangeRings(){
-	// Remove each range ring from the map.
-	range_rings.forEach(function(element){
-		element.remove();
-	});
-	// Clear the range ring array.
-	range_rings = [];
+	if (typeof clearRangeRingsOnCesium === 'function') {
+		clearRangeRingsOnCesium();
+	}
 	range_rings_on = false;
 }
 
@@ -43,17 +39,15 @@ function createRangeRings(position){
 		_color = _ring_custom_color;
 	}
 
+	var _rings = [];
 	for(var i=0; i<_ring_quantity; i++){
-		var _ring = L.circle(position, {
-			fill: false,
-			color: _color,
-			radius: _radius,
-			weight: _ring_weight,
-			opacity: 0.7
-		}).addTo(map);
-		range_rings.push(_ring);
+		_rings.push({radius: _radius, color: _color, weight: _ring_weight});
                 if (chase_config['unitselection'] == "metric")   { _radius += _ring_spacing;}
                 if (chase_config['unitselection'] == "imperial") { _radius += _ring_spacing*0.3048;}
+	}
+
+	if (typeof syncRangeRingsOnCesium === 'function') {
+		syncRangeRingsOnCesium(position, _rings);
 	}
 
 	range_rings_on = true;
@@ -68,11 +62,9 @@ function recenterRangeRings(position){
 		// Create them.
 		updateRangeRings();
 		return;
-	} else {
+	} else if (typeof recenterRangeRingsOnCesium === 'function') {
 		// Otherwise, just update the centre position of each ring.
-		range_rings.forEach(function(element){
-			element.setLatLng(position);
-		});
+		recenterRangeRingsOnCesium(position);
 	}
 }
 
@@ -126,26 +118,16 @@ function updateRangeRings(){
 }
 
 var reconfigureCarMarker = function(profile_name){
-	// Remove chase-car marker if it exists, and is not used.
+	// Remove chase-car marker if it exists, and is not used. (The home/receiver
+	// station position is always rendered by Cesium's own syncHomeEntity(),
+	// independent of the selected profile, so there's no separate marker to
+	// add/remove here any more.)
 	if( (chase_config.profiles[profile_name].car_source_type === "none") || (chase_config.profiles[profile_name].car_source_type === "station")){
-		if (chase_car_position.marker !== "NONE"){
-			chase_car_position.marker.remove();
-			chase_car_position.path.remove();
-		}
-	}
-
-	if (chase_config.profiles[profile_name].car_source_type === "station") {
-		// If we are using a stationary profile, add the station icon to the map.
-		// Add our station location marker.
-		home_marker = L.marker([chase_config.default_lat, chase_config.default_lon, chase_config.default_alt],
-			{title: 'Receiver Location', icon: homeIcon}
-			).addTo(map);
-	}
-
-	// If we are switching to a profile with a live car position source, remove the home station Icon
-	if ((chase_config.profiles[profile_name].car_source_type === "serial") || (chase_config.profiles[profile_name].car_source_type === "gpsd") || (chase_config.profiles[profile_name].car_source_type === "horus_udp")){
-		if(home_marker !== "NONE"){
-			home_marker.remove();
+		if (chase_car_position.active){
+			if (typeof clearChaseCarOnCesium === 'function') {
+				clearChaseCarOnCesium();
+			}
+			chase_car_position = {latest_data: [], heading: 0, active: false, path: [], trackVisible: chase_car_position.trackVisible};
 		}
 	}
 }
@@ -273,8 +255,50 @@ function clearMyCarTrack(){
 	socket.emit('client_car_clear', {client_id: my_car_client_id});
 }
 
+// GeolocationPositionError.code: 1 = PERMISSION_DENIED (includes the browser
+// refusing outright on an insecure origin - see README's "Deploying for
+// Multiple Remote Users / HTTPS" section), 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT.
+var GEOLOCATION_PERMISSION_DENIED = 1;
+
+var _lastDevicePositionErrorToastAt = 0;
+
 var devicePositionError = function(error){
 	console.log(error.message);
+
+	// PERMISSION_DENIED won't clear up on its own (the user/environment has to
+	// change something), so stop watching and reflect that in the checkbox
+	// rather than leaving "Share My Location" showing as on while it's
+	// silently doing nothing. POSITION_UNAVAILABLE/TIMEOUT are often
+	// transient (briefly indoors, cold GPS fix) - the browser keeps retrying
+	// those on its own, so just warn without turning sharing off.
+	var _permanent = error && error.code === GEOLOCATION_PERMISSION_DENIED;
+
+	if (typeof window.showAppToast === 'function'){
+		// Avoid spamming a toast on every retry of a transient error.
+		var _now = Date.now();
+		if (_permanent || (_now - _lastDevicePositionErrorToastAt > 30000)){
+			_lastDevicePositionErrorToastAt = _now;
+			var _message;
+			if (_permanent){
+				_message = /secure/i.test(error.message || '')
+					? 'Location sharing stopped: this page must be served over HTTPS (or opened via localhost).'
+					: 'Location sharing stopped: location permission denied.';
+			} else if (error && error.code === 2){
+				_message = 'Location sharing: position unavailable, retrying…';
+			} else {
+				_message = 'Location sharing: GPS fix timed out, retrying…';
+			}
+			window.showAppToast(_message, 8000);
+		}
+	}
+
+	if (_permanent){
+		stopSharingMyLocation();
+		try{
+			var _checkbox = document.getElementById('shareMyLocation');
+			if (_checkbox) _checkbox.checked = false;
+		}catch(e){ /* ignore */ }
+	}
 }
 
 //
@@ -308,36 +332,11 @@ function handleOtherChaserTelemetry(data){
 		chase_vehicles[_key].name = _name;
 		chase_vehicles[_key].colour = car_colour_values[car_colour_idx];
 		car_colour_idx = (car_colour_idx + 1) % car_colour_values.length;
-
-		chase_vehicles[_key].marker = L.marker(_latest_data, {
-			title: _name,
-			icon: habitat_car_icons[chase_vehicles[_key].colour],
-			rotationOrigin: "center center"
-		});
-		// _name is free-text (another chaser's own chosen display name) and
-		// Leaflet's bindTooltip renders string content as raw HTML, not
-		// text - escape it so it can't inject markup/scripts into everyone
-		// else's browser.
-		chase_vehicles[_key].marker.bindTooltip(escapeHtml(_name), {
-			permanent: true,
-			direction: 'center',
-			offset: [0, 25],
-			className: 'custom_label'
-		}).openTooltip();
-
-		chase_vehicles[_key].onmap = false;
-		if (shouldShowLiveChasers()){
-			chase_vehicles[_key].marker.addTo(map);
-			chase_vehicles[_key].onmap = true;
-		}
+		chase_vehicles[_key].onmap = shouldShowLiveChasers();
 	} else {
 		chase_vehicles[_key].heading = (typeof data.heading === 'number') ? data.heading : chase_vehicles[_key].heading;
 		chase_vehicles[_key].latest_data = _latest_data;
-		if (chase_vehicles[_key].name !== _name){
-			chase_vehicles[_key].name = _name;
-			chase_vehicles[_key].marker.setTooltipContent(escapeHtml(_name));
-		}
-		chase_vehicles[_key].marker.setLatLng(_latest_data).update();
+		chase_vehicles[_key].name = _name;
 	}
 
 	// Shares the pruneStaleChaseVehicles() sweep (see sondehub.js) with
@@ -345,16 +344,6 @@ function handleOtherChaserTelemetry(data){
 	// telling this browser when another chaser disconnects, so without this
 	// their marker would stay on the map forever.
 	chase_vehicles[_key].last_seen = Date.now();
-
-	var _car_heading = chase_vehicles[_key].heading - 90.0;
-	if (_car_heading <= 90.0){
-		chase_vehicles[_key].marker.setIcon(habitat_car_icons[chase_vehicles[_key].colour]);
-		chase_vehicles[_key].marker.setRotationAngle(_car_heading);
-	} else {
-		_car_heading = _car_heading - 180.0;
-		chase_vehicles[_key].marker.setIcon(habitat_car_icons_flipped[chase_vehicles[_key].colour]);
-		chase_vehicles[_key].marker.setRotationAngle(_car_heading);
-	}
 
 	if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
 		window.syncCesiumAfterOtherCarUpdate(_key, _name, chase_vehicles[_key]);
@@ -422,16 +411,9 @@ function showLiveChasers(){
 		if (_car.indexOf('LIVE:') !== 0){
 			continue;
 		}
-		if (_state){
-			if (!chase_vehicles[_car].onmap){
-				chase_vehicles[_car].marker.addTo(map);
-				chase_vehicles[_car].onmap = true;
-			}
-		} else {
-			if (chase_vehicles[_car].onmap){
-				chase_vehicles[_car].marker.remove();
-				chase_vehicles[_car].onmap = false;
-			}
+		chase_vehicles[_car].onmap = _state;
+		if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
+			window.syncCesiumAfterOtherCarUpdate(_car, chase_vehicles[_car].name, chase_vehicles[_car]);
 		}
 	}
 }

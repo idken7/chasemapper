@@ -45,6 +45,30 @@ var doa_panel_stale_after_s = 120;
 var doa_panel_max_sources = 6;
 var doa_panel_expanded = false;
 
+// Which of the DOA panel's three views (Readings / EasyBearing / O'Clock) is
+// currently showing. All three live inside the one card (renderDoaPanel()),
+// switched in place by a tab strip rather than navigating to /bearing or
+// /oclock. doa_panel_built_tab/doa_panel_built_warning record what's actually
+// in the DOM right now, so renderDoaPanel() can tell a "just redraw the
+// compass, nothing else changed" call (new bearing arrived) apart from a
+// "the panel needs to be rebuilt" one (tab switch, warning state flipped) -
+// EasyBearing/O'Clock hold interaction state (a dial drag's pointer capture,
+// mid-drag angle) in the DOM itself, which a wholesale innerHTML replace on
+// every incoming bearing would otherwise clobber.
+var doa_panel_active_tab = 'readings';
+var doa_panel_built_tab = null;
+var doa_panel_built_warning = false;
+
+// EasyBearing tab: current (not-yet-sent) absolute bearing shown on the dial.
+var doa_eb_bearing = 0;
+var doa_eb_dragging = false;
+
+// O'Clock tab: most recent relative bearing sent from this tab, for the
+// "Last: 180° (6 o'clock) · 42s" readout.
+var doa_oclock_last_value = null;
+var doa_oclock_last_clock = null;
+var doa_oclock_last_time = null;
+
 // Store for the latest server timestamp.
 // Start out with just our own local timestamp.
 var latest_server_timestamp = Date.now()/1000.0;
@@ -119,7 +143,7 @@ function updateBearingSettings(){
 
 function destroyAllBearings(){
 	$.each(bearing_store, function(key, value) {
-		bearing_store[key].line.remove();
+		if (typeof removeBearingLineOnCesium === 'function') removeBearingLineOnCesium(key);
 	});
 
 	bearing_store = {};
@@ -233,7 +257,7 @@ function addBearing(timestamp, bearing, live){
 	}
 
 	// Calculate the end position.
-	var _end = calculateDestination(L.latLng([bearing_store[timestamp].lat, bearing_store[timestamp].lon]), bearing_store[timestamp].true_bearing, bearing_length);
+	var _end = calculateDestination([bearing_store[timestamp].lat, bearing_store[timestamp].lon], bearing_store[timestamp].true_bearing, bearing_length);
 
 	var _opacity = calculateBearingOpacity(timestamp);
 
@@ -247,17 +271,11 @@ function addBearing(timestamp, bearing, live){
 		var _temp_bearing_weight = bearing_weight;
 	}
 
-	// Create the PolyLine
-	bearing_store[timestamp].line = L.polyline(
-		[[bearing_store[timestamp].lat, bearing_store[timestamp].lon],_end],{
-			color: getBearingLineColour(bearing_store[timestamp].source),
-			weight: _temp_bearing_weight,
-			opacity: _opacity
-		});
-
 	_bearing_valid = bearingValid(bearing_store[timestamp]);
 	if ( (_bearing_valid == true) && (getCheckboxState("bearingsEnabled", true) == true) ){
-		bearing_store[timestamp].line.addTo(map);
+		if (typeof syncBearingLineOnCesium === 'function') {
+			syncBearingLineOnCesium(timestamp, [[bearing_store[timestamp].lat, bearing_store[timestamp].lon], _end], getBearingLineColour(bearing_store[timestamp].source), _temp_bearing_weight, _opacity);
+		}
 	}
 
 	if ( (live == true) && (getCheckboxState("bearingsEnabled", true) == true) ){
@@ -281,7 +299,7 @@ function removeBearings(timestamps){
 	// Remove bearings from a supplied list
 	timestamps.forEach(function (item, index){
 		if(bearing_store.hasOwnProperty(item)){
-			bearing_store[item].line.remove();
+			if (typeof removeBearingLineOnCesium === 'function') removeBearingLineOnCesium(item);
 			delete bearing_store[item];
 			console.log(item);
 		}
@@ -290,47 +308,18 @@ function removeBearings(timestamps){
 }
 
 
-function restyleBearings(){
-	// Update the bearing settings.
-	updateBearingSettings();
-
-
-	$.each(bearing_store, function(key, value) {
-		// Calculate the end position.
-		var _opacity = calculateBearingOpacity(key);
-
-		var _is_manual_bearing = manual_bearing_sources.some(function (s) {
-			return bearing_store[key].source.toLowerCase().includes(s.toLowerCase());
-		});
-
-		if(_is_manual_bearing){
-			var _temp_bearing_weight = manual_bearing_weight;
-		} else {
-			var _temp_bearing_weight = bearing_weight;
-		}
-
-		// Create the PolyLine
-		bearing_store[key].line.setStyle({
-				color: getBearingLineColour(bearing_store[key].source),
-				weight: _temp_bearing_weight,
-				opacity: _opacity
-			});
-
-	});
-}
-
-
+// Recomputes each bearing line's endpoint/colour/weight/opacity and
+// upserts it on the map - used both to restyle in place as lines age
+// (restyleBearings, e.g. opacity fading) and to fully redraw after a
+// settings change (redrawBearings, e.g. bearing_length). Recomputing the
+// endpoint is cheap trig, so there's no real cost to doing it in both cases.
 function redrawBearings(){
 	// Update the bearing settings.
 	updateBearingSettings();
 
-
 	$.each(bearing_store, function(key, value) {
-		// Remove bearing from map.
-		bearing_store[key].line.remove();
-
 		// Calculate the end position.
-		var _end = calculateDestination(L.latLng([bearing_store[key].lat, bearing_store[key].lon]), bearing_store[key].true_bearing, bearing_length);
+		var _end = calculateDestination([bearing_store[key].lat, bearing_store[key].lon], bearing_store[key].true_bearing, bearing_length);
 		var _opacity = calculateBearingOpacity(key);
 
 		var _is_manual_bearing = manual_bearing_sources.some(function (s) {
@@ -343,19 +332,19 @@ function redrawBearings(){
 			var _temp_bearing_weight = bearing_weight;
 		}
 
-		// Create the PolyLine
-		bearing_store[key].line = L.polyline(
-			[[bearing_store[key].lat, bearing_store[key].lon],_end],{
-				color: getBearingLineColour(bearing_store[key].source),
-				weight: _temp_bearing_weight,
-				opacity: _opacity
-			});
-
 		if ( (bearingValid(bearing_store[key]) == true) && (getCheckboxState("bearingsEnabled", true) == true)){
-			bearing_store[key].line.addTo(map);
+			if (typeof syncBearingLineOnCesium === 'function') {
+				syncBearingLineOnCesium(key, [[bearing_store[key].lat, bearing_store[key].lon], _end], getBearingLineColour(bearing_store[key].source), _temp_bearing_weight, _opacity);
+			}
+		} else {
+			if (typeof removeBearingLineOnCesium === 'function') removeBearingLineOnCesium(key);
 		}
 
 	});
+}
+
+function restyleBearings(){
+	redrawBearings();
 }
 
 
@@ -549,10 +538,10 @@ $("#bearing_plot").click(toggle_bearing_plot_size);
 /**
 	Returns the point that is a distance and heading away from
 	the given origin point.
-	@param {L.LatLng} latlng: origin point
+	@param {[number,number]} latlng: origin point as [lat, lon]
 	@param {float}: heading in degrees, clockwise from 0 degrees north.
 	@param {float}: distance in meters
-	@returns {L.latLng} the destination point.
+	@returns {[number,number]} the destination point as [lat, lon]
 	Many thanks to Chris Veness at http://www.movable-type.co.uk/scripts/latlong.html
 	for a great reference and examples.
 
@@ -563,8 +552,8 @@ function calculateDestination(latlng, heading, distance) {
         var rad = Math.PI / 180,
             radInv = 180 / Math.PI,
             R = 6378137, // approximation of Earth's radius
-            lon1 = latlng.lng * rad,
-            lat1 = latlng.lat * rad,
+            lon1 = latlng[1] * rad,
+            lat1 = latlng[0] * rad,
             rheading = heading * rad,
             sinLat1 = Math.sin(lat1),
             cosLat1 = Math.cos(lat1),
@@ -576,7 +565,7 @@ function calculateDestination(latlng, heading, distance) {
                 cosLat1, cosDistR - sinLat1 * Math.sin(lat2));
         lon2 = lon2 * radInv;
         lon2 = lon2 > 180 ? lon2 - 360 : lon2 < -180 ? lon2 + 360 : lon2;
-        return L.latLng([lat2 * radInv, lon2]);
+        return [lat2 * radInv, lon2];
 }
 
 
@@ -676,6 +665,271 @@ function buildDoaCompassSvg(sources){
 	return '<svg class="doa-compass" width="180" height="180" viewBox="0 0 260 260">' + _svg + '</svg>';
 }
 
+var DOA_TABS = [
+	{key: 'readings', label: 'Readings'},
+	{key: 'easybearing', label: 'EasyBearing'},
+	{key: 'oclock', label: "O'Clock"}
+];
+
+function buildDoaTabsHtml(){
+	var _html = '<div class="doa-tab-row pill-toggle-group">';
+	$.each(DOA_TABS, function(i, tab){
+		_html += '<button type="button" class="pill-toggle-btn doa-tab-btn' + (doa_panel_active_tab === tab.key ? ' is-active' : '') + '" data-doa-tab="' + tab.key + '">' + tab.label + '</button>';
+	});
+	_html += '</div>';
+	return _html;
+}
+
+// Header is shared by all three tabs (not just Readings, whose mockup card
+// is the only one that shows it) because the mobile expanded-sheet close
+// button lives here - dropping it on the other two tabs would leave no way
+// to collapse the sheet while EasyBearing/O'Clock is open.
+function buildDoaHeaderHtml(sources, titleOverride){
+	var _countHtml = sources ? ('<span class="doa-panel-count mono">' + sources.length + ' SOURCE' + (sources.length === 1 ? '' : 'S') + '</span>') : '';
+	return '<div class="doa-panel-header">' +
+		'<span class="doa-panel-title">' + (titleOverride || 'DOA BEARING') + '</span>' +
+		_countHtml +
+		'<button type="button" class="doa-panel-close" aria-label="Close">&times;</button>' +
+		'</div>';
+}
+
+function buildDoaReadingsBodyHtml(sources, hasSources, primary){
+	var _legendHtml = '';
+	if (hasSources){
+		$.each(sources, function(i, entry){
+			_legendHtml += '<div class="doa-legend-item">' +
+				'<span class="doa-legend-dot" style="background:' + entry.color + '"></span>' +
+				'<span class="doa-legend-label">' + escapeHtml(entry.source) + ' ' + Math.round(entry.bearing) + '&deg;</span>' +
+				'<button type="button" class="doa-legend-clear" data-source="' + escapeHtml(entry.source) + '" aria-label="Clear bearings from ' + escapeHtml(entry.source) + '" title="Clear bearings from this source">&times;</button>' +
+				'</div>';
+		});
+	}
+
+	return '<div class="doa-panel-compass-wrap">' +
+			buildDoaCompassSvg(sources) +
+			(hasSources ? '' :
+				'<div class="doa-panel-empty">' +
+					'<div class="doa-panel-empty-title">No bearings yet</div>' +
+					'<div class="doa-panel-empty-sub mono">Waiting for signal&hellip;</div>' +
+				'</div>') +
+		'</div>' +
+		(hasSources ? '<div class="doa-panel-legend">' + _legendHtml + '</div>' : '') +
+		'<div class="doa-panel-stats">' +
+			'<div class="doa-stat"><div class="doa-stat-label">BRG</div><div class="doa-stat-value doa-stat-value--accent mono">' + (primary ? (Math.round(primary.bearing) + '&deg;') : '&mdash;') + '</div></div>' +
+			'<div class="doa-stat"><div class="doa-stat-label">CONF</div><div class="doa-stat-value mono">' + (primary && typeof primary.confidence === 'number' ? (primary.confidence.toFixed(0) + '%') : '&mdash;') + '</div></div>' +
+			'<div class="doa-stat"><div class="doa-stat-label">PWR</div><div class="doa-stat-value mono">' + (primary && typeof primary.power === 'number' ? (primary.power.toFixed(0) + 'dBm') : '&mdash;') + '</div></div>' +
+		'</div>';
+}
+
+// Shared by the EasyBearing/O'Clock tabs: both submit via add_manual_bearing,
+// which the server rejects without a known position (see 'bearing_rejected'
+// / no_known_position in horusmapper.py's add_manual_bearing handler) -
+// show this instead of the controls rather than letting a tap silently fail.
+function buildDoaLocationWarningHtml(message){
+	return '<div class="doa-warning">' +
+		'<div class="doa-warning-box">' +
+			'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>' +
+			'<div>' +
+				'<div class="doa-warning-title">Location sharing is off</div>' +
+				'<div class="doa-warning-sub">' + (message || 'A bearing needs your position to be recorded. Enable sharing to continue.') + '</div>' +
+			'</div>' +
+		'</div>' +
+		'<button type="button" id="doaEnableLocationBtn" class="doa-warning-btn">Enable Location Sharing</button>' +
+		'</div>';
+}
+
+// EasyBearing submits an *absolute* bearing anchored at the tracked chase
+// car's position (same source manualBearing() below already uses) - unlike
+// the standalone /bearing page, that position can come from the car's own
+// hardware GPS feed, not just this browser's device location, so the gate
+// here is "do we know where the car is" rather than my_device_position_active.
+// O'Clock submits a *relative* bearing, which the server fuses with the
+// SUBMITTING BROWSER's own tracked position (add_manual_bearing in
+// horusmapper.py) - that only exists once this browser is itself reporting
+// its position, hence the different gate.
+function doaTabNeedsLocationWarning(tab){
+	if (tab === 'easybearing'){
+		return (typeof chase_car_position === 'undefined') || chase_car_position.latest_data.length === 0;
+	}
+	if (tab === 'oclock'){
+		return !((typeof my_device_position_active !== 'undefined') && my_device_position_active);
+	}
+	return false;
+}
+
+function doaFormatBearing(deg){
+	var _d = Math.round(((deg % 360) + 360) % 360);
+	return ('00' + _d).slice(-3) + '&deg;';
+}
+
+function doaFormatAge(timestampMs){
+	var _secs = Math.round((Date.now() - timestampMs) / 1000);
+	if (_secs < 60) return _secs + 's';
+	return Math.round(_secs / 60) + 'm';
+}
+
+function updateDoaEbDialUI(){
+	var _handle = document.getElementById('doaEbDialHandle');
+	var _readout = document.getElementById('doaEbDialReadout');
+	if (_handle) _handle.setAttribute('transform', 'rotate(' + doa_eb_bearing + ' 150 150)');
+	if (_readout) _readout.innerHTML = doaFormatBearing(doa_eb_bearing);
+}
+
+function setDoaEbBearing(value){
+	doa_eb_bearing = ((value % 360) + 360) % 360;
+	updateDoaEbDialUI();
+}
+
+function doaEbAngleFromPointer(evt, svgEl){
+	var _rect = svgEl.getBoundingClientRect();
+	var _scale = 300 / _rect.width;
+	var _x = (evt.clientX - _rect.left) * _scale;
+	var _y = (evt.clientY - _rect.top) * _scale;
+	var _deg = Math.atan2(_x - 150, -(_y - 150)) * 180 / Math.PI;
+	return ((_deg % 360) + 360) % 360;
+}
+
+function sendDoaEasyBearing(){
+	var _bearing_info = {
+		'type': 'BEARING',
+		'bearing_type': 'absolute',
+		'source': 'EasyBearing',
+		'latitude': chase_car_position.latest_data[0],
+		'longitude': chase_car_position.latest_data[1],
+		'bearing': doa_eb_bearing
+	};
+	if (typeof my_car_client_id !== 'undefined'){
+		_bearing_info.client_id = my_car_client_id;
+		_bearing_info.name = (typeof getMyCarName === 'function' && getMyCarName()) || undefined;
+	}
+	socket.emit('add_manual_bearing', _bearing_info);
+	if (typeof showAppToast === 'function'){
+		showAppToast('Bearing sent · ' + Math.round(doa_eb_bearing) + '°');
+	}
+}
+
+function buildDoaEasyBearingHtml(){
+	if (doaTabNeedsLocationWarning('easybearing')){
+		return buildDoaLocationWarningHtml('EasyBearing needs a known chase car position before it can record a bearing.');
+	}
+
+	var _nudgeDeltas = [-10, -5, -1, 1, 5, 10];
+	var _nudgeHtml = '';
+	$.each(_nudgeDeltas, function(i, d){
+		_nudgeHtml += '<button type="button" class="doa-eb-nudge-btn mono" data-delta="' + d + '">' + (d > 0 ? '+' : '−') + Math.abs(d) + '&deg;</button>';
+	});
+
+	return '<div class="doa-eb-wrap">' +
+		'<div class="doa-eb-dial-wrap" id="doaEbDialWrap">' +
+			'<svg id="doaEbDialSvg" class="doa-eb-dial-svg" viewBox="0 0 300 300">' +
+				'<circle cx="150" cy="150" r="60" fill="none" stroke="rgba(255,255,255,.08)"></circle>' +
+				'<circle cx="150" cy="150" r="100" fill="none" stroke="rgba(255,255,255,.08)"></circle>' +
+				'<circle cx="150" cy="150" r="135" fill="none" stroke="rgba(255,255,255,.1)"></circle>' +
+				'<line x1="150" y1="15" x2="150" y2="285" stroke="rgba(255,255,255,.06)"></line>' +
+				'<line x1="15" y1="150" x2="285" y2="150" stroke="rgba(255,255,255,.06)"></line>' +
+				'<g id="doaEbDialHandle" transform="rotate(' + doa_eb_bearing + ' 150 150)">' +
+					'<line x1="150" y1="150" x2="150" y2="30" stroke="#FFCB05" stroke-width="3"></line>' +
+					'<circle cx="150" cy="30" r="12" fill="#FFCB05" stroke="#0a0d16" stroke-width="3"></circle>' +
+				'</g>' +
+				'<circle cx="150" cy="150" r="4" fill="rgba(255,255,255,.4)"></circle>' +
+				'<text x="150" y="32" text-anchor="middle" fill="rgba(230,238,246,.45)" class="mono" font-size="11">N</text>' +
+				'<text x="150" y="270" text-anchor="middle" fill="rgba(230,238,246,.45)" class="mono" font-size="11">S</text>' +
+				'<text x="266" y="154" text-anchor="middle" fill="rgba(230,238,246,.45)" class="mono" font-size="11">E</text>' +
+				'<text x="32" y="154" text-anchor="middle" fill="rgba(230,238,246,.45)" class="mono" font-size="11">W</text>' +
+			'</svg>' +
+			'<div id="doaEbDialReadout" class="doa-eb-dial-readout mono">' + doaFormatBearing(doa_eb_bearing) + '</div>' +
+		'</div>' +
+		'<div class="doa-eb-nudge-row">' + _nudgeHtml + '</div>' +
+		'<button type="button" id="doaEbSendBtn" class="doa-eb-send-btn">' +
+			'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0a0d16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>' +
+			'Send Bearing' +
+		'</button>' +
+		'</div>';
+}
+
+function updateDoaOclockLastReadout(){
+	if (doa_oclock_last_value === null) return;
+	$('#doaOclockLastValue').text(doa_oclock_last_value + '° (' + doa_oclock_last_clock + " o'clock)");
+	$('#doaOclockLastAge').text('· ' + doaFormatAge(doa_oclock_last_time));
+	$('#doaOclockLast').show();
+}
+
+// Refreshes the two bits of the O'Clock tab that change purely with the
+// passage of time (the Fox countdown, the "sent Ns ago" age) without
+// rebuilding the tab - see the module doc comment on doa_panel_built_tab for
+// why a wholesale rebuild is avoided here. Only forces a rebuild on the rare
+// edge where the Fox chip itself needs to appear/disappear.
+function updateDoaOclockDynamic(){
+	var _currentSeq = (typeof getCurrentSeqNumber === 'function') ? getCurrentSeqNumber() : -1;
+	var _chipShouldShow = timeSeqEnabled && _currentSeq >= 0;
+	var $chip = $('#doaOclockFoxChip');
+
+	if (_chipShouldShow !== ($chip.length > 0)){
+		doa_panel_built_tab = null;
+		renderDoaPanel();
+		return;
+	}
+
+	if (_chipShouldShow){
+		var _current_time = Date.now();
+		var _seqtime = timeSeqActive - ((_current_time - timeSeqTimes[_currentSeq]) % (timeSeqCycle * 1000)) / 1000.0;
+		$('#doaOclockFoxChipText').text('FOX ' + _currentSeq + ' · ' + _seqtime.toFixed(1) + 's');
+	}
+
+	updateDoaOclockLastReadout();
+}
+
+function buildDoaOclockHtml(){
+	if (doaTabNeedsLocationWarning('oclock')){
+		return buildDoaLocationWarningHtml();
+	}
+
+	var _foxHtml = '';
+	var _currentSeq = (typeof getCurrentSeqNumber === 'function') ? getCurrentSeqNumber() : -1;
+	if (timeSeqEnabled && _currentSeq >= 0){
+		_foxHtml = '<div class="doa-oclock-fox-row"><div id="doaOclockFoxChip" class="doa-oclock-fox-chip mono">' +
+			'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg>' +
+			'<span id="doaOclockFoxChipText">FOX ' + _currentSeq + '</span>' +
+			'</div></div>';
+	}
+
+	var _ringButtonsHtml = '';
+	for (var i = 1; i <= 12; i++){
+		var _bearing = (i % 12) * 30;
+		var _rad = _bearing * Math.PI / 180;
+		var _left = 50 + 43 * Math.sin(_rad);
+		var _top = 50 - 43 * Math.cos(_rad);
+		_ringButtonsHtml += '<button type="button" class="doa-oclock-btn mono' + (i === 12 ? ' doa-oclock-btn--twelve' : '') + '" style="left:' + _left + '%;top:' + _top + '%" data-bearing="' + _bearing + '" data-clock="' + i + '" aria-label="Signal at ' + i + " o'clock\">" + i + '</button>';
+	}
+
+	var _headingVal = (typeof chase_car_position !== 'undefined' && typeof chase_car_position.heading === 'number') ? (Math.round(chase_car_position.heading) + '&deg;') : '&mdash;';
+
+	var _lastHtml = '<div id="doaOclockLast" class="doa-oclock-last mono"' + (doa_oclock_last_value === null ? ' style="display:none;"' : '') + '>' +
+		'<span>Last:</span>' +
+		'<span id="doaOclockLastValue" class="doa-oclock-last-value">' + (doa_oclock_last_value !== null ? (doa_oclock_last_value + '&deg; (' + doa_oclock_last_clock + " o'clock)") : '') + '</span>' +
+		'<span id="doaOclockLastAge" class="doa-oclock-last-age"></span>' +
+		'</div>';
+
+	return '<div class="doa-oclock-wrap">' +
+		_foxHtml +
+		'<div class="doa-oclock-ring">' +
+			'<svg class="doa-oclock-ring-svg" width="172" height="172" viewBox="0 0 400 400">' +
+				'<circle cx="200" cy="200" r="178" fill="rgba(255,255,255,.03)" stroke="rgba(255,255,255,.1)"></circle>' +
+				'<circle cx="200" cy="200" r="130" fill="none" stroke="rgba(255,255,255,.06)"></circle>' +
+				'<line x1="200" y1="200" x2="200" y2="53" stroke="#6f9fd8" stroke-width="4"></line>' +
+				'<polygon points="200,40 190,60 210,60" fill="#6f9fd8"></polygon>' +
+				'<circle cx="200" cy="200" r="7" fill="#e6eef6"></circle>' +
+			'</svg>' +
+			_ringButtonsHtml +
+			'<div class="doa-oclock-heading">' +
+				'<div class="doa-oclock-heading-label mono">HDG</div>' +
+				'<div id="doaOclockHeadingValue" class="doa-oclock-heading-value mono">' + _headingVal + '</div>' +
+			'</div>' +
+		'</div>' +
+		_lastHtml +
+		'</div>';
+}
+
 function renderDoaPanel(){
 	var $panel = $('#doaBearingPanel');
 	if ($panel.length === 0) return;
@@ -684,45 +938,127 @@ function renderDoaPanel(){
 	var _hasSources = _sources.length > 0;
 	var _primary = _hasSources ? _sources[0] : null;
 
-	var _collapsedHtml = '<div class="doa-panel-collapsed">' +
-		'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="6"></line></svg>' +
-		'<span class="mono">DOA &middot; ' + _sources.length + '</span>' +
-		'</div>';
+	// Keep the mobile collapsed pill's source count fresh regardless of which
+	// tab is open, without touching the rest of the panel.
+	$panel.find('.doa-panel-collapsed .doa-collapsed-count').text(_sources.length);
 
-	var _legendHtml = '';
-	if (_hasSources){
-		$.each(_sources, function(i, entry){
-			_legendHtml += '<div class="doa-legend-item"><span class="doa-legend-dot" style="background:' + entry.color + '"></span>' +
-				escapeHtml(entry.source) + ' ' + Math.round(entry.bearing) + '&deg;</div>';
-		});
+	if (doa_panel_built_tab === doa_panel_active_tab && doa_panel_active_tab !== 'readings'){
+		// EasyBearing/O'Clock tab content doesn't depend on bearing_store, so
+		// skip the wholesale DOM replace a bearing_change would otherwise
+		// trigger here - see the doc comment on doa_panel_built_tab. Still
+		// need to notice if the location-sharing warning state flips while
+		// sitting on one of these tabs.
+		var _warningNow = doaTabNeedsLocationWarning(doa_panel_active_tab);
+		if (_warningNow === doa_panel_built_warning){
+			$panel.toggleClass('doa-panel-empty-state', !_hasSources);
+			return;
+		}
+		doa_panel_built_tab = null;
 	}
 
-	var _bodyHtml =
-		'<div class="doa-panel-full">' +
-			'<div class="doa-panel-header">' +
-				'<span class="doa-panel-title">DOA BEARING</span>' +
-				'<span class="doa-panel-count mono">' + _sources.length + ' SOURCE' + (_sources.length === 1 ? '' : 'S') + '</span>' +
-				'<button type="button" class="doa-panel-close" aria-label="Close">&times;</button>' +
-			'</div>' +
-			'<div class="doa-panel-compass-wrap">' +
-				buildDoaCompassSvg(_sources) +
-				(_hasSources ? '' :
-					'<div class="doa-panel-empty">' +
-						'<div class="doa-panel-empty-title">No bearings yet</div>' +
-						'<div class="doa-panel-empty-sub mono">Waiting for signal&hellip;</div>' +
-					'</div>') +
-			'</div>' +
-			(_hasSources ? '<div class="doa-panel-legend">' + _legendHtml + '</div>' : '') +
-			'<div class="doa-panel-stats">' +
-				'<div class="doa-stat"><div class="doa-stat-label">BRG</div><div class="doa-stat-value doa-stat-value--accent mono">' + (_primary ? (Math.round(_primary.bearing) + '&deg;') : '&mdash;') + '</div></div>' +
-				'<div class="doa-stat"><div class="doa-stat-label">CONF</div><div class="doa-stat-value mono">' + (_primary && typeof _primary.confidence === 'number' ? (_primary.confidence.toFixed(0) + '%') : '&mdash;') + '</div></div>' +
-				'<div class="doa-stat"><div class="doa-stat-label">PWR</div><div class="doa-stat-value mono">' + (_primary && typeof _primary.power === 'number' ? (_primary.power.toFixed(0) + 'dBm') : '&mdash;') + '</div></div>' +
-			'</div>' +
+	var _collapsedHtml = '<div class="doa-panel-collapsed">' +
+		'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="6"></line></svg>' +
+		'<span class="mono">DOA &middot; <span class="doa-collapsed-count">' + _sources.length + '</span></span>' +
 		'</div>';
+
+	var _contentHtml;
+	if (doa_panel_active_tab === 'easybearing'){
+		_contentHtml = buildDoaHeaderHtml(null, 'EASYBEARING') + buildDoaEasyBearingHtml();
+	} else if (doa_panel_active_tab === 'oclock'){
+		_contentHtml = buildDoaHeaderHtml(null, "O'CLOCK") + buildDoaOclockHtml();
+	} else {
+		_contentHtml = buildDoaHeaderHtml(_sources) + buildDoaReadingsBodyHtml(_sources, _hasSources, _primary);
+	}
+
+	var _bodyHtml = '<div class="doa-panel-full">' + buildDoaTabsHtml() + _contentHtml + '</div>';
+
+	doa_panel_built_tab = doa_panel_active_tab;
+	doa_panel_built_warning = doaTabNeedsLocationWarning(doa_panel_active_tab);
 
 	$panel.toggleClass('doa-panel-empty-state', !_hasSources);
 	$panel.html('<div class="doa-panel-backdrop"></div>' + _collapsedHtml + _bodyHtml);
 }
+
+$(document).on('click', '.doa-tab-btn', function(e){
+	e.stopPropagation();
+	var _tab = $(this).attr('data-doa-tab');
+	if (_tab === doa_panel_active_tab) return;
+	doa_panel_active_tab = _tab;
+	doa_panel_built_tab = null;
+	renderDoaPanel();
+});
+
+$(document).on('click', '#doaEnableLocationBtn', function(e){
+	e.stopPropagation();
+	if (typeof startSharingMyLocation === 'function') startSharingMyLocation();
+	doa_panel_built_tab = null;
+	renderDoaPanel();
+});
+
+$(document).on('click', '.doa-eb-nudge-btn', function(e){
+	e.stopPropagation();
+	setDoaEbBearing(doa_eb_bearing + parseFloat($(this).attr('data-delta')));
+});
+
+$(document).on('click', '#doaEbSendBtn', function(e){
+	e.stopPropagation();
+	sendDoaEasyBearing();
+});
+
+// Drag-to-aim on the dial, delegated (rather than bound once at build time)
+// so it keeps working across the targeted DOM updates above without needing
+// to be re-attached - same reasoning as every other .doa-* handler here.
+$(document).on('pointerdown', '#doaEbDialWrap', function(evt){
+	doa_eb_dragging = true;
+	var _native = evt.originalEvent;
+	try { this.setPointerCapture(_native.pointerId); } catch(e){}
+	setDoaEbBearing(doaEbAngleFromPointer(_native, document.getElementById('doaEbDialSvg')));
+});
+$(document).on('pointermove', '#doaEbDialWrap', function(evt){
+	if (!doa_eb_dragging) return;
+	setDoaEbBearing(doaEbAngleFromPointer(evt.originalEvent, document.getElementById('doaEbDialSvg')));
+});
+$(document).on('pointerup pointercancel', '#doaEbDialWrap', function(evt){
+	if (!doa_eb_dragging) return;
+	doa_eb_dragging = false;
+	try { this.releasePointerCapture(evt.originalEvent.pointerId); } catch(e){}
+});
+
+$(document).on('click', '.doa-oclock-btn', function(e){
+	e.stopPropagation();
+	var $btn = $(this);
+	$btn.addClass('is-flash');
+	setTimeout(function(){ $btn.removeClass('is-flash'); }, 200);
+
+	var _bearing = parseInt($btn.attr('data-bearing'), 10);
+	var _clockLabel = $btn.attr('data-clock');
+
+	var _bearing_info = {
+		'type': 'BEARING',
+		'bearing_type': 'relative',
+		'source': 'EasyBearing',
+		'bearing': _bearing
+	};
+	if (typeof my_car_client_id !== 'undefined'){
+		_bearing_info.client_id = my_car_client_id;
+		_bearing_info.name = (typeof getMyCarName === 'function' && getMyCarName()) || undefined;
+	}
+	socket.emit('add_manual_bearing', _bearing_info);
+
+	doa_oclock_last_value = _bearing;
+	doa_oclock_last_clock = _clockLabel;
+	doa_oclock_last_time = Date.now();
+	updateDoaOclockLastReadout();
+});
+
+// Refresh the O'Clock tab's Fox countdown / "sent Ns ago" readout every
+// second while it's the active tab, same cadence as the standalone
+// /oclock page's own refreshLastBearingAge interval.
+setInterval(function(){
+	if (doa_panel_active_tab === 'oclock'){
+		updateDoaOclockDynamic();
+	}
+}, 1000);
 
 $(document).on('click', '.doa-panel-collapsed', function(){
 	doa_panel_expanded = true;
@@ -735,6 +1071,34 @@ $(document).on('click', '.doa-panel-close', function(){
 $(document).on('click', '.doa-panel-backdrop', function(){
 	doa_panel_expanded = false;
 	$('#doaBearingPanel').removeClass('doa-expanded');
+});
+
+function clearBearingSource(source){
+	// Server-authoritative: wait for the 'bearing_source_removed' broadcast
+	// (see the socket.on handler in index.html) to actually drop the lines,
+	// rather than deleting client-side here - same pattern as
+	// server_bearings_cleared/destroyAllBearings for the full-clear case.
+	socket.emit('bearing_source_clear', {source: source});
+}
+
+$(document).on('click', '.doa-legend-clear', function(e){
+	// Stop propagation - the legend sits inside .doa-panel-full, which on
+	// mobile is itself inside the expanded panel; a stray bubble up to
+	// .doa-panel-backdrop/.doa-panel-collapsed would collapse the panel.
+	e.stopPropagation();
+	var _source = $(this).attr('data-source');
+	if (!_source) return;
+
+	if (typeof showDestructiveConfirmModal === 'function'){
+		showDestructiveConfirmModal(
+			'Clear Bearings',
+			"Really clear all bearing data from '" + _source + "'?",
+			'Clear',
+			function(){ clearBearingSource(_source); }
+		);
+	} else if (confirm("Really clear all bearing data from '" + _source + "'?")){
+		clearBearingSource(_source);
+	}
 });
 
 // Age the panel out to its empty state / refresh "how recent" styling even

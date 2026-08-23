@@ -34,7 +34,7 @@ class ChaseLogger(object):
         else:
             # Otherwise, create a filename based on the current time.
             self.filename = os.path.join(
-                log_dir, datetime.datetime.utcnow().strftime("%Y%m%d-%H%MZ.log")
+                log_dir, datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%MZ.log")
             )
 
         self.file_lock = Lock()
@@ -69,7 +69,7 @@ class ChaseLogger(object):
         """
 
         data["log_type"] = "CAR POSITION"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Convert the input datetime object into a string.
         data["time"] = data["time"].isoformat()
@@ -85,7 +85,7 @@ class ChaseLogger(object):
         """
 
         data["log_type"] = "BALLOON TELEMETRY"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Convert the input datetime object into a string.
         data["time"] = data["time_dt"].isoformat()
@@ -102,7 +102,7 @@ class ChaseLogger(object):
         """ Log a prediction run """
 
         data["log_type"] = "PREDICTION"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Add it to the queue if we are running.
         if self.input_processing_running:
@@ -114,7 +114,7 @@ class ChaseLogger(object):
         """ Log a packet of bearing data """
 
         data["log_type"] = "BEARING"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Add it to the queue if we are running.
         if self.input_processing_running:
@@ -131,13 +131,24 @@ class ChaseLogger(object):
 
             # Process everything in the queue.
             self.file_lock.acquire()
+            _wrote_data = False
             while self.input_queue.qsize() > 0:
                 try:
                     _data = self.input_queue.get_nowait()
                     _data_str = json.dumps(_data)
                     self.f.write(_data_str + "\n")
+                    _wrote_data = True
                 except Exception as e:
                     self.log_error("Error processing data - %s" % str(e))
+
+            if _wrote_data:
+                # Flush promptly so a sudden power loss (a realistic failure mode on a
+                # car-powered Pi) doesn't lose the most recent chase log data.
+                try:
+                    self.f.flush()
+                    os.fsync(self.f.fileno())
+                except Exception as e:
+                    self.log_error("Error flushing log file - %s" % str(e))
 
             self.file_lock.release()
             # Sleep while waiting for some new data.

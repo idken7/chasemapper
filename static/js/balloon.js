@@ -92,94 +92,19 @@ function buildTelemetrySnapshotFromLiveData(data) {
     };
 }
 
-function updateBalloonMarkerIcon(callsign, telem) {
-    if (!balloon_positions.hasOwnProperty(callsign) || !balloon_positions[callsign].marker) {
-        return;
-    }
-
-    if (!telem || !telem.position || !balloon_positions[callsign].colour) {
-        console.warn('updateBalloonMarkerIcon: invalid telem or colour for', callsign);
-        return;
-    }
-
-    try {
-        var colour = balloon_positions[callsign].colour;
-        var alt = parseFloat(telem.position[2]) || 0;
-        var newIcon = null;
-
-        // Determine which icon to use based on state
-        if (alt < parachute_min_alt) {
-            // Payload has descended below parachute altitude
-            if (_is3DEnabled()) {
-                newIcon = createBalloonIcon(telem, colour);
-            } else {
-                newIcon = balloonPayloadIcons[colour];
-            }
-        } else if (telem.vel_v < 0) {
-            // Balloon is descending
-            if (_is3DEnabled()) {
-                newIcon = createBalloonIcon(telem, colour);
-            } else {
-                newIcon = balloonDescentIcons[colour];
-            }
-        } else {
-            // Balloon is ascending
-            if (_is3DEnabled()) {
-                newIcon = createBalloonIcon(telem, colour);
-            } else {
-                newIcon = balloonAscentIcons[colour];
-            }
-        }
-
-        // Verify icon exists before setting
-        if (newIcon) {
-            balloon_positions[callsign].marker.setIcon(newIcon);
-        } else {
-            console.warn('updateBalloonMarkerIcon: newIcon is null for', callsign, 'colour=', colour, '3D=', _is3DEnabled());
-        }
-    } catch (e) {
-        console.error('updateBalloonMarkerIcon: error updating icon for', callsign, e);
-    }
+// Standard great-circle (Haversine) distance in metres between two [lat,lon]
+// points - matches Leaflet's LatLng.distanceTo(), which this replaces.
+function haversineMetres(lat1, lon1, lat2, lon2){
+    var R = 6371000;
+    var toRad = Math.PI / 180;
+    var dLat = (lat2 - lat1) * toRad;
+    var dLon = (lon2 - lon1) * toRad;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
 }
-
-function _is3DEnabled(){
-    try{
-        if (typeof chase_config !== 'undefined' && chase_config.enable_3d_markers === true) return true;
-        var v = localStorage.getItem('enable_3d_markers');
-        return v === '1' || v === 'true';
-    }catch(e){
-        return false;
-    }
-}
-
-function createBalloonIcon(telem, colour){
-    if (!_is3DEnabled()){
-        // fall back to existing icons (ascent/descent handling done elsewhere)
-        return null;
-    }
-    // Disable altitude extrusion to avoid parallax in 2D view.
-    // Altitude is now represented by actual 3D position in Cesium, not visual extrusion.
-    return null;  // Return null to use standard icon, not extruded marker
-}
-
-// Refresh icons for all existing balloon markers (re-apply 3D or 2D icons)
-function refreshAllBalloonIcons(){
-    try{
-        for (var callsign in balloon_positions){
-            if (!Object.prototype.hasOwnProperty.call(balloon_positions, callsign)) continue;
-            var bp = balloon_positions[callsign];
-            if (!bp || !bp.latest_data) continue;
-            try{
-                updateBalloonMarkerIcon(callsign, bp.latest_data);
-            }catch(e){
-                console.warn('refreshAllBalloonIcons: failed for', callsign, e);
-            }
-        }
-    }catch(e){
-        console.warn('refreshAllBalloonIcons error', e);
-    }
-}
-
 
 function add_new_balloon(data){
     // Add a new balloon to the telemetry store.
@@ -232,11 +157,6 @@ function add_new_balloon(data){
     var abortLandingData = validMapPoint(data.abort_landing) ? normalizeMapPoint(data.abort_landing) : [];
 
     var existingBalloon = balloon_positions.hasOwnProperty(callsign) ? balloon_positions[callsign] : null;
-    var existingPredPath = existingBalloon ? existingBalloon.pred_path : null;
-    var existingPredMarker = existingBalloon ? existingBalloon.pred_marker : null;
-    var existingBurstMarker = existingBalloon ? existingBalloon.burst_marker : null;
-    var existingAbortPath = existingBalloon ? existingBalloon.abort_path : null;
-    var existingAbortMarker = existingBalloon ? existingBalloon.abort_marker : null;
 
     balloon_positions[callsign] = existingBalloon || {};
     balloon_positions[callsign].latest_data = telem;
@@ -247,183 +167,39 @@ function add_new_balloon(data){
     balloon_positions[callsign].snr = -255.0;
     balloon_positions[callsign].visible = true;
     balloon_positions[callsign].pred_age = balloon_positions[callsign].pred_age || 0;
-    // Balloon Path
-    if (balloon_positions[callsign].path && map.hasLayer(balloon_positions[callsign].path)) {
-        balloon_positions[callsign].path.remove();
-    }
-    balloon_positions[callsign].path = L.polyline(pathData,{title:callsign + " Path", color:balloon_positions[callsign].colour}).addTo(map);
-    // Balloon position marker - always start with 2D icon, then updateBalloonMarkerIcon will handle 3D if enabled
-    var baseIcon = balloonAscentIcons[balloon_positions[callsign].colour];
-    if (!baseIcon) {
-        console.error('add_new_balloon: baseIcon not found for colour', balloon_positions[callsign].colour, '- available colours:', Object.keys(balloonAscentIcons));
-        return false;
-    }
-    if (balloon_positions[callsign].marker && map.hasLayer(balloon_positions[callsign].marker)) {
-        balloon_positions[callsign].marker.remove();
-    }
-    balloon_positions[callsign].marker = L.marker(telem.position,{title:callsign, icon: baseIcon})
-        .bindTooltip(callsign,{permanent:false,direction:'right'})
-        .addTo(map);
-    // Clicking the marker should open the APRS settings panel and highlight the APRS list item
-    try {
-        balloon_positions[callsign].marker.on('click', function(e) {
-            if (typeof showAprsPanel === 'function') {
-                try {
-                    showAprsPanel(callsign);
-                } catch (innerErr) {
-                    console.warn('Error calling showAprsPanel for', callsign, innerErr);
-                }
-            }
-        });
-    } catch (e) {
-        console.warn('Failed to attach click handler to marker for', callsign, e);
-    }
-    // Update icon to reflect 3D status or descent/payload state
-    updateBalloonMarkerIcon(callsign, telem);
-        if (typeof syncCesiumAfterBalloonUpdate === 'function') {
-            syncCesiumAfterBalloonUpdate(callsign, {
-                telem: telem,
-                pathData: pathData,
-                predPathData: predPathData,
-                predLandingData: predLandingData,
-                burstData: burstData,
-                abortPathData: abortPathData,
-                abortLandingData: abortLandingData,
-                visible: balloon_positions[callsign].visible
-            });
-        }
 
+    balloon_positions[callsign].path = pathData;
+    balloon_positions[callsign].pred_path = predPathData;
+    balloon_positions[callsign].pred_marker = (predLandingData.length == 3) ? predLandingData : null;
+    balloon_positions[callsign].burst_marker = (burstData.length == 3) ? burstData : null;
+    balloon_positions[callsign].abort_path = abortPathData;
+    balloon_positions[callsign].abort_marker = (abortLandingData.length == 3) ? abortLandingData : null;
 
-    // If the balloon is in descent, or is above the burst altitude, clear out the abort path and marker
-    // so they don't get shown.
+    // If the balloon is in descent, or is above the burst altitude, clear out
+    // the abort path/marker so they don't get shown.
     if (telem.position[2] > chase_config.pred_burst || telem.vel_v < 0.0){
         balloon_positions[callsign].abort_path = [];
-        balloon_positions[callsign].abort_landing = [];
-    }
-
-    // Add predicted landing path
-    if (existingPredPath) {
-        balloon_positions[callsign].pred_path = existingPredPath;
-        try{
-            if (predPathData.length > 0) {
-                balloon_positions[callsign].pred_path.setLatLngs(predPathData);
-            }
-        }catch(e){
-            console.warn('add_new_balloon: unable to reuse prediction path for', callsign, e);
-            balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity});
-        }
-    } else {
-        balloon_positions[callsign].pred_path = L.polyline(predPathData,{title:callsign + " Prediction", color:balloon_positions[callsign].colour, opacity:prediction_opacity});
-    }
-
-    if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_path)){
-        balloon_positions[callsign].pred_path.addTo(map);
-    }
-
-    // Landing position marker
-    // Only add if there is data to show
-    if (predLandingData.length == 3){
-        var _landing_text = callsign + " Landing " + predLandingData[0].toFixed(5) + ", " + predLandingData[1].toFixed(5);
-        if (existingPredMarker) {
-            balloon_positions[callsign].pred_marker = existingPredMarker;
-            balloon_positions[callsign].pred_marker.setLatLng(predLandingData);
-            balloon_positions[callsign].pred_marker.setTooltipContent(_landing_text);
-        } else {
-            balloon_positions[callsign].pred_marker = L.marker(predLandingData,{title:callsign + " Landing", icon: balloonLandingIcons[balloon_positions[callsign].colour]})
-                .bindTooltip(_landing_text,{permanent:false,direction:'right'});
-        }
-        // Add listener to copy prediction coords to clipboard.
-        // This is also duplicated in prediction.js, until I rearrange things...
-        balloon_positions[callsign].pred_marker.on('click', function(e) {
-            var _landing_pos_text = e.latlng.lat.toFixed(5) + ", " + e.latlng.lng.toFixed(5);
-            textToClipboard(_landing_pos_text);
-        });
-        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_marker)){
-            balloon_positions[callsign].pred_marker.addTo(map);
-        }
-    } else if (existingPredMarker) {
-        balloon_positions[callsign].pred_marker = existingPredMarker;
-        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].pred_marker)){
-            balloon_positions[callsign].pred_marker.addTo(map);
-        }
-    } else {
-        balloon_positions[callsign].pred_marker = null;
-    }
-
-    // Burst position marker
-    // Only add if there is data to show
-    if (burstData.length == 3){
-        if (existingBurstMarker) {
-            balloon_positions[callsign].burst_marker = existingBurstMarker;
-            balloon_positions[callsign].burst_marker.setLatLng(burstData);
-            balloon_positions[callsign].burst_marker.setTooltipContent(callsign + " Burst");
-        } else {
-            balloon_positions[callsign].burst_marker = L.marker(burstData,{title:callsign + " Burst", icon: burstIcon})
-                .bindTooltip(callsign + " Burst",{permanent:false,direction:'right'});
-        }
-        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].burst_marker)){
-            balloon_positions[callsign].burst_marker.addTo(map);
-        }
-    } else if (existingBurstMarker) {
-        balloon_positions[callsign].burst_marker = existingBurstMarker;
-        if (balloon_positions[callsign].visible == true && !map.hasLayer(balloon_positions[callsign].burst_marker)){
-            balloon_positions[callsign].burst_marker.addTo(map);
-        }
-    } else {
-        balloon_positions[callsign].burst_marker = null;
-    }
-
-    // Abort path
-    if (existingAbortPath) {
-        balloon_positions[callsign].abort_path = existingAbortPath;
-        try{
-            if (abortPathData.length > 0) {
-                balloon_positions[callsign].abort_path.setLatLngs(abortPathData);
-            }
-        }catch(e){
-            console.warn('add_new_balloon: unable to reuse abort path for', callsign, e);
-            balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
-        }
-    } else {
-        balloon_positions[callsign].abort_path = L.polyline(abortPathData,{title:callsign + " Abort Prediction", color:'red', opacity:prediction_opacity});
-    }
-
-    if ((chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
-        if (!map.hasLayer(balloon_positions[callsign].abort_path)){
-            balloon_positions[callsign].abort_path.addTo(map);
-        }
-    }
-
-    // Abort position marker
-    if (abortLandingData.length == 3){
-        if (existingAbortMarker) {
-            balloon_positions[callsign].abort_marker = existingAbortMarker;
-            balloon_positions[callsign].abort_marker.setLatLng(abortLandingData);
-            balloon_positions[callsign].abort_marker.setTooltipContent(callsign + " Abort Landing");
-        } else {
-            balloon_positions[callsign].abort_marker = L.marker(abortLandingData,{title:callsign + " Abort", icon: abortIcon})
-                .bindTooltip(callsign + " Abort Landing",{permanent:false,direction:'right'});
-        }
-        if( (chase_config.show_abort == true) && (balloon_positions[callsign].visible == true)){
-            if (!map.hasLayer(balloon_positions[callsign].abort_marker)){
-                balloon_positions[callsign].abort_marker.addTo(map);
-            }
-        }
-    }else if (existingAbortMarker) {
-        balloon_positions[callsign].abort_marker = existingAbortMarker;
-        if( (chase_config.show_abort == true) && (balloon_positions[callsign].visible == true) && !map.hasLayer(balloon_positions[callsign].abort_marker)){
-            balloon_positions[callsign].abort_marker.addTo(map);
-        }
-    }else{
         balloon_positions[callsign].abort_marker = null;
+    }
+
+    if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+        syncCesiumAfterBalloonUpdate(callsign, {
+            telem: telem,
+            pathData: balloon_positions[callsign].path,
+            predPathData: balloon_positions[callsign].pred_path,
+            predLandingData: balloon_positions[callsign].pred_marker,
+            burstData: balloon_positions[callsign].burst_marker,
+            abortPathData: balloon_positions[callsign].abort_path,
+            abortLandingData: balloon_positions[callsign].abort_marker,
+            visible: balloon_positions[callsign].visible
+        });
     }
 
     if (typeof flushPendingPrediction === 'function'){
         flushPendingPrediction(callsign);
     }
 
-    
-    colour_idx = (colour_idx+1)%colour_values.length; 
+    colour_idx = (colour_idx+1)%colour_values.length;
 
     return true;
 
@@ -455,10 +231,8 @@ function updateTelemReadoutCard(data){
     $('#telemReadoutEta').text(data.time_to_landing || '—');
 
     try {
-        if (typeof chase_car_position !== 'undefined' && Array.isArray(chase_car_position.latest_data) && chase_car_position.latest_data.length >= 2 && Array.isArray(data.position) && typeof L !== 'undefined') {
-            var carLatLng = L.latLng(chase_car_position.latest_data[0], chase_car_position.latest_data[1]);
-            var payloadLatLng = L.latLng(data.position[0], data.position[1]);
-            var distMetres = carLatLng.distanceTo(payloadLatLng);
+        if (typeof chase_car_position !== 'undefined' && Array.isArray(chase_car_position.latest_data) && chase_car_position.latest_data.length >= 2 && Array.isArray(data.position)) {
+            var distMetres = haversineMetres(chase_car_position.latest_data[0], chase_car_position.latest_data[1], data.position[0], data.position[1]);
             var distKm = distMetres / 1000.0;
             $('#telemReadoutDist').html(distKm.toFixed(1) + '<span class="telem-readout-unit">km</span>');
         } else {
@@ -570,32 +344,14 @@ function handleTelemetry(data){
             $("#chase_car_heading_header").text("");
         }
 
-        if (chase_car_position.marker == 'NONE'){
-            // Create marker!
-            chase_car_position.marker = L.marker(chase_car_position.latest_data,{title:"Chase Car", icon: carIcon, rotationOrigin: "center center"})
-                    .addTo(map);
-            chase_car_position.path = L.polyline([chase_car_position.latest_data],{title:"Chase Car", color:'black', weight:1.5});
-            // Add the chase-car breadcrumb tail to the map. The chaseCarTrack
-            // control may not be present in the current UI; when it's absent we
-            // default to showing the tail.
-            if (getCheckboxState("chaseCarTrack", true)){
-                chase_car_position.path.addTo(map);
-            }
+        if (!chase_car_position.active){
+            // First fix - start the breadcrumb tail.
+            chase_car_position.active = true;
+            chase_car_position.path = [chase_car_position.latest_data];
         } else {
             addBoundedLatLng(chase_car_position.path, chase_car_position.latest_data);
-            chase_car_position.marker.setLatLng(chase_car_position.latest_data).update();
         }
 
-        var _car_heading = chase_car_position.heading - 90.0;
-        if (_car_heading<=90.0){
-            chase_car_position.marker.setIcon(carIcon);
-            chase_car_position.marker.setRotationAngle(_car_heading);
-        }else{
-            // We are travelling West - we need to use the flipped car icon.
-            _car_heading = _car_heading - 180.0;
-            chase_car_position.marker.setIcon(carIconFlip);
-            chase_car_position.marker.setRotationAngle(_car_heading);
-        }
         car_data_age = 0.0;
         if (typeof syncCesiumAfterCarUpdate === 'function') {
             syncCesiumAfterCarUpdate();
@@ -633,9 +389,6 @@ function handleTelemetry(data){
             balloon_positions[data.callsign].latest_data = data;
             balloon_positions[data.callsign].age = Date.now();
             addBoundedLatLng(balloon_positions[data.callsign].path, data.position);
-            balloon_positions[data.callsign].marker.setLatLng(data.position).update();
-
-            updateBalloonMarkerIcon(data.callsign, data);
 
                 // Building pathData/predPathData/abortPathData below copies the entire
                 // (unbounded, multi-hour) polyline on every single telemetry message.
@@ -643,12 +396,12 @@ function handleTelemetry(data){
                 if (typeof syncCesiumAfterBalloonUpdate === 'function' && (typeof isCesiumActive !== 'function' || isCesiumActive())) {
                     syncCesiumAfterBalloonUpdate(data.callsign, {
                         telem: data,
-                        pathData: balloon_positions[data.callsign].path.getLatLngs(),
-                        predPathData: balloon_positions[data.callsign].pred_path ? balloon_positions[data.callsign].pred_path.getLatLngs() : [],
-                        predLandingData: balloon_positions[data.callsign].pred_marker && balloon_positions[data.callsign].pred_marker.getLatLng ? balloon_positions[data.callsign].pred_marker.getLatLng() : [],
-                        burstData: balloon_positions[data.callsign].burst_marker && balloon_positions[data.callsign].burst_marker.getLatLng ? balloon_positions[data.callsign].burst_marker.getLatLng() : [],
-                        abortPathData: balloon_positions[data.callsign].abort_path ? balloon_positions[data.callsign].abort_path.getLatLngs() : [],
-                        abortLandingData: balloon_positions[data.callsign].abort_marker && balloon_positions[data.callsign].abort_marker.getLatLng ? balloon_positions[data.callsign].abort_marker.getLatLng() : [],
+                        pathData: balloon_positions[data.callsign].path,
+                        predPathData: balloon_positions[data.callsign].pred_path || [],
+                        predLandingData: balloon_positions[data.callsign].pred_marker || null,
+                        burstData: balloon_positions[data.callsign].burst_marker || null,
+                        abortPathData: balloon_positions[data.callsign].abort_path || [],
+                        abortLandingData: balloon_positions[data.callsign].abort_marker || null,
                         visible: balloon_positions[data.callsign].visible
                     });
                 }
@@ -681,14 +434,10 @@ function handleTelemetry(data){
     if ((_current_follow == 'payload') && (data.callsign == balloon_currently_following)){
         if (typeof window.panMapToVisibleCenter === 'function') {
             window.panMapToVisibleCenter(data.position);
-        } else {
-            map.panTo(data.position);
         }
     } else if (_current_follow == 'car' && data.callsign == 'CAR'){
         if (typeof window.panMapToVisibleCenter === 'function') {
             window.panMapToVisibleCenter(data.position);
-        } else {
-            map.panTo(data.position);
         }
     }else{
         // Don't pan to anything.
@@ -704,63 +453,18 @@ function handleModemStats(data){
 
 function hideBalloon(callsign){
     if (balloon_positions.hasOwnProperty(callsign) == true){
-            balloon_positions[callsign].visible = false;
-            // Remove the layers for this balloon from the map.
-            if(map.hasLayer(balloon_positions[callsign].marker) == true){
-                // Balloon is currently on the map, so remove it.
-                // These two will always be on the map together.
-                balloon_positions[callsign].marker.remove();
-                balloon_positions[callsign].path.remove();
-            }
-            if(map.hasLayer(balloon_positions[callsign].burst_marker) == true){
-                // Burst marker might not always be visible, i.e. after burst.
-                balloon_positions[callsign].burst_marker.remove();
-            }
-
-            if(balloon_positions[callsign].pred_marker != null && map.hasLayer(balloon_positions[callsign].pred_marker) == true){
-                balloon_positions[callsign].pred_marker.remove();
-            }
-            if(balloon_positions[callsign].pred_path != null && map.hasLayer(balloon_positions[callsign].pred_path) == true){
-                balloon_positions[callsign].pred_path.remove();
-            }
-            if(map.hasLayer(balloon_positions[callsign].abort_marker) == true){
-                // The same is true for the abort marker and path.
-                balloon_positions[callsign].abort_marker.remove();
-                balloon_positions[callsign].abort_path.remove();
-            }
-                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
-                    syncCesiumAfterBalloonUpdate(callsign, {visible: false});
-                }
+        balloon_positions[callsign].visible = false;
+        if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+            syncCesiumAfterBalloonUpdate(callsign, {visible: false});
+        }
     }
 }
 
 function showBalloon(callsign){
     if (balloon_positions.hasOwnProperty(callsign) == true){
-            balloon_positions[callsign].visible = true;
-            // We can safely just add the balloon marker and path back onto the map.
-            balloon_positions[callsign].marker.addTo(map);
-            balloon_positions[callsign].path.addTo(map);
-            
-            if(balloon_positions[callsign].burst_marker != null){
-                // The burst marker might not always be present.
-                balloon_positions[callsign].burst_marker.addTo(map);
-            }
-
-            if(balloon_positions[callsign].pred_path != null){
-                balloon_positions[callsign].pred_path.addTo(map);
-            }
-
-            if(balloon_positions[callsign].pred_marker != null){
-                balloon_positions[callsign].pred_marker.addTo(map);
-            }
-
-            if(balloon_positions[callsign].abort_marker != null){
-                balloon_positions[callsign].abort_marker.addTo(map);
-                balloon_positions[callsign].abort_path.addTo(map);
-            }
-                if (typeof syncCesiumAfterBalloonUpdate === 'function') {
-                    syncCesiumAfterBalloonUpdate(callsign, {visible: true});
-                }
-
+        balloon_positions[callsign].visible = true;
+        if (typeof syncCesiumAfterBalloonUpdate === 'function') {
+            syncCesiumAfterBalloonUpdate(callsign, {visible: true});
+        }
     }
 }

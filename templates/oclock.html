@@ -1,7 +1,7 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-    <title>O'Clock Bearing Entry</title>
+    <title>O'Clock &mdash; ChaseMapper</title>
 
     <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/leaflet.css') }}" rel="stylesheet">
@@ -14,6 +14,7 @@
     <link href="{{ url_for('static', filename='css/font-awesome.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/jquery-ui.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/chasemapper.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/bearing_pages.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/oclock.css') }}" rel="stylesheet">
 
 
@@ -37,9 +38,9 @@
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
     <!-- car.js: just for the multi-user identity helpers (my_car_client_id,
-         getMyCarName, isMyOwnCarTelemetry, startSharingMyLocation) - this
-         page doesn't render other chasers, so its map-marker functions are
-         never called here. -->
+         getMyCarName, isMyOwnCarTelemetry, startSharingMyLocation,
+         my_device_position_active) - this page doesn't render other
+         chasers, so its map-marker functions are never called here. -->
     <script src="{{ url_for('static', filename='js/car.js') }}"></script>
 
 
@@ -112,6 +113,7 @@
         }
 
         function updateTimeSeqClock(){
+            var $chip = $('#bpFoxChip');
             if(timeSeqEnabled == true){
                 var _current_seq = getCurrentSeqNumber();
                 if( _current_seq >= 0 ){
@@ -119,28 +121,52 @@
                     var _current_time = Date.now();
                     var _seqtime = timeSeqActive - ((_current_time - timeSeqTimes[_current_seq]) % (timeSeqCycle*1000))/1000.0;
 
-                    $('#timeseq_notice').html("<h2>Fox " + _current_seq + ": " + _seqtime.toFixed(1) + "</h2>");
+                    $('#bpFoxChipText').text('FOX ' + _current_seq + ' · ' + _seqtime.toFixed(1) + 's');
+                    $chip.addClass('is-active');
 
                 } else {
-                    $('#timeseq_notice').html("");
+                    $chip.removeClass('is-active');
                 }
 
             } else {
-                $('#timeseq_notice').html("");
+                $chip.removeClass('is-active');
             }
         }
-
-        // Leaflet map instance.
-        var map;
-
-
 
         // Socket.IO Settings
         var namespace = '/chasemapper';
         // Socket.IO instance.
         var socket;
 
+        // 12 clock positions, laid out as a ring of large touch-target
+        // buttons (see static/css/oclock.css). Placed as percentages of the
+        // ring container so the same layout works at both the desktop and
+        // mobile ring sizes without recomputing on resize.
+        var OCLOCK_RADIUS_PCT = 43;
+
+        function buildOclockRing(){
+            var $ring = $('#oclockRing');
+            for (var i = 1; i <= 12; i++){
+                var _bearing = (i % 12) * 30;
+                var _rad = _bearing * Math.PI / 180;
+                var _left = 50 + OCLOCK_RADIUS_PCT * Math.sin(_rad);
+                var _top = 50 - OCLOCK_RADIUS_PCT * Math.cos(_rad);
+
+                var $btn = $('<button type="button" class="oclock-btn mono"></button>')
+                    .text(i)
+                    .attr('data-bearing', _bearing)
+                    .attr('aria-label', 'Signal at ' + i + " o'clock")
+                    .css({left: _left + '%', top: _top + '%'});
+                if (i === 12){
+                    $btn.addClass('oclock-btn--twelve');
+                }
+                $ring.append($btn);
+            }
+        }
+
         $(document).ready(function() {
+
+            buildOclockRing();
 
             // Connect to the Socket.IO server.
             // The connection URL has the following format:
@@ -175,13 +201,35 @@
             // reporting one, same as the main map.
             startSharingMyLocation();
 
+            var _errorToastTimer = null;
+            function showErrorToast(message){
+                $('#bpErrorToastText').text(message);
+                $('#bpErrorToast').addClass('is-visible');
+                if (_errorToastTimer) clearTimeout(_errorToastTimer);
+                _errorToastTimer = setTimeout(function(){ $('#bpErrorToast').removeClass('is-visible'); }, 3200);
+            }
+
             socket.on('bearing_rejected', function(data){
                 var _reason = (data && data.reason) || '';
-                alert('Bearing not recorded' + (_reason === 'no_known_position' ? ': enable location sharing first (see the prompt above).' : '.'));
+                if (_reason === 'no_known_position'){
+                    updateLocationWarning(true);
+                } else {
+                    showErrorToast('Bearing not recorded.');
+                }
             });
 
-            function handleOclockClick(value){
-                console.log(value);
+            var _lastBearingValue = null;
+            var _lastBearingClock = null;
+            var _lastBearingTime = null;
+
+            function refreshLastBearingAge(){
+                if (_lastBearingTime === null) return;
+                var _secs = Math.round((Date.now() - _lastBearingTime) / 1000);
+                var _age = _secs < 60 ? (_secs + 's ago') : (Math.round(_secs / 60) + 'm ago');
+                $('#bpLastBearingAge').text('· ' + _age);
+            }
+
+            function handleOclockClick(value, clockLabel){
                 _bearing_info = {
                     'type': 'BEARING',
                     'bearing_type': 'relative',
@@ -190,25 +238,36 @@
                     'client_id': my_car_client_id,
                     'name': getMyCarName() || undefined
                 };
-                console.log(_bearing_info);
                 socket.emit('add_manual_bearing', _bearing_info);
 
-                // Update the bearing info.
-                $("#bearing_info").html("Last Bearing: " + value + "</br>Last Time: " + new Date().toLocaleTimeString());
+                // Update the last-bearing-sent readout.
+                _lastBearingValue = value;
+                _lastBearingClock = clockLabel;
+                _lastBearingTime = Date.now();
+                $('#bpLastBearingValue').text(value + '° (' + clockLabel + " o'clock)");
+                $('#bpLastBearing').show();
+                refreshLastBearingAge();
             }
 
-            $("#clock1").click(function(){handleOclockClick(30);});
-            $("#clock2").click(function(){handleOclockClick(60);});
-            $("#clock3").click(function(){handleOclockClick(90);});
-            $("#clock4").click(function(){handleOclockClick(120);});
-            $("#clock5").click(function(){handleOclockClick(150);});
-            $("#clock6").click(function(){handleOclockClick(180);});
-            $("#clock7").click(function(){handleOclockClick(210);});
-            $("#clock8").click(function(){handleOclockClick(240);});
-            $("#clock9").click(function(){handleOclockClick(270);});
-            $("#clock10").click(function(){handleOclockClick(300);});
-            $("#clock11").click(function(){handleOclockClick(330);});
-            $("#clock12").click(function(){handleOclockClick(0);});
+            $(document).on('click', '.oclock-btn', function(){
+                if ($('#oclockPanel').hasClass('bp-sheet--warning')) return;
+                var $btn = $(this);
+                $btn.addClass('is-flash');
+                setTimeout(function(){ $btn.removeClass('is-flash'); }, 200);
+                handleOclockClick(parseInt($btn.attr('data-bearing'), 10), $btn.text());
+            });
+
+            $('#bpEnableLocationBtn').on('click', function(){
+                startSharingMyLocation();
+                updateLocationWarning();
+            });
+
+            function updateLocationWarning(force_on){
+                var _sharing = !force_on && (typeof my_device_position_active !== 'undefined') && my_device_position_active;
+                $('#oclockPanel').toggleClass('bp-sheet--warning', !_sharing);
+            }
+            updateLocationWarning();
+            setInterval(updateLocationWarning, 1000);
 
 
             function handleTelemetry(data){
@@ -228,6 +287,10 @@
                     chase_car_position.latest_data = data.position;
                     chase_car_position.heading = data.heading; // degrees true
                     chase_car_position.speed = data.speed; // m/s
+
+                    if (typeof data.heading === 'number'){
+                        $('#bpHeadingValue').text(Math.round(data.heading) + '°');
+                    }
                 }
             }
 
@@ -240,48 +303,61 @@
 
 
             window.setInterval(function () {
-
-
                 updateTimeSeqClock();
+                refreshLastBearingAge();
             }, 500);
 
         });
     </script>
 </head>
-<body>
-    <div class="container-fluid">
-        <div class="row">
-            <div class='col-12'>
-                <div id="title_div"><h1>O'Clock Entry</h1></div>
+<body class="dark-theme">
+    <div class="bp-header">
+        <a href="/" class="bp-back" aria-label="Back to map">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>
+        </a>
+        <div class="bp-header-title">O'Clock</div>
+        <div id="bpFoxChip" class="bp-foxchip">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg>
+            <span id="bpFoxChipText" class="mono">FOX &middot; 0.0s</span>
+        </div>
+    </div>
+
+    <div id="bpErrorToast" class="bp-error-toast">
+        <span id="bpErrorToastText">Bearing not recorded.</span>
+    </div>
+
+    <div id="oclockPanel">
+        <div class="bp-normal-state oclock-wrap">
+            <div class="oclock-hint mono">TAP THE DIRECTION YOU HEAR THE SIGNAL</div>
+            <div class="oclock-ring">
+                <svg class="oclock-ring-svg" width="100%" height="100%" viewBox="0 0 400 400">
+                    <circle cx="200" cy="200" r="178" fill="rgba(255,255,255,.03)" stroke="rgba(255,255,255,.1)"></circle>
+                    <circle cx="200" cy="200" r="130" fill="none" stroke="rgba(255,255,255,.06)"></circle>
+                    <line x1="200" y1="200" x2="200" y2="53" stroke="#6f9fd8" stroke-width="3"></line>
+                    <polygon points="200,40 192,58 208,58" fill="#6f9fd8"></polygon>
+                    <circle cx="200" cy="200" r="6" fill="#e6eef6"></circle>
+                </svg>
+                <div id="oclockRing"></div>
+                <div class="oclock-heading">
+                    <div class="oclock-heading-label mono">HEADING</div>
+                    <div id="bpHeadingValue" class="oclock-heading-value mono">&mdash;</div>
+                </div>
+            </div>
+            <div id="bpLastBearing" class="bp-last-bearing mono" style="display:none;">
+                <span>Last bearing:</span>
+                <span id="bpLastBearingValue" class="bp-last-bearing-value"></span>
+                <span id="bpLastBearingAge" class="bp-last-bearing-age"></span>
             </div>
         </div>
-        <div class="row">
-            <div class='col-12'>
-                <ul class="circle">
-                    <li><div class="text" id="clock1">1</div></li>
-                    <li><div class="text" id="clock2">2</div></li>
-                    <li><div class="text" id="clock3"> 3</div></li>
-                    <li><div class="text" id="clock4">4</div></li>
-                    <li><div class="text" id="clock5">5</div></li>
-                    <li><div class="text" id="clock6">6</div></li>
-                    <li><div class="text" id="clock7">7</div></li>
-                    <li><div class="text" id="clock8">8</div></li>
-                    <li><div class="text" id="clock9">9</div></li>
-                    <li><div class="text" id="clock10">10</div></li>
-                    <li><div class="text" id="clock11">11</div></li>
-                    <li><div class="text" id="clock12">12</div></li>
-                <ul>            
+        <div class="bp-warning-state oclock-wrap">
+            <div class="bp-warning-box" style="max-width:320px;margin-left:auto;margin-right:auto;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
+                <div>
+                    <div class="bp-warning-title">Location sharing is off</div>
+                    <div class="bp-warning-sub">A bearing needs your position to be recorded. Enable sharing to continue.</div>
+                </div>
             </div>
-        </div>
-        <div class="row">
-            <div class='col-12'>
-                <div id="bearing_info">Last Bearing:</br>Last Time:</div>
-            </div>
-        </div>
-        <div class="row">
-            <div class='col-12'>
-                <div id="timeseq_notice"></div>
-            </div>
+            <button type="button" id="bpEnableLocationBtn" class="bp-warning-btn" style="max-width:320px;margin:0 auto;">Enable Location Sharing</button>
         </div>
     </div>
 

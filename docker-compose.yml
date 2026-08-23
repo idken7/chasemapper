@@ -6,20 +6,30 @@ services:
     tty: true
     ports:
       - "5001:5001"
-    environment:
-      # Optional API key auth for /api/route, /api/latest_route, /api/mobile_state,
-      # the Socket.IO connection, and the "Clear Payload Data"/"Clear Chase-Car Track"
-      # actions. See README.md "Endpoint Security (Auth + Rate Limiting)".
-      # - CHASEMAPPER_API_KEY=changeme
-      # - CHASEMAPPER_REQUIRE_API_AUTH=auto
+    # Optional API key auth for /api/route, /api/latest_route, /api/mobile_state,
+    # the Socket.IO connection, and the "Clear Payload Data"/"Clear Chase-Car Track"
+    # actions. See README.md "Endpoint Security (Auth + Rate Limiting)".
+    # environment:
+    #   - CHASEMAPPER_API_KEY=changeme
+    #   - CHASEMAPPER_REQUIRE_API_AUTH=auto
     volumes:
       # NOTE: The application expects a single config file at /opt/chasemapper/horusmapper.cfg
       # mounting a host directory at that path (./horusmapper.cfg) will cause the app to fail
       # to read the config. Place your config file at ./horusmapper.cfg/horusmapper.cfg
       # and the compose mapping below will mount the file into the container.
+      - ./horusmapper.cfg:/opt/chasemapper/horusmapper.cfg
       - chasemapper_logs:/opt/chasemapper/log_files/
-      # Mount local source into container for development so template/js edits are live
-      - ./:/opt/chasemapper/:rw
+      # Persists downloaded/offline GFS model data across container restarts.
+      - ./gfs:/opt/chasemapper/gfs
+      # Uncomment to serve offline map tiles from a host directory (see README "Offline Mapping").
+      # - /home/pi/Maps:/opt/chasemapper/Maps
+      #
+      # For local development only (live-reload templates/static/js by mounting the whole repo
+      # over the image) use docker-compose.dev.yml instead of editing this file:
+      #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+      # Do NOT bind-mount the whole repo in a field/production deployment: it shadows the
+      # offline-prediction `pred` binary that gets compiled into the image, silently breaking
+      # offline predictions (the exact feature you need when you lose phone signal on a chase).
 
 volumes:
   chasemapper_logs:

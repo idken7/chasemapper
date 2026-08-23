@@ -1,9 +1,8 @@
 // Chase routing UI and control
 // Adds a small dialog to select a callsign to chase, a start location (GPS, manual, or chase car)
-// and uses Leaflet Routing Machine to show car directions to the predicted landing.
+// and computes/displays car directions to the predicted landing via OSRM (see fetchOsrmRoute/applyFetchedRoute).
 
 // Globals used by predictions.js as well
-window.router = null;
 window.balloon_currently_chased = "none"; // only one callsign can be chased at a time
 window.start_mode = 'chasecar'; // 'gps' | 'manual' | 'chasecar'
 window.manual_start = null; // [lat, lon]
@@ -100,8 +99,8 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             // Get current prediction landing position if available
             if (window.balloon_positions && window.balloon_positions[callsign]) {
                 var predMarker = window.balloon_positions[callsign].pred_marker;
-                if (predMarker) {
-                    var predLatlng = predMarker.getLatLng();
+                if (Array.isArray(predMarker) && predMarker.length >= 2) {
+                    var predLatlng = {lat: predMarker[0], lng: predMarker[1]};
                     // Decide whether to fully recalculate or just advance along existing route
                     var shouldRecalc = true;
                     try {
@@ -170,13 +169,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
                 if (p && p.lat !== undefined && p.lng !== undefined) newPts.push([p.lat, p.lng]);
                 else if (Array.isArray(p)) newPts.push([p[0], p[1]]);
             }
-            // Replace or create displayed polyline
-            if (window._displayChasePolyline) {
-                window._displayChasePolyline.setLatLngs(newPts);
-            } else {
-                if (window.map) window._displayChasePolyline = L.polyline(newPts, {color:'#3b82f6', weight:4, opacity:0.9}).addTo(window.map);
-            }
-            // Also update Cesium view if available
+            // Update the displayed route line.
             try { if (typeof window.showChaseRouteOnCesium === 'function') window.showChaseRouteOnCesium(newPts); } catch(e){}
             // update stored route as GeoJSON too
             try { window.latestChaseRouteGeoJSON = { type:'Feature', geometry:{ type:'LineString', coordinates: newPts.map(function(a){ return [a[1], a[0]]; }) }, properties: { updatedBy: 'advance' } }; pushLatestRouteToServer(window.latestChaseRouteGeoJSON); } catch(e){}
@@ -186,30 +179,20 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         } catch (e) { console.warn('advanceDisplayedRouteAlongIndex error', e); }
     }
 
-    // The chase-status readout (Chasing/ETA/Distance) lives inside the Leaflet
-    // Routing Machine itinerary panel (.leaflet-routing-container) rather than
-    // as its own floating box, so it travels with the directions instead of
-    // overlapping them. Leaflet Routing Machine only re-renders its inner
-    // .leaflet-routing-alternatives-container on route updates, so a bar
-    // prepended to the outer container survives those re-renders.
+    // The chase-status elements (#chaseStatusCall/ETA/Dist) are a data store
+    // read by renderRoutingActivePill()/renderRoutePanel() - the visible
+    // "routing active" summary is the topbar pill (#routingActivePill), so
+    // this bar itself stays hidden rather than floating over the map.
     function ensureChaseStatusBar(){
         if ($('#chase-status').length) return;
-        var container = document.querySelector('.leaflet-routing-container');
-        if (!container) return;
         var $bar = $(
-            "<div id='chase-status' class='chase-status-inline' style='display:none;' title='Drag to move the directions panel'>" +
+            "<div id='chase-status' class='chase-status-inline' style='display:none;'>" +
                 "<span class='chase-status-item'><strong>Chasing:</strong> <span id='chaseStatusCall'>None</span></span>" +
                 "<span class='chase-status-item'><strong>ETA:</strong> <span id='chaseStatusETA'>--</span></span>" +
                 "<span class='chase-status-item'><strong>Distance:</strong> <span id='chaseStatusDist'>--</span></span>" +
             "</div>"
         );
-        $(container).prepend($bar);
-        // Drag the whole directions panel by its chase-status bar.
-        try {
-            $(container).draggable({ handle: '#chase-status', containment: 'window' });
-        } catch (e) {
-            // jQuery UI may not be available; ignore.
-        }
+        $('body').append($bar);
     }
 
     function updateChaseRoutingSubtitle(){
@@ -221,6 +204,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     function openChaseRoutingModal(){
         var $modal = $('#chaseRoutingModal');
         var $card = $modal.find('.chase-routing-modal-card');
+        populateCalls();
         updateChaseRoutingSubtitle();
         $modal.addClass('is-open').attr('aria-hidden','false');
         $card.removeClass('modal-closing modal-opened').addClass('modal-opening');
@@ -304,16 +288,13 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             var cs = $('#chaseCalls').val();
             if (!cs){ $('#gpsStatus').text('Select a callsign'); return; }
             window.balloon_currently_chased = cs;
-            if (!window.router && typeof L !== 'undefined' && map){
-                window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false, showAlternatives:true, position:'topleft'}).addTo(map);
-                attachRouterEvents(window.router);
-                ensureChaseStatusBar();
-            }
+            ensureChaseStatusBar();
 
             closeChaseRoutingModal();
             if (typeof window.openRoutePanel === 'function') window.openRoutePanel();
 
-            var pred_marker = (balloon_positions[cs] && balloon_positions[cs].pred_marker) ? balloon_positions[cs].pred_marker.getLatLng() : null;
+            var _pm = (balloon_positions[cs] && balloon_positions[cs].pred_marker) ? balloon_positions[cs].pred_marker : null;
+            var pred_marker = (Array.isArray(_pm) && _pm.length >= 2) ? {lat: _pm[0], lng: _pm[1]} : null;
             if (pred_marker == null){
                 $('#gpsStatus').text('No prediction yet; will update when available');
                 if (typeof window.showAppToast === 'function') window.showAppToast('Chase started; waiting for prediction');
@@ -346,7 +327,6 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             window.last_route_calc_position = null;
             window.currentSelectedRoute = null;
             window.currentRouteAlternatives = null;
-            if (window.router){ window.router.getPlan().setWaypoints([]); }
             if (typeof window.clearChaseRouteOnCesium === 'function') {
                 try { window.clearChaseRouteOnCesium(); } catch (e) {}
             }
@@ -366,10 +346,19 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
 
     function populateCalls(){
         var sel = $('#chaseCalls');
+        var current = sel.val();
         sel.empty();
         for (var cs in balloon_positions){
             if (!balloon_positions.hasOwnProperty(cs)) continue;
             sel.append($('<option>').attr('value', cs).text(cs));
+        }
+        // Re-opening the modal mid-chase (or re-populating after a fresh
+        // APRS/telemetry frame) should keep the callsign already selected
+        // rather than silently reverting to whichever option sorts first.
+        var preferred = (window.balloon_currently_chased && window.balloon_currently_chased !== 'none')
+            ? window.balloon_currently_chased : current;
+        if (preferred && balloon_positions.hasOwnProperty(preferred)){
+            sel.val(preferred);
         }
     }
 
@@ -378,18 +367,11 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             // no prediction yet; leave waypoints cleared until prediction arrives
             return;
         }
-        if (!window.router && typeof L !== 'undefined' && map){
-            window.router = L.Routing.control({waypoints:[], addWaypoints:false, routeWhileDragging:false, showAlternatives:true, position:'topleft'}).addTo(map);
-            attachRouterEvents(window.router);
-            ensureChaseStatusBar();
-        }
-        if (!window.router) return;
+        ensureChaseStatusBar();
 
         var startLat, startLon;
         if (window.start_mode === 'chasecar' && chase_car_position && Array.isArray(chase_car_position.latest_data) && chase_car_position.latest_data.length >= 2){
             startLat = chase_car_position.latest_data[0]; startLon = chase_car_position.latest_data[1];
-        } else if (window.start_mode === 'chasecar' && chase_car_position && chase_car_position.marker && typeof chase_car_position.marker.getLatLng === 'function'){
-            var ll = chase_car_position.marker.getLatLng(); startLat = ll.lat; startLon = ll.lng;
         } else if (window.start_mode === 'manual' && window.manual_start){
             startLat = window.manual_start[0]; startLon = window.manual_start[1];
         } else if (window.start_mode === 'gps' && window.gps_start){
@@ -398,41 +380,51 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             startLat = chase_config.default_lat; startLon = chase_config.default_lon;
         }
 
-        // record last attempted legs for potential fallback
-        window._last_route_attempt = {startLat: startLat, startLon: startLon, endLat: predLatLng.lat, endLon: predLatLng.lng};
-        try{
-            window.router.setWaypoints([L.latLng(startLat, startLon), L.latLng(predLatLng.lat, predLatLng.lng)]);
-            // Initialize position tracking for car movement detection
-            window.last_route_calc_position = [startLat, startLon];
-            // clear last fallback attempt flag
-            window._chase_tried_fallback = false;
-        }catch(e){
-            console.error('Routing setWaypoints failed', e);
-            // Try HTTP OSRM fallback
-            try { fetchOsrmRoute(startLat, startLon, predLatLng.lat, predLatLng.lng); } catch(errfb) { console.warn('Fallback route failed', errfb); }
-        }
+        window.last_route_calc_position = [startLat, startLon];
+        fetchOsrmRoute(startLat, startLon, predLatLng.lat, predLatLng.lng);
+
         // Update status panel to show active chased callsign
         $('#chase-status').show();
         $('#chaseStatusCall').text(callsign);
     }
 
+    // Turn a step's [lon,lat] maneuver location into an index into `latlngs`
+    // (the route's own coordinate list), matching the `.index` field
+    // formatRouteInstruction()/isInstrPassed() use to track which turns the
+    // car has already passed.
+    function locateStepIndex(step, latlngs){
+        if (!step || !Array.isArray(step.location) || step.location.length !== 2){
+            return -1;
+        }
+        return getNearestVertexIndex(latlngs, step.location[1], step.location[0]).index;
+    }
+
+    // route.steps is the backend's normalized shape (see _normalize_osrm_steps
+    // in horusmapper.py / normalizeOsrmSteps() below): [{type, modifier, name,
+    // distance_m, location}, ...]. Turn it into the {type, modifier, road,
+    // distance, index} shape formatRouteInstruction()/routeTurnIconSvg()/
+    // isInstrPassed() read.
+    function buildRouteInstructions(steps, latlngs){
+        if (!Array.isArray(steps)) return [];
+        return steps.map(function(step){
+            return {
+                type: step.type,
+                modifier: step.modifier,
+                road: step.name,
+                distance: step.distance_m,
+                index: locateStepIndex(step, latlngs)
+            };
+        });
+    }
+
     function applyFetchedRoute(route, sourceLabel){
-        // This fallback path only runs when LRM itself failed, and the
-        // backend/OSRM response shape here doesn't carry turn-by-turn
-        // instructions (unlike LRM's routesfound routes) - the Route panel
-        // degrades gracefully (footer stats only, no turn list) when
-        // .instructions is absent.
         window.currentSelectedRoute = route;
         var coords = route.geometry.coordinates; // [lon,lat]
         var latlngs = coords.map(function(c){ return [c[1], c[0]]; });
-        // Draw or replace displayed polyline (used by advance logic)
-        try {
-            if (window._displayChasePolyline) { window.map.removeLayer(window._displayChasePolyline); }
-            window._displayChasePolyline = L.polyline(latlngs, {color:'#3b82f6', weight:4, opacity:0.9}).addTo(window.map);
-            // populate currentChaseRouteLatLngs for in-place advancement
-            window.currentChaseRouteLatLngs = latlngs.map(function(ll){ return {lat: ll[0], lng: ll[1]}; });
-            window.last_route_destination = [latlngs[latlngs.length-1][0], latlngs[latlngs.length-1][1]];
-        } catch (e) { console.warn('Failed to draw fallback polyline', e); }
+        route.instructions = buildRouteInstructions(route.steps, latlngs);
+        // populate currentChaseRouteLatLngs for in-place advancement
+        window.currentChaseRouteLatLngs = latlngs.map(function(ll){ return {lat: ll[0], lng: ll[1]}; });
+        window.last_route_destination = [latlngs[latlngs.length-1][0], latlngs[latlngs.length-1][1]];
 
         // Store GeoJSON for mobile compatibility
         try {
@@ -462,7 +454,6 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             $('#startChaseBtn').prop('disabled', false);
             if (typeof window.showAppToast === 'function') window.showAppToast('Route ready');
         } catch(e) { console.warn('OSRM fallback UI restore error', e); }
-        window._chase_tried_fallback = true;
         if (typeof window.renderRoutePanel === 'function') { window.renderRoutePanel(); }
         if (typeof window.renderRoutingActivePill === 'function') { window.renderRoutingActivePill(); }
     }
@@ -478,8 +469,28 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     // its result.
     var _routeFetchSeq = 0;
 
+    // Client-side port of horusmapper.py's _normalize_osrm_steps() - used only
+    // for the direct-OSRM fallback below, where the raw OSRM response (rather
+    // than the backend's already-normalized `steps` field) is all we have.
+    function normalizeOsrmSteps(route){
+        var stepsOut = [];
+        (route.legs || []).forEach(function(leg){
+            (leg.steps || []).forEach(function(step){
+                var maneuver = step.maneuver || {};
+                var loc = maneuver.location;
+                stepsOut.push({
+                    type: maneuver.type,
+                    modifier: maneuver.modifier,
+                    name: step.name || '',
+                    distance_m: step.distance || 0,
+                    location: (Array.isArray(loc) && loc.length === 2) ? loc : null
+                });
+            });
+        });
+        return stepsOut;
+    }
+
     function fetchOsrmRoute(startLat, startLon, endLat, endLon){
-        if (!window.map) return;
         var _seq = ++_routeFetchSeq;
         fetch('/api/route', {
             method: 'POST',
@@ -496,24 +507,30 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             var route = {
                 geometry: j.feature.geometry,
                 distance: j.distance_m || 0,
-                duration: j.duration_s || 0
+                duration: j.duration_s || 0,
+                steps: j.steps
             };
             applyFetchedRoute(route, 'osrm-backend');
         }).catch(function(backendErr){
             if (_seq !== _routeFetchSeq) return;
             console.warn('Backend routing failed, trying direct OSRM', backendErr);
             var base = window.osrm_base || 'https://router.project-osrm.org/route/v1/driving/';
-            var url = base + startLon + ',' + startLat + ';' + endLon + ',' + endLat + '?overview=full&geometries=geojson&annotations=distance,duration&alternatives=true';
+            var url = base + startLon + ',' + startLat + ';' + endLon + ',' + endLat + '?overview=full&geometries=geojson&annotations=distance,duration&alternatives=true&steps=true';
             fetch(url).then(function(resp){ return resp.json(); }).then(function(j){
                 if (_seq !== _routeFetchSeq) return;
                 if (!j || !j.routes || j.routes.length === 0) { throw new Error('No routes'); }
                 window.currentRouteAlternatives = j.routes;
-                applyFetchedRoute(selectPreferredRoute(j.routes), 'osrm-fallback');
+                var selected = selectPreferredRoute(j.routes);
+                selected.steps = normalizeOsrmSteps(selected);
+                applyFetchedRoute(selected, 'osrm-fallback');
             }).catch(function(err){
                 if (_seq !== _routeFetchSeq) return;
                 console.warn('OSRM fallback failed', err);
-                // if fallback fails, notify user; routingerror handler will also restore UI
                 try { $('#gpsStatus').text('Routing failed'); if (typeof window.showAppToast === 'function') window.showAppToast('Routing failed'); } catch(e){}
+                try {
+                    $('#chaseRoutingSpinner').hide();
+                    $('#startChaseBtn').prop('disabled', false);
+                } catch(e){}
             });
         });
     }
@@ -584,132 +601,15 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     window.updateChaseRouteIfActive = function(callsign, predLanding){
         if (window.balloon_currently_chased && window.balloon_currently_chased === callsign){
             if (predLanding && predLanding.length >= 2){
-                setRouteToPrediction(callsign, L.latLng(predLanding[0], predLanding[1]));
+                setRouteToPrediction(callsign, {lat: predLanding[0], lng: predLanding[1]});
             }
         }
     };
 
-    // Attach routing events to update ETA/Distance in chase-status panel
-    function attachRouterEvents(r){
-        if (!r) return;
-        if (r._chase_events_attached) return; // avoid duplicate
-        r._chase_events_attached = true;
-        r.on('routesfound', function(e){
-            try{
-                if (e.routes && e.routes.length > 0){
-                    var selected = selectPreferredRoute(e.routes) || e.routes[0];
-                    // Stashed for the Route panel (renderRoutePanel) - the full
-                    // alternatives list (for the Fastest/Shortest pills) and
-                    // the one currently selected by window.route_preference.
-                    window.currentRouteAlternatives = e.routes;
-                    window.currentSelectedRoute = selected;
-
-                    var s = selected.summary || selected.properties || {};
-                    // LRM summary fields may be totalDistance/totalTime or distance/time depending on router
-                    var dist = s.totalDistance || s.total_distance || s.total_distance_in_meters || s.distance || 0;
-                    var time = s.totalTime || s.total_time || s.total_time_in_seconds || s.time || 0;
-                    var distText = (dist >= 1000) ? ((dist/1000).toFixed(1) + ' km') : (Math.round(dist) + ' m');
-                    var etaText = formatTimeSeconds(time);
-                    $('#chaseStatusDist').text(distText);
-                    $('#chaseStatusETA').text(etaText);
-                    if (typeof window.renderRoutePanel === 'function') { window.renderRoutePanel(); }
-                    if (typeof window.renderRoutingActivePill === 'function') { window.renderRoutingActivePill(); }
-                    // Also mirror the calculated route to the 3D Cesium view if available.
-                    try {
-                        var coords = null;
-                        if (selected.coordinates && Array.isArray(selected.coordinates)) {
-                            coords = selected.coordinates; // array of [lat,lon] or [lon,lat]
-                        } else if (selected.geometry && selected.geometry.coordinates) {
-                            coords = selected.geometry.coordinates; // GeoJSON [lon,lat]
-                        } else if (selected.waypoints && Array.isArray(selected.waypoints)) {
-                            coords = selected.waypoints.map(function(wp){ return [wp.lat || wp.latLng && wp.latLng.lat || wp.lat, wp.lon || wp.lng || wp.latLng && wp.latLng.lng || wp.lon]; });
-                        }
-
-                        if (coords && typeof window.showChaseRouteOnCesium === 'function') {
-                            // Normalize to array of {lat, lng}
-                            var latlngs = coords.map(function(c) {
-                                if (Array.isArray(c)) {
-                                    // heuristic: if first value is longitude (abs>90), swap
-                                    var a = parseFloat(c[0]); var b = parseFloat(c[1]);
-                                    if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
-                                        return {lat: b, lng: a};
-                                    }
-                                    return {lat: a, lng: b};
-                                } else if (c && c.lat !== undefined && c.lng !== undefined) {
-                                    return {lat: c.lat, lng: c.lng};
-                                } else if (c && c.latitude !== undefined && c.longitude !== undefined) {
-                                    return {lat: c.latitude, lng: c.longitude};
-                                }
-                                return null;
-                            }).filter(function(x){ return x !== null; });
-
-                            if (latlngs.length > 0) {
-                                // Create a normalized lat/lng array for Leaflet display and mobile export
-                                var normLatLngs = latlngs.map(function(ll){ return [ll.lat, ll.lng]; });
-                                try {
-                                    window.currentChaseRouteLatLngs = normLatLngs.map(function(a){ return {lat: a[0], lng: a[1]}; });
-                                    window.last_route_destination = [normLatLngs[normLatLngs.length-1][0], normLatLngs[normLatLngs.length-1][1]];
-                                    if (window._displayChasePolyline) { try{ window.map.removeLayer(window._displayChasePolyline); } catch(e){} window._displayChasePolyline = null; }
-                                    if (window._fallbackChasePolyline) { try{ window.map.removeLayer(window._fallbackChasePolyline); } catch(e){} window._fallbackChasePolyline = null; }
-                                    window._displayChasePolyline = L.polyline(normLatLngs, {color:'#3b82f6', weight:4, opacity:0.9}).addTo(window.map);
-                                } catch(e) { console.warn('Failed to create display polyline', e); }
-
-                                window.showChaseRouteOnCesium(latlngs);
-                                // Store last route as GeoJSON for mobile map compatibility (Apple/Google)
-                                try {
-                                    window.latestChaseRouteGeoJSON = {
-                                        type: 'Feature',
-                                        geometry: {
-                                            type: 'LineString',
-                                            coordinates: normLatLngs.map(function(ll){ return [ll[1], ll[0]]; })
-                                        },
-                                        properties: {}
-                                    };
-                                    pushLatestRouteToServer(window.latestChaseRouteGeoJSON);
-                                } catch(e) { console.warn('Failed to set latestChaseRouteGeoJSON', e); }
-                            }
-                        }
-                    } catch(errRouteCesium) {
-                        console.warn('Failed to mirror route to Cesium', errRouteCesium);
-                    }
-                }
-            }catch(err){ console.error('attachRouterEvents error', err); }
-
-            // UI handling: when a route is found, clear the pending timeout,
-            // hide the spinner and re-enable the start button. Kept in this single
-            // routesfound listener (previously a second, duplicate listener).
-            try {
-                if (window._chase_route_timer) { clearTimeout(window._chase_route_timer); window._chase_route_timer = null; }
-                $('#chaseRoutingSpinner').hide();
-                $('#startChaseBtn').prop('disabled', false);
-                if (typeof window.showAppToast === 'function') window.showAppToast('Route ready');
-                // Keep the Chase Routing modal open so user can review or re-run routing
-                // Do not auto-close the modal; user may manually close it when ready.
-            } catch (uiErr) { console.warn('chase routing UI update error', uiErr); }
-        });
-
-        // Handle routing errors to restore UI
-        r.on('routingerror', function(err){
-            try {
-                console.warn('Routing error', err);
-                $('#chaseRoutingSpinner').hide();
-                $('#startChaseBtn').prop('disabled', false);
-                if (typeof window.showAppToast === 'function') window.showAppToast('Routing failed');
-                $('#gpsStatus').text('Routing failed');
-                // Attempt HTTP OSRM fallback once if we have coordinates
-                if (!window._chase_tried_fallback && window._last_route_attempt) {
-                    try {
-                        fetchOsrmRoute(window._last_route_attempt.startLat, window._last_route_attempt.startLon, window._last_route_attempt.endLat, window._last_route_attempt.endLon);
-                    } catch(e) { console.warn('Fallback attempt error', e); }
-                }
-            } catch (er) { console.warn('Error handling routingerror UI', er); }
-        });
-    }
-
     // ---------------------------------------------------------------------
     // Route panel (full turn-by-turn) + routing-active stop pill.
     // Reads window.currentSelectedRoute / window.currentRouteAlternatives,
-    // populated by the routesfound handler / applyFetchedRoute above.
+    // populated by applyFetchedRoute() above.
     // ---------------------------------------------------------------------
 
     var ROUTE_ARROW_ICON = '<line x1="12" y1="19" x2="12" y2="6"></line><path d="M7 11 L12 6 L17 11"></path>';
@@ -718,9 +618,9 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     function classifyInstruction(instr){
         var t = (instr && instr.type) || '';
         var m = (instr && instr.modifier) || '';
-        if (t === 'DestinationReached' || t === 'WaypointReached') return 'arrive';
-        if (/Left/i.test(t) || /left/i.test(m)) return 'left';
-        if (/Right/i.test(t) || /right/i.test(m)) return 'right';
+        if (t === 'arrive') return 'arrive';
+        if (/left/i.test(m)) return 'left';
+        if (/right/i.test(m)) return 'right';
         return 'straight';
     }
 
@@ -733,23 +633,18 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         return '<svg width="' + dim + '" height="' + dim + '" viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + wrapped + '</svg>';
     }
 
-    // LRM's own Formatter turns an OSRM instruction into the human string
-    // ("Continue on County Rd 12", "Turn left onto Territorial Rd") - reused
-    // here instead of hand-building instruction text.
-    var _routeFormatter = null;
-    function formatRouteInstruction(instr, i){
-        try {
-            if (!_routeFormatter && typeof L !== 'undefined' && L.Routing && L.Routing.formatter){
-                _routeFormatter = L.Routing.formatter();
-            }
-            if (_routeFormatter){
-                var text = _routeFormatter.formatInstruction(instr, i);
-                if (text) return text;
-            }
-        } catch(e){ /* fall through to manual text below */ }
-        if (instr.text) return instr.text;
-        var road = instr.road ? (' onto ' + instr.road) : '';
-        return (instr.type || 'Continue') + road;
+    // Builds a human instruction string ("Continue on County Rd 12", "Turn
+    // left onto Territorial Rd") from OSRM's raw type/modifier/road fields -
+    // mirrors mobile's stepHeadline() (mobile/src/screens/route/RouteScreen.tsx),
+    // which reads the same backend-normalized step shape.
+    function formatRouteInstruction(instr){
+        if (!instr) return '';
+        if (instr.type === 'arrive') return 'Arrive near balloon (est.)';
+        var mod = instr.modifier || '';
+        if (mod.indexOf('left') !== -1) return instr.road ? ('Turn left onto ' + instr.road) : 'Turn left';
+        if (mod.indexOf('right') !== -1) return instr.road ? ('Turn right onto ' + instr.road) : 'Turn right';
+        if (instr.type === 'depart') return instr.road ? ('Head out on ' + instr.road) : 'Head out';
+        return instr.road ? ('Continue on ' + instr.road) : 'Continue straight';
     }
 
     function formatRouteDistance(m){
@@ -792,8 +687,44 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
             '</div>' +
             '<button type="button" class="routing-active-stop-btn" id="routingActivePillStopBtn">Stop</button>'
         ).show();
+        keepRoutingPillClearOfTelemCard();
     }
     window.renderRoutingActivePill = renderRoutingActivePill;
+
+    // #routingActivePill and #telemReadoutCard both anchor bottom-left, and
+    // the pill's CSS bottom offset (see .routing-active-pill) assumes a fixed
+    // telem-card height - but that card's actual height varies with its
+    // content (a long callsign wraps, DIST/ETA go from "--" to real values,
+    // etc.), so a purely CSS-based fixed gap can't reliably clear it; on a
+    // tall enough card the two visibly overlap. Measures the real on-screen
+    // geometry instead of guessing, and only ever pushes the pill *up* from
+    // its CSS-defined resting position - never down - so a short/absent telem
+    // card keeps the originally tuned spacing untouched.
+    function keepRoutingPillClearOfTelemCard(){
+        var pillEl = document.getElementById('routingActivePill');
+        var telemEl = document.getElementById('telemReadoutCard');
+        if (!pillEl || getComputedStyle(pillEl).display === 'none') return;
+
+        // Clear any previous correction before measuring, so this always
+        // compares against the pill's real CSS-defined position, not a stale
+        // correction left over from a taller telem card a moment ago.
+        pillEl.style.bottom = '';
+        if (!telemEl || getComputedStyle(telemEl).display === 'none') return;
+
+        var pillRect = pillEl.getBoundingClientRect();
+        var telemRect = telemEl.getBoundingClientRect();
+        var overlap = pillRect.bottom - telemRect.top;
+        if (overlap > 0){
+            var gap = 12;
+            pillEl.style.bottom = (parseFloat(getComputedStyle(pillEl).bottom) + overlap + gap) + 'px';
+        }
+    }
+
+    // The telem card's height can also change independently of the pill
+    // itself re-rendering (e.g. its DIST/ETA text updating on a telemetry
+    // tick) - a short interval catches that without needing to hook every
+    // call site that might resize it.
+    setInterval(keepRoutingPillClearOfTelemCard, 1000);
 
     $(document).on('click', '#routingActivePillStopBtn', function(e){
         e.stopPropagation();
@@ -805,6 +736,15 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     });
 
     function openRoutePanel(){
+        // Route and APRS/Log/Settings are mutually-exclusive screens (see
+        // the matching comment in toggleSettingsPanel()/toggleLogPanel() in
+        // index.html) - close whichever of those is open so this panel
+        // replaces it instead of rendering on top of it.
+        if (typeof window.closePanel === 'function'){
+            window.closePanel($('#logPanel'));
+            window.closePanel($('#settingsPanel'));
+        }
+
         route_panel_open = true;
         route_panel_collapsed = false;
         renderRoutePanel();
@@ -862,6 +802,17 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         var $panel = $('#routePanel');
         if ($panel.length === 0) return;
 
+        // Default the floating footer to hidden on every call - only the one
+        // branch below that actually wants it shown (collapsed AND open) is
+        // responsible for re-showing it. Every other return path (not
+        // chasing, no route yet, expanded) then self-heals for free instead
+        // of needing its own "and don't forget to hide the footer" line -
+        // see the comment further down on why that matters (closeRoutePanel()
+        // never resets route_panel_collapsed, so a stale collapsed footer can
+        // otherwise reappear from an unrelated background re-render after the
+        // panel's been closed).
+        $('#routePanelFooter').hide().empty();
+
         var cs = window.balloon_currently_chased;
         if (!cs || cs === 'none'){
             $panel.empty();
@@ -873,23 +824,34 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         var route = window.currentSelectedRoute;
         var alternatives = window.currentRouteAlternatives || (route ? [route] : []);
 
-        var headerHtml =
-            '<div class="route-panel-header">' +
-                '<span class="route-panel-title">Route</span>' +
-                '<button type="button" class="route-panel-collapse-btn" aria-label="' + (route_panel_collapsed ? 'Expand' : 'Collapse') + '">' +
-                    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(' + (route_panel_collapsed ? '180' : '0') + 'deg)"><path d="M6 9l6 6 6-6"></path></svg>' +
-                '</button>' +
-            '</div>';
+        // No separate "Route" title bar (the design doesn't have one) - the
+        // target row below doubles as the panel header, with the collapse
+        // toggle tucked into its corner.
 
         // Best-effort ALT/descent readout for the routed callsign: reuses the
         // telemetry card's already-current text rather than re-deriving it from
         // scratch, since the routed payload is normally also the followed one.
-        var targetAlt = $('#telemReadoutAlt').text();
-        var targetDesc = $('#telemReadoutDescent').text();
+        // #telemReadoutAlt already carries an "ALT " prefix baked into its text
+        // (see updateTelemReadout in balloon.js); strip it back off so the
+        // label can be styled separately from the value here, matching the
+        // design's two label+value stat pairs.
+        var targetAltValue = $('#telemReadoutAlt').text().replace(/^ALT\s*/i, '').trim();
+        var targetDescValue = $('#telemReadoutDescent').text().trim();
+        var targetStatsHtml = '';
+        if (targetAltValue && targetAltValue !== '—') {
+            targetStatsHtml += '<div class="route-target-stat"><span class="route-target-stat-label">ALT</span> <span class="route-target-stat-value mono">' + escapeHtml(targetAltValue) + '</span></div>';
+        }
+        if (targetDescValue && targetDescValue !== '—') {
+            targetStatsHtml += '<div class="route-target-stat"><span class="route-target-stat-label">DESC</span> <span class="route-target-stat-value route-target-stat-value--accent mono">' + escapeHtml(targetDescValue) + '</span></div>';
+        }
         var targetRowHtml = '<div class="route-target-row">' +
             '<span class="route-target-callsign mono">' + escapeHtml(cs) + '</span>' +
-            '<span class="route-target-meta mono">' + escapeHtml(targetAlt || '') +
-                (targetAlt && targetDesc ? ' &middot; ' : '') + escapeHtml(targetDesc || '') + '</span>' +
+            '<div class="route-target-row-right">' +
+                (targetStatsHtml ? '<div class="route-target-stats">' + targetStatsHtml + '</div>' : '') +
+                '<button type="button" class="route-panel-collapse-btn" aria-label="' + (route_panel_collapsed ? 'Expand' : 'Collapse') + '">' +
+                    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(' + (route_panel_collapsed ? '180' : '0') + 'deg)"><path d="M6 9l6 6 6-6"></path></svg>' +
+                '</button>' +
+            '</div>' +
         '</div>';
 
         var altPillsHtml = '';
@@ -903,7 +865,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         }
 
         if (!route){
-            $panel.html(headerHtml + targetRowHtml + altPillsHtml + '<div class="route-panel-waiting">Calculating route&hellip;</div>');
+            $panel.html(targetRowHtml + altPillsHtml + '<div class="route-panel-waiting">Calculating route&hellip;</div>');
             return;
         }
 
@@ -972,13 +934,22 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         // #routePanel's own backdrop-filter would otherwise make
         // position:fixed on a nested footer position relative to its box
         // instead of the viewport (same reasoning as #doaBearingPanel).
-        var $floatingFooter = $('#routePanelFooter');
-        if (route_panel_collapsed){
-            $floatingFooter.html('<div class="route-panel-footer">' + footerInnerHtml + '</div>').show();
-            $panel.html(headerHtml + targetRowHtml + altPillsHtml + heroHtml);
+        //
+        // Also gated on route_panel_open (not just route_panel_collapsed):
+        // closeRoutePanel() hides this footer but never resets
+        // route_panel_collapsed, so without this check a background
+        // re-render (e.g. the route recalculating as the car moves - see
+        // advanceDisplayedRouteAlongIndex/fetchOsrmRoute's own
+        // renderRoutePanel() calls, both unconditional on panel-open state)
+        // would silently reshow the stale collapsed footer on top of
+        // #routingActivePill/#telemReadoutCard after navigating away from
+        // the Route panel while still routing.
+        if (route_panel_collapsed && route_panel_open){
+            $('#routePanelFooter').html('<div class="route-panel-footer">' + footerInnerHtml + '</div>').show();
+            $panel.html(targetRowHtml + altPillsHtml + heroHtml);
         } else {
-            $floatingFooter.hide().empty();
-            $panel.html(headerHtml + targetRowHtml + altPillsHtml + heroHtml + passedRowHtml + listHtml + '<div class="route-panel-footer">' + footerInnerHtml + '</div>');
+            // Footer already defaulted to hidden at the top of this function.
+            $panel.html(targetRowHtml + altPillsHtml + heroHtml + passedRowHtml + listHtml + '<div class="route-panel-footer">' + footerInnerHtml + '</div>');
         }
     }
     window.renderRoutePanel = renderRoutePanel;
@@ -987,7 +958,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         // Re-center the map on the chase car, same helper the other side
         // panels use to keep their content clear of the map focus point.
         if (window.last_route_calc_position && typeof window.panMapToVisibleCenter === 'function'){
-            window.panMapToVisibleCenter(L.latLng(window.last_route_calc_position[0], window.last_route_calc_position[1]));
+            window.panMapToVisibleCenter(window.last_route_calc_position);
         }
     });
 
@@ -1000,37 +971,25 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         return ss + 's';
     }
 
-    // Add easy button on map once available
-    function addMapButton(){
+    // Wire up the Start Routing modal's handlers once its DOM exists. There's
+    // no floating map button for this anymore — routing opens via the Route
+    // nav pill (topbar/mobile tab bar, see index.html) or the telemetry
+    // card's "Get there before it lands" CTA, matching the design mockup.
+    function ensureRoutingUi(){
         try {
-            if (typeof L === 'undefined') { return false; }
-            if (typeof map === 'undefined') { return false; }
-
-            // Ensure dialog created
+            if (!document.getElementById('chaseRoutingModal')) { return false; }
             ensureDialog();
-
-            // Use the same icon shorthand used elsewhere (e.g. 'fa-car')
-            var btn = L.easyButton('fa-location-arrow', function(btnLocal, mapLocal){
-                populateCalls();
-                if (typeof window.openChaseRoutingModal === 'function') {
-                    window.openChaseRoutingModal();
-                } else {
-                    // fallback to previous jQuery UI dialog if present
-                    $('#chase-routing-dialog').dialog && $('#chase-routing-dialog').dialog('open');
-                }
-            }, 'Chase Routing', 'chaseRoutingButton', { position: 'topright' });
-            btn.addTo(map);
             return true;
         } catch (err) {
-            console.error('[chase_routing] addMapButton error', err);
+            console.error('[chase_routing] ensureRoutingUi error', err);
             return false;
         }
     }
 
-    // Wait for map to exist, then add button. Poll for a short time.
+    // Wait for the modal to exist, then wire it up. Poll for a short time.
     var tries = 0;
     var t = setInterval(function(){
-        if (addMapButton()){ clearInterval(t); }
+        if (ensureRoutingUi()){ clearInterval(t); }
         if (++tries > 40){ clearInterval(t); }
     }, 250);
 

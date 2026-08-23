@@ -1,7 +1,7 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-    <title>Project Horus Chase Mapper</title>
+    <title>EasyBearing &mdash; ChaseMapper</title>
 
     <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/leaflet.css') }}" rel="stylesheet">
@@ -14,6 +14,8 @@
     <link href="{{ url_for('static', filename='css/font-awesome.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/jquery-ui.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/chasemapper.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/bearing_pages.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/bearing_entry.css') }}" rel="stylesheet">
 
 
     <!-- I should probably feel bad for using so many libraries, but apparently this is the way thing are done :-/ -->
@@ -36,9 +38,9 @@
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
     <!-- car.js: just for the multi-user identity helpers (my_car_client_id,
-         getMyCarName, isMyOwnCarTelemetry, startSharingMyLocation) - this
-         page doesn't render other chasers, so its map-marker functions are
-         never called here. -->
+         getMyCarName, isMyOwnCarTelemetry, startSharingMyLocation,
+         my_device_position_active) - this page doesn't render other
+         chasers, so its map-marker functions are never called here. -->
     <script src="{{ url_for('static', filename='js/car.js') }}"></script>
 
 
@@ -69,6 +71,10 @@
         // Socket.IO instance.
         var socket;
 
+        function modulus(x, m){
+            return (x % m + m) % m;
+        }
+
         $(document).ready(function() {
 
             // Connect to the Socket.IO server.
@@ -91,12 +97,12 @@
             // LEAFLET MAP SETUP
             //
             // Setup a basic Leaflet map
-            map = L.map('map').setView([chase_config.default_lat, chase_config.default_lon], 12);
+            map = L.map('map', {zoomControl: false}).setView([chase_config.default_lat, chase_config.default_lon], 12);
 
             // Add OSM Map Layer
             var osm_map = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: ''
-            }).addTo(map);
+            });
 
             // Add OSM Topo Map Layer
             var osm_topo_map = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
@@ -104,29 +110,30 @@
             });
 
             // Add ESRI Satellite Map layers.
-            var esrimapLink = 
+            var esrimapLink =
             '<a href="http://www.esri.com/">Esri</a>';
-            var esriwholink = 
+            var esriwholink =
             'i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community';
             var esri_sat_map = L.tileLayer(
-            'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+            'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             {
                 attribution: '',
                 maxZoom: 18,
             });
-            // Dark Matter map layer, one of the maps suitable for 'dark mode'
+            // Dark Matter map layer - default here, matching the Flight Deck's
+            // dark map treatment (this page is always dark, no theme toggle).
             var dark_matter_map = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png', {
                 attribution: ''
-            });
+            }).addTo(map);
 
-            
 
-            var map_layers = {'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map, 'Dark Matter':dark_matter_map};
+
+            var map_layers = {'Dark Matter':dark_matter_map, 'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map};
 
             // Add ThunderForest layers, if we have a key provided.
             if (chase_config.thunderforest_api_key !== 'none'){
                 // Thunderforest Outdoors layer.
-                var thunderforest_outdoors = L.tileLayer('https://tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey='+chase_config.thunderforest_api_key, 
+                var thunderforest_outdoors = L.tileLayer('https://tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey='+chase_config.thunderforest_api_key,
                 {
                     attribution: ''
                 });
@@ -136,7 +143,7 @@
 
             if (chase_config.stadia_api_key !== 'none'){
                 // Stadia Alidade Smooth Dark Layer.
-                var alidade_smooth_dark = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png?apikey='+chase_config.stadia_api_key, 
+                var alidade_smooth_dark = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png?apikey='+chase_config.stadia_api_key,
                 {
                     attribution: ''
                 });
@@ -152,13 +159,10 @@
 
 
 
-            
+
             // Add layer selection control (top right).
             map.addControl(new L.Control.Layers(map_layers));
-
-
-            // Add custom controls, which show various sets of data.
-
+            map.zoomControl = L.control.zoom({position: 'topright'}).addTo(map);
 
             L.easyButton('fa-car', function(btn, map){
                 map.panTo(chase_car_position.latest_data);
@@ -167,28 +171,11 @@
             }
             ).addTo(map);
 
-            map.zoomControl.setPosition('topright');
-
-            // Chase Car Speed Display
-            L.control.custom({
-                position: 'bottomcenter',
-                content : "<div class='dataAgeHeader' id='bearing_header'></div><div id='bearing_data' class='bearingData'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'bearing_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
 
             chase_car_position.marker = L.marker(chase_car_position.latest_data,{title:"Chase Car", icon: carIcon, rotationOrigin: "center center"})
                     .addTo(map);
 
-            var bearing_path = L.polyline([chase_car_position.latest_data],{title:"Bearing", color:'red', weight:2.0});
+            var bearing_path = L.polyline([chase_car_position.latest_data],{title:"Bearing", color:'#FFCB05', weight:2.5, dashArray: '5 6', opacity: 0.55});
             bearing_path.addTo(map);
 
 
@@ -213,64 +200,66 @@
                 return L.latLng([lat2 * radInv, lon2]);
             }
 
+            // Rotates the dial's handle group + updates the degree readout.
+            // Does NOT touch the map (see updateBearing()) - called on every
+            // drag/nudge so the dial feels immediate even before the next
+            // map redraw.
+            function updateDialUI(){
+                document.getElementById('bpDialHandle').setAttribute('transform', 'rotate(' + current_bearing + ' 150 150)');
+                document.getElementById('bpDialReadout').textContent = current_bearing.toFixed(0) + '°';
+            }
+
             function updateBearing(){
                 var _end = calculateDestination(L.latLng(chase_car_position.latest_data), current_bearing, bearing_length);
 
                 bearing_path.setLatLngs([L.latLng(chase_car_position.latest_data), _end]);
 
-                $("#bearing_data").text(current_bearing.toFixed(0));
+                updateDialUI();
             }
 
-            function modulus(x, m){
-                return (x % m + m) % m;
+            function setBearing(value){
+                current_bearing = modulus(value, 360.0);
+                updateBearing();
             }
 
-            // Controls to change bearings
-            L.easyButton('<', function(btn, map){
-                current_bearing = modulus((current_bearing-1),360.0);
-                updateBearing();
-            }, 'Bearing CCW 1 degrees', 'bearingCCW1Deg', {
-                position: 'bottomleft'
-            }).addTo(map);
-            L.easyButton('<<', function(btn, map){
-                current_bearing = modulus((current_bearing-5),360.0);
-                updateBearing();
-            }, 'Bearing CCW 5 degrees', 'bearingCCW5Deg', {
-                position: 'bottomleft'
-            }
-            ).addTo(map);
-            L.easyButton('<<<', function(btn, map){
-                current_bearing = modulus((current_bearing-10),360.0);
-                updateBearing();
-            }, 'Bearing CCW 10 degrees', 'bearingCCW10Deg', {
-                position: 'bottomleft'
-            }
-            ).addTo(map);
+            // Nudge buttons
+            $('.bp-nudge-btn').on('click', function(){
+                setBearing(current_bearing + parseFloat($(this).attr('data-delta')));
+            });
 
+            // Drag-to-aim on the dial itself - large touch target (the whole
+            // dial face, not just the handle), since this is meant to be
+            // usable one-handed in a moving vehicle.
+            var _dialWrap = document.getElementById('bpDialWrap');
+            var _dialSvg = document.getElementById('bpDialSvg');
+            var _dragging = false;
 
-            L.easyButton('>', function(btn, map){
-                current_bearing = modulus((current_bearing+1),360.0);
-                updateBearing();
-            }, 'Bearing CW 10 degrees', 'bearingCW1Deg', {
-                position: 'bottomright'
+            function angleFromPointer(evt){
+                var _rect = _dialSvg.getBoundingClientRect();
+                var _scale = 300 / _rect.width;
+                var _x = (evt.clientX - _rect.left) * _scale;
+                var _y = (evt.clientY - _rect.top) * _scale;
+                var _deg = Math.atan2(_x - 150, -(_y - 150)) * 180 / Math.PI;
+                return modulus(_deg, 360);
             }
-            ).addTo(map);
 
-            L.easyButton('>>', function(btn, map){
-                current_bearing = modulus((current_bearing+5),360.0);
-                updateBearing();
-            }, 'Bearing CW 5 degrees', 'bearingCW5Deg', {
-                position: 'bottomright'
+            _dialWrap.addEventListener('pointerdown', function(evt){
+                if ($('#bpDialSheet').hasClass('bp-sheet--warning')) return;
+                _dragging = true;
+                try{ _dialWrap.setPointerCapture(evt.pointerId); }catch(e){}
+                setBearing(angleFromPointer(evt));
+            });
+            _dialWrap.addEventListener('pointermove', function(evt){
+                if (!_dragging) return;
+                setBearing(angleFromPointer(evt));
+            });
+            function _endDrag(evt){
+                if (!_dragging) return;
+                _dragging = false;
+                try{ _dialWrap.releasePointerCapture(evt.pointerId); }catch(e){}
             }
-            ).addTo(map);
-
-            L.easyButton('>>>', function(btn, map){
-                current_bearing = modulus((current_bearing+10),360.0);
-                updateBearing();
-            }, 'Bearing CW 10 degrees', 'bearingCW10Deg', {
-                position: 'bottomright'
-            }
-            ).addTo(map);
+            _dialWrap.addEventListener('pointerup', _endDrag);
+            _dialWrap.addEventListener('pointercancel', _endDrag);
 
             // Tell the server we are connected and ready for data.
             socket.on('connect', function() {
@@ -284,7 +273,23 @@
             // from wherever *they* are, so it needs to know that.
             startSharingMyLocation();
 
-            $("#bearing_data").click(function(){
+            var _toastTimer = null;
+            function showBearingSentToast(value){
+                $('#bpToastText').text('Bearing sent · ' + value.toFixed(0) + '°');
+                $('#bpToast').addClass('is-visible');
+                if (_toastTimer) clearTimeout(_toastTimer);
+                _toastTimer = setTimeout(function(){ $('#bpToast').removeClass('is-visible'); }, 2600);
+            }
+
+            var _errorToastTimer = null;
+            function showErrorToast(message){
+                $('#bpErrorToastText').text(message);
+                $('#bpErrorToast').addClass('is-visible');
+                if (_errorToastTimer) clearTimeout(_errorToastTimer);
+                _errorToastTimer = setTimeout(function(){ $('#bpErrorToast').removeClass('is-visible'); }, 3200);
+            }
+
+            $('#bpSendBtn').on('click', function(){
                 // Push a bearing to the backend for display.
                 _bearing_info = {
                     'type': 'BEARING',
@@ -298,13 +303,29 @@
                 };
 
                 socket.emit('add_manual_bearing', _bearing_info);
-
+                showBearingSentToast(current_bearing);
             });
 
             socket.on('bearing_rejected', function(data){
                 var _reason = (data && data.reason) || '';
-                alert('Bearing not recorded' + (_reason === 'no_known_position' ? ': enable location sharing first.' : '.'));
+                if (_reason === 'no_known_position'){
+                    updateLocationWarning(true);
+                } else {
+                    showErrorToast('Bearing not recorded.');
+                }
             });
+
+            $('#bpEnableLocationBtn').on('click', function(){
+                startSharingMyLocation();
+                updateLocationWarning();
+            });
+
+            function updateLocationWarning(force_on){
+                var _sharing = !force_on && (typeof my_device_position_active !== 'undefined') && my_device_position_active;
+                $('#bpDialSheet').toggleClass('bp-sheet--warning', !_sharing);
+            }
+            updateLocationWarning();
+            setInterval(updateLocationWarning, 1000);
 
 
             function handleTelemetry(data){
@@ -326,6 +347,7 @@
                     chase_car_position.speed = data.speed; // m/s
 
                     chase_car_position.marker.setLatLng(chase_car_position.latest_data).update();
+                    map.panTo(chase_car_position.latest_data, {animate: false});
                     updateBearing();
                 }
             }
@@ -337,14 +359,89 @@
                 handleTelemetry(data);
             });
 
-
-            window.setInterval(function(){
-                // Dunno
-            },1000); 
+            updateDialUI();
         });
     </script>
 </head>
-<body>
-    <div id="map" class="map"></div>
+<body class="dark-theme">
+    <div id="map" class="map bp-map"></div>
+
+    <div class="bp-header">
+        <a href="/" class="bp-back" aria-label="Back to map">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>
+        </a>
+        <div class="bp-header-title">EasyBearing</div>
+        <div class="bp-header-spacer"></div>
+    </div>
+
+    <div id="bpToast" class="bp-toast">
+        <span class="bp-toast-check">&check;</span>
+        <span id="bpToastText" class="bp-toast-text">Bearing sent</span>
+    </div>
+
+    <div id="bpErrorToast" class="bp-error-toast">
+        <span id="bpErrorToastText">Bearing not recorded.</span>
+    </div>
+
+    <div id="bpDialSheet" class="bp-dial-sheet">
+        <div class="bp-normal-state">
+            <div class="bp-dial-col">
+                <div class="bp-dial-label mono">EASYBEARING</div>
+                <div id="bpDialWrap" class="bp-dial-wrap">
+                    <svg id="bpDialSvg" class="bp-dial-svg" viewBox="0 0 300 300">
+                        <circle cx="150" cy="150" r="60" fill="none" stroke="rgba(255,255,255,.08)"></circle>
+                        <circle cx="150" cy="150" r="100" fill="none" stroke="rgba(255,255,255,.08)"></circle>
+                        <circle cx="150" cy="150" r="135" fill="none" stroke="rgba(255,255,255,.1)"></circle>
+                        <line x1="150" y1="15" x2="150" y2="285" stroke="rgba(255,255,255,.06)"></line>
+                        <line x1="15" y1="150" x2="285" y2="150" stroke="rgba(255,255,255,.06)"></line>
+                        <g id="bpDialHandle" transform="rotate(0 150 150)">
+                            <line x1="150" y1="150" x2="150" y2="30" stroke="#FFCB05" stroke-width="3"></line>
+                            <circle cx="150" cy="30" r="13" fill="#FFCB05" stroke="#0a0d16" stroke-width="3"></circle>
+                        </g>
+                        <circle cx="150" cy="150" r="4" fill="rgba(255,255,255,.4)"></circle>
+                        <text x="150" y="34" text-anchor="middle" fill="rgba(230,238,246,.45)" font-family="IBM Plex Mono, monospace" font-size="13">N</text>
+                        <text x="150" y="272" text-anchor="middle" fill="rgba(230,238,246,.45)" font-family="IBM Plex Mono, monospace" font-size="13">S</text>
+                        <text x="268" y="154" text-anchor="middle" fill="rgba(230,238,246,.45)" font-family="IBM Plex Mono, monospace" font-size="13">E</text>
+                        <text x="30" y="154" text-anchor="middle" fill="rgba(230,238,246,.45)" font-family="IBM Plex Mono, monospace" font-size="13">W</text>
+                    </svg>
+                    <div id="bpDialReadout" class="bp-dial-readout mono">000&deg;</div>
+                </div>
+            </div>
+            <div class="bp-controls-col">
+                <div class="bp-nudge-row">
+                    <button type="button" class="bp-nudge-btn" data-delta="-10">&minus;10&deg;</button>
+                    <button type="button" class="bp-nudge-btn" data-delta="-5">&minus;5&deg;</button>
+                    <button type="button" class="bp-nudge-btn" data-delta="-1">&minus;1&deg;</button>
+                    <button type="button" class="bp-nudge-btn" data-delta="1">+1&deg;</button>
+                    <button type="button" class="bp-nudge-btn" data-delta="5">+5&deg;</button>
+                    <button type="button" class="bp-nudge-btn" data-delta="10">+10&deg;</button>
+                </div>
+                <button type="button" id="bpSendBtn" class="bp-send-btn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0a0d16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    Send Bearing
+                </button>
+                <div class="bp-dial-hint mono">or drag the dial handle to aim</div>
+            </div>
+        </div>
+        <div class="bp-warning-state">
+            <div class="bp-warning-box">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"></path><path d="M12 17h.01"></path><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path></svg>
+                <div>
+                    <div class="bp-warning-title">Location sharing is off</div>
+                    <div class="bp-warning-sub">A bearing needs your position to be recorded. Enable sharing to continue.</div>
+                </div>
+            </div>
+            <button type="button" id="bpEnableLocationBtn" class="bp-warning-btn">Enable Location Sharing</button>
+            <div class="bp-warning-ghost">
+                <div class="bp-warning-ghost-label mono">DIAL DISABLED</div>
+                <svg width="110" height="110" viewBox="0 0 300 300">
+                    <circle cx="150" cy="150" r="60" fill="none" stroke="rgba(255,255,255,.08)"></circle>
+                    <circle cx="150" cy="150" r="100" fill="none" stroke="rgba(255,255,255,.08)"></circle>
+                    <circle cx="150" cy="150" r="135" fill="none" stroke="rgba(255,255,255,.1)"></circle>
+                    <circle cx="150" cy="150" r="4" fill="rgba(255,255,255,.3)"></circle>
+                </svg>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

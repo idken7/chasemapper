@@ -33,6 +33,7 @@ def _reset_api_state(monkeypatch):
             "provider": None,
             "provider_base": None,
             "updated_at": None,
+            "steps": None,
         }
     with horusmapper.api_rate_limit_lock:
         horusmapper.api_rate_limit_buckets.clear()
@@ -61,7 +62,37 @@ def _osrm_success_body():
                 },
                 "distance": 1234.5,
                 "duration": 300.0,
-            }
+                "legs": [
+                    {
+                        "steps": [
+                            {
+                                "maneuver": {"type": "depart", "modifier": None, "location": [-83.0, 39.0]},
+                                "name": "Main St",
+                                "distance": 800.0,
+                            },
+                            {
+                                "maneuver": {"type": "turn", "modifier": "left", "location": [-83.05, 39.05]},
+                                "name": "County Rd 12",
+                                "distance": 434.5,
+                            },
+                            {
+                                "maneuver": {"type": "arrive", "modifier": None, "location": [-83.1, 39.1]},
+                                "name": "",
+                                "distance": 0.0,
+                            },
+                        ]
+                    }
+                ],
+            },
+            {
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-83.0, 39.0], [-83.15, 39.05], [-83.1, 39.1]],
+                },
+                "distance": 1000.0,
+                "duration": 500.0,
+                "legs": [{"steps": []}],
+            },
         ]
     }
 
@@ -91,6 +122,25 @@ def test_api_route_success(client):
     assert body["duration_s"] == 300.0
     assert body["feature"]["type"] == "Feature"
     assert body["feature"]["geometry"]["type"] == "LineString"
+
+    # steps: normalized turn-by-turn from the fastest route's legs/steps.
+    assert body["steps"] == [
+        {"type": "depart", "modifier": None, "name": "Main St", "distance_m": 800.0, "location": [-83.0, 39.0]},
+        {"type": "turn", "modifier": "left", "name": "County Rd 12", "distance_m": 434.5, "location": [-83.05, 39.05]},
+        {"type": "arrive", "modifier": None, "name": "", "distance_m": 0.0, "location": [-83.1, 39.1]},
+    ]
+
+    # alternatives: fastest (lower duration) and shortest (lower distance) picked
+    # independently, matching chase_routing.js's selection logic.
+    assert len(body["alternatives"]) == 2
+    fastest, shortest = body["alternatives"]
+    assert fastest["label"] == "fastest"
+    assert fastest["duration_s"] == 300.0
+    assert fastest["distance_m"] == 1234.5
+    assert shortest["label"] == "shortest"
+    assert shortest["distance_m"] == 1000.0
+    assert shortest["duration_s"] == 500.0
+    assert shortest["steps"] == []
 
 
 def test_api_route_invalid_coordinates(client):
@@ -189,7 +239,7 @@ def test_api_mobile_state_returns_expected_shape(client):
     assert "route" in body
     assert "eta" in body
     assert set(body["route"].keys()) >= {
-        "geojson", "distance_m", "duration_s", "provider", "provider_base", "updated_at",
+        "geojson", "distance_m", "duration_s", "provider", "provider_base", "updated_at", "steps",
     }
     assert set(body["eta"].keys()) >= {
         "route_duration_s", "payload_time_to_landing_s", "payload_time_to_landing",

@@ -16,6 +16,7 @@ import json
 import logging
 import flask
 from flask_socketio import SocketIO
+from socketio.exceptions import ConnectionRefusedError
 import os.path
 import math
 import ipaddress
@@ -24,7 +25,7 @@ import time
 import traceback
 from threading import Thread, Lock, Event
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse
 import os
 import secrets
@@ -41,7 +42,7 @@ from chasemapper.gps import SerialGPS
 from chasemapper.gpsd import GPSDAdaptor
 from chasemapper.atmosphere import time_to_landing
 from chasemapper.listeners import OziListener, UDPListener, fix_datetime
-from chasemapper.predictor import predictor_spawn_download, model_download_running
+from chasemapper.predictor import predictor_spawn_download, model_download_running, get_wind_profile
 from chasemapper.habitat import (
     HabitatChaseUploader,
     initListenerCallsign,
@@ -70,7 +71,9 @@ app.jinja_env.auto_reload = True
 # SocketIO instance
 socketio = SocketIO(app)
 
-# Store the last computed chase route (GeoJSON) on the server for mobile/native clients
+# Store the last computed chase route (GeoJSON) on the server for the desktop web
+# client and any legacy caller that doesn't identify itself with a client_id (see
+# client_routes below for the per-client equivalent used by mobile clients).
 latest_route_geojson = None
 latest_route_lock = Lock()
 latest_route_meta = {
@@ -79,11 +82,36 @@ latest_route_meta = {
     "provider": None,
     "provider_base": None,
     "updated_at": None,
+    "steps": None,
 }
+
+# Per-client computed routes, keyed by the mobile app's persisted client_id (see
+# mobile/src/location/clientIdentity.ts). Each mobile chaser has their own start
+# position and their own followed target, so their route has to be computed and
+# stored independently — folding it into the single latest_route_geojson/
+# latest_route_meta globals above meant every mobile client's /api/mobile_state
+# poll returned whichever client's /api/route call happened to land last,
+# regardless of who asked for it or where they actually were. Mirrors
+# client_car_tracks' per-client_id dict + lock pattern.
+client_routes = {}
+client_routes_lock = Lock()
 
 # API security/rate-limit state for internet-exposed route/state endpoints.
 api_rate_limit_lock = Lock()
 api_rate_limit_buckets = {}
+# Every distinct (client_ip, bucket_name) pair ever seen gets its own entry
+# above, which otherwise never gets cleaned up. Periodically sweep out buckets
+# that have gone quiet so a long-running server doesn't accumulate one forever
+# per visitor. Counter/threshold are only ever touched under api_rate_limit_lock.
+_rate_limit_calls_since_sweep = 0
+_RATE_LIMIT_SWEEP_INTERVAL = 500
+# A bucket's deque always ends non-empty after _consume_rate_limit touches it
+# (the trim step is immediately followed by either an append or a refusal
+# that leaves >=1 entry) - so "is this bucket empty" never actually happens
+# and can't be used to detect an abandoned one. Instead, treat a bucket whose
+# *most recent* recorded request is older than this as abandoned, regardless
+# of its own (possibly much shorter) configured window.
+_RATE_LIMIT_BUCKET_STALE_S = 3600
 
 
 def _bool_from_env(value, default=False):
@@ -196,6 +224,7 @@ def _rate_limit_config_for_endpoint(path, method):
 
 
 def _consume_rate_limit(client_ip, bucket_name, limit, window_s):
+    global _rate_limit_calls_since_sweep
     now = time.time()
     bucket_key = f"{client_ip}:{bucket_name}"
 
@@ -212,10 +241,19 @@ def _consume_rate_limit(client_ip, bucket_name, limit, window_s):
 
         if len(dq) >= limit:
             retry_after = int(max(1, math.ceil((dq[0] + window_s) - now)))
-            return False, retry_after
+            result = (False, retry_after)
+        else:
+            dq.append(now)
+            result = (True, 0)
 
-        dq.append(now)
-        return True, 0
+        _rate_limit_calls_since_sweep += 1
+        if _rate_limit_calls_since_sweep >= _RATE_LIMIT_SWEEP_INTERVAL:
+            _rate_limit_calls_since_sweep = 0
+            _stale_cutoff = now - _RATE_LIMIT_BUCKET_STALE_S
+            for _key in [k for k, v in api_rate_limit_buckets.items() if not v or v[-1] <= _stale_cutoff]:
+                del api_rate_limit_buckets[_key]
+
+        return result
 
 
 #
@@ -308,7 +346,15 @@ def _broadcast_presence():
 # position by reusing/guessing their client_id while that browser is still
 # actively connected. A client_id is free to be (re)claimed by any sid once
 # its previous owner disconnects (see the `disconnect` handler below).
-client_car_owners = {}  # client_id -> sid
+# A lease, not a permanent lock: an owner that stops sending device_position
+# updates for longer than this is assumed to be a dead connection (network
+# drop that Socket.IO's own ping-timeout hasn't noticed yet - realistic on a
+# flaky cell connection in a moving car) and a reconnecting client with the
+# same client_id is allowed to take back over, rather than being locked out
+# until Socket.IO's ping-timeout eventually fires the `disconnect` event.
+CLIENT_CAR_OWNERSHIP_GRACE_S = 20.0
+
+client_car_owners = {}  # client_id -> (sid, last_seen_monotonic)
 client_car_owners_by_sid = {}  # sid -> set of client_ids
 client_car_owners_lock = Lock()
 
@@ -316,10 +362,20 @@ client_car_owners_lock = Lock()
 def _claim_client_car_ownership(client_id, sid):
     """Return True if `sid` is allowed to act as `client_id` right now."""
     with client_car_owners_lock:
-        _owner_sid = client_car_owners.get(client_id)
-        if _owner_sid is not None and _owner_sid != sid:
-            return False
-        client_car_owners[client_id] = sid
+        _owner = client_car_owners.get(client_id)
+        if _owner is not None:
+            _owner_sid, _last_seen = _owner
+            if _owner_sid != sid and (time.monotonic() - _last_seen) < CLIENT_CAR_OWNERSHIP_GRACE_S:
+                return False
+            if _owner_sid != sid:
+                # Stale lease (owner gone quiet past the grace period) - release it
+                # from its old sid's bookkeeping before handing it to the new one.
+                _old_owned = client_car_owners_by_sid.get(_owner_sid)
+                if _old_owned is not None:
+                    _old_owned.discard(client_id)
+                    if not _old_owned:
+                        client_car_owners_by_sid.pop(_owner_sid, None)
+        client_car_owners[client_id] = (sid, time.monotonic())
         client_car_owners_by_sid.setdefault(sid, set()).add(client_id)
         return True
 
@@ -330,7 +386,8 @@ def _release_client_car_ownership(sid):
         if not _owned:
             return
         for _client_id in _owned:
-            if client_car_owners.get(_client_id) == sid:
+            _owner = client_car_owners.get(_client_id)
+            if _owner is not None and _owner[0] == sid:
                 client_car_owners.pop(_client_id, None)
 
 
@@ -406,7 +463,7 @@ def enforce_api_endpoint_security():
 
 
 def _utc_now_iso():
-    return pytz.utc.localize(datetime.utcnow()).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_float_or_none(value):
@@ -518,7 +575,12 @@ def _get_osrm_base_url():
 
 
 def _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon, timeout_s=8.0):
-    """Fetch a driving route from OSRM and return first route object."""
+    """Fetch driving route(s) from OSRM and return the full routes list.
+
+    Requests `steps=true` (turn-by-turn maneuvers, for the mobile app's
+    turn list) and `alternatives=true` (mirrors the desktop web app's
+    Fastest/Shortest picker in static/js/chase_routing.js).
+    """
     base_url = _get_osrm_base_url()
     url = (
         f"{base_url}/route/v1/driving/"
@@ -527,6 +589,8 @@ def _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon, timeout_s=8.0):
     params = {
         "overview": "full",
         "geometries": "geojson",
+        "steps": "true",
+        "alternatives": "true",
         "annotations": "distance,duration",
     }
     resp = requests.get(url, params=params, timeout=timeout_s)
@@ -535,7 +599,41 @@ def _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon, timeout_s=8.0):
     routes = data.get("routes", []) if isinstance(data, dict) else []
     if not routes:
         raise ValueError("No routes returned by OSRM")
-    return routes[0], base_url
+    return routes, base_url
+
+
+def _normalize_osrm_steps(route):
+    """Flatten an OSRM route's legs/steps into a compact turn-by-turn list.
+
+    `location` (the maneuver's [lon, lat]) is kept so mobile clients can figure out
+    which steps the chase car has already passed by projecting its own position onto
+    the route geometry - see utils/routeProgress.ts on the mobile side.
+    """
+    steps_out = []
+    for leg in route.get("legs", []) or []:
+        for step in leg.get("steps", []) or []:
+            maneuver = step.get("maneuver") if isinstance(step.get("maneuver"), dict) else {}
+            location = maneuver.get("location")
+            steps_out.append({
+                "type": maneuver.get("type"),
+                "modifier": maneuver.get("modifier"),
+                "name": step.get("name") or "",
+                "distance_m": _safe_float_or_none(step.get("distance")) or 0.0,
+                "location": location if isinstance(location, list) and len(location) == 2 else None,
+            })
+    return steps_out
+
+
+def _pick_route_alternatives(routes):
+    """Return (fastest, shortest) routes from OSRM's alternatives list.
+
+    Mirrors the desktop web app's selection in chase_routing.js: fastest =
+    minimum duration, shortest = minimum distance (falling back to the
+    same route for both when only one candidate is returned).
+    """
+    fastest = min(routes, key=lambda r: r.get("duration", float("inf")))
+    shortest = min(routes, key=lambda r: r.get("distance", float("inf")))
+    return fastest, shortest
 
 
 def create_app():
@@ -833,6 +931,11 @@ current_payload_tracks = (
     {}
 )  # Store of payload Track objects which are used to calculate instantaneous parameters.
 
+# Hard ceiling on current_payloads[callsign]["path"] (the raw [lat, lon, alt] list
+# sent to web clients for flight-path rendering) so a multi-hour/multi-day session
+# doesn't grow it without bound. Mirrors GenericTrack.MAX_TRACK_HISTORY.
+MAX_TELEMETRY_PATH_POINTS = 20000
+
 # Lock protecting access to `current_payloads` and `current_payload_tracks`.
 payloads_lock = Lock()
 
@@ -1007,10 +1110,16 @@ def api_route():
       "distance_m": float,
       "duration_s": float,
       "provider": "osrm",
-      "provider_base": "https://..."
+      "provider_base": "https://...",
+      "steps": [{"type": str, "modifier": str|null, "name": str, "distance_m": float}, ...],
+      "alternatives": [{"label": "fastest"|"shortest", "feature": ..., "distance_m": ..., "duration_s": ..., "steps": ...}, ...]
     }
+
+    `steps`/`alternatives` mirror the fastest route; the desktop web app's
+    turn list is computed separately client-side (Leaflet Routing Machine),
+    but mobile clients have no equivalent, so the backend does it here.
     """
-    global latest_route_geojson, latest_route_meta
+    global latest_route_geojson, latest_route_meta, client_routes
 
     try:
         payload = flask.request.get_json(force=True) or {}
@@ -1025,37 +1134,69 @@ def api_route():
     except Exception:
         return flask.jsonify({"error": "invalid coordinates"}), 400
 
+    # Identifies which mobile chaser this route belongs to, so it's stored under
+    # client_routes instead of the shared latest_route_geojson/latest_route_meta
+    # globals (desktop, which has no client_id, keeps using those as before).
+    client_id = payload.get("client_id")
+    if not isinstance(client_id, str) or not client_id.strip():
+        client_id = None
+
     try:
-        route, provider_base = _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon)
-        geometry = route.get("geometry", {"type": "LineString", "coordinates": []})
-        feature = {
-            "type": "Feature",
-            "geometry": geometry,
-            "properties": {
-                "source": "osrm-backend",
-                "distance_m": route.get("distance", 0.0),
-                "duration_s": route.get("duration", 0.0),
-                "updated_at": _utc_now_iso(),
-            },
-        }
+        routes, provider_base = _fetch_osrm_route(start_lat, start_lon, end_lat, end_lon)
+        fastest, shortest = _pick_route_alternatives(routes)
 
-        with latest_route_lock:
-            latest_route_geojson = feature
-            latest_route_meta = {
-                "distance_m": route.get("distance", 0.0),
-                "duration_s": route.get("duration", 0.0),
-                "provider": "osrm",
-                "provider_base": provider_base,
-                "updated_at": feature["properties"]["updated_at"],
+        def _build_alternative(route, label):
+            geometry = route.get("geometry", {"type": "LineString", "coordinates": []})
+            feature = {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "source": "osrm-backend",
+                    "distance_m": route.get("distance", 0.0),
+                    "duration_s": route.get("duration", 0.0),
+                    "updated_at": _utc_now_iso(),
+                },
             }
-
-        return flask.jsonify(
-            {
+            return {
+                "label": label,
                 "feature": feature,
                 "distance_m": route.get("distance", 0.0),
                 "duration_s": route.get("duration", 0.0),
+                "steps": _normalize_osrm_steps(route),
+            }
+
+        alternatives = [_build_alternative(fastest, "fastest"), _build_alternative(shortest, "shortest")]
+        primary = alternatives[0]
+        primary_meta = {
+            "distance_m": primary["distance_m"],
+            "duration_s": primary["duration_s"],
+            "provider": "osrm",
+            "provider_base": provider_base,
+            "updated_at": primary["feature"]["properties"]["updated_at"],
+            "steps": primary["steps"],
+        }
+
+        if client_id:
+            with client_routes_lock:
+                client_routes[client_id] = {
+                    "geojson": primary["feature"],
+                    "meta": primary_meta,
+                    "last_seen": time.time(),
+                }
+        else:
+            with latest_route_lock:
+                latest_route_geojson = primary["feature"]
+                latest_route_meta = primary_meta
+
+        return flask.jsonify(
+            {
+                "feature": primary["feature"],
+                "distance_m": primary["distance_m"],
+                "duration_s": primary["duration_s"],
                 "provider": "osrm",
                 "provider_base": provider_base,
+                "steps": primary["steps"],
+                "alternatives": alternatives,
             }
         ), 200
     except requests.RequestException:
@@ -1080,9 +1221,25 @@ def api_mobile_state():
     except Exception:
         payloads_snapshot = {}
 
-    with latest_route_lock:
-        route_geojson = latest_route_geojson
-        route_meta_snapshot = dict(latest_route_meta)
+    # Each mobile chaser only ever sees their OWN route here, keyed by the
+    # client_id they sent with their /api/route call — never another client's
+    # (or the desktop web app's) in-flight route. A client_id with no stored
+    # route yet (or an old client that didn't send one) gets no route at all
+    # rather than falling back to some other client's state.
+    client_id = (flask.request.args.get("client_id") or "").strip() or None
+    if client_id:
+        with client_routes_lock:
+            _entry = client_routes.get(client_id)
+        if _entry:
+            route_geojson = _entry["geojson"]
+            route_meta_snapshot = dict(_entry["meta"])
+        else:
+            route_geojson = None
+            route_meta_snapshot = {}
+    else:
+        with latest_route_lock:
+            route_geojson = latest_route_geojson
+            route_meta_snapshot = dict(latest_route_meta)
 
     car_state = None
     try:
@@ -1127,6 +1284,7 @@ def api_mobile_state():
             "provider": route_meta_snapshot.get("provider"),
             "provider_base": route_meta_snapshot.get("provider_base"),
             "updated_at": route_meta_snapshot.get("updated_at"),
+            "steps": route_meta_snapshot.get("steps"),
         },
         "eta": {
             "route_duration_s": route_duration_s,
@@ -1498,7 +1656,7 @@ def handle_new_payload_position(data, log_position=True):
             if value.tzinfo is None:
                 return pytz.utc.localize(value)
             return value.astimezone(pytz.utc)
-        return pytz.utc.localize(datetime.utcnow())
+        return datetime.now(timezone.utc)
 
     def _safe_finite(value, default=0.0):
         try:
@@ -1547,6 +1705,8 @@ def handle_new_payload_position(data, log_position=True):
                 "abort_landing": [],
                 "max_alt": 0.0,
                 "snr": -255.0,
+                "pred_inputs": {},
+                "wind_profile": [],
             }
 
     # Add new data into the payload's track, and get the latest ascent rate.
@@ -1601,7 +1761,10 @@ def handle_new_payload_position(data, log_position=True):
             "server_time": time.time(),
         }
 
-        current_payloads[_callsign]["path"].append([_lat, _lon, _alt])
+        _path = current_payloads[_callsign]["path"]
+        _path.append([_lat, _lon, _alt])
+        if len(_path) > MAX_TELEMETRY_PATH_POINTS:
+            del _path[: len(_path) - MAX_TELEMETRY_PATH_POINTS]
 
     # Copy out any extra fields we may want to pass onto the GUI.
     with payloads_lock:
@@ -1668,7 +1831,10 @@ def predictorThread():
     logging.info("Predictor loop started.")
 
     while predictor_thread_running:
-        run_prediction()
+        try:
+            run_prediction()
+        except Exception:
+            logging.exception("Predictor loop iteration failed - will retry on next cycle.")
         # Use more efficient sleep instead of loop over 1-second intervals
         update_rate = int(chasemapper_config.get("pred_update_rate", 15))
         for _ in range(update_rate):
@@ -1692,7 +1858,8 @@ def run_prediction():
     # Clear the idle event so we don't accidentally kill the predictor object while it's running.
     predictor_idle_event.clear()
     try:
-        _payload_list = list(current_payload_tracks.keys())
+        with payloads_lock:
+            _payload_list = list(current_payload_tracks.keys())
         for _payload in _payload_list:
 
             # Check the age of the data.
@@ -1796,7 +1963,7 @@ def run_prediction():
                 # If telemetry is stale, override launch time to now to avoid invalid hour computations
                 if _pos_age > 30.0:
                     # Use a timezone-aware UTC datetime for Tawhiri (API expects RFC3339).
-                    _current_pos["time"] = pytz.utc.localize(datetime.utcnow())
+                    _current_pos["time"] = datetime.now(timezone.utc)
 
                 # Defensive logging of parameters passed to Tawhiri to assist debugging dataset/hour errors.
                 try:
@@ -1877,6 +2044,32 @@ def run_prediction():
                     descent_mode=_current_pos["is_descending"],
                 )
 
+            # Snapshot of the settings actually used for this prediction, and (if running
+            # the offline predictor) the wind data that drove it. Wind data is only
+            # available locally - Tawhiri does not expose it. Both are display-only and
+            # must never be allowed to break the prediction itself.
+            _pred_inputs = {
+                "ascent_rate": _current_pos["ascent_rate"],
+                "descent_rate": _desc_rate,
+                "burst_altitude": _burst_alt,
+                "launch_lat": _current_pos["lat"],
+                "launch_lon": _current_pos["lon"],
+                "launch_time": _current_pos["time"].isoformat() if hasattr(_current_pos["time"], "isoformat") else str(_current_pos["time"]),
+            }
+
+            _wind_profile = []
+            if predictor != "Tawhiri":
+                try:
+                    _wind_profile = get_wind_profile(
+                        pred_settings["gfs_path"],
+                        _current_pos["lat"],
+                        _current_pos["lon"],
+                        _current_pos["time"],
+                    )
+                except Exception:
+                    logging.error("Error fetching wind profile for %s: %s", _payload, traceback.format_exc())
+                    _wind_profile = []
+
             if len(_pred_path) > 1:
                 # Valid Prediction!
                 _pred_path.insert(0, _current_pos_list)
@@ -1889,6 +2082,8 @@ def run_prediction():
                 with payloads_lock:
                     current_payloads[_payload]["pred_path"] = _pred_output
                     current_payloads[_payload]["pred_landing"] = _pred_output[-1]
+                    current_payloads[_payload]["pred_inputs"] = _pred_inputs
+                    current_payloads[_payload]["wind_profile"] = _wind_profile
 
                     if _current_pos["is_descending"]:
                         current_payloads[_payload]["burst"] = []
@@ -1993,6 +2188,8 @@ def run_prediction():
                     "burst": current_payloads[_payload]["burst"],
                     "abort_path": current_payloads[_payload]["abort_path"],
                     "abort_landing": current_payloads[_payload]["abort_landing"],
+                    "pred_inputs": current_payloads[_payload]["pred_inputs"],
+                    "wind_profile": current_payloads[_payload]["wind_profile"],
                 }
                 flask_emit_event("predictor_update", _client_data)
 
@@ -2023,7 +2220,7 @@ def initPredictor():
             else:
                 # Check model contains data to at least 4 hours into the future.
                 (_model_start, _model_end) = available_gfs(pred_settings["gfs_path"])
-                _model_now = datetime.utcnow() + timedelta(0, 60 * 60 * 4)
+                _model_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(0, 60 * 60 * 4)
                 if (_model_now < _model_start) or (_model_now > _model_end):
                     # No suitable GFS data!
                     logging.error("GFS Data in directory does not cover now!")
@@ -2151,6 +2348,19 @@ def clear_bearing_data(data):
     flask_emit_event("server_bearings_cleared", {"foo":"bar"})
 
 
+@socketio.on("bearing_source_clear", namespace="/chasemapper")
+def clear_bearing_source(data):
+    """ Clear bearing data from a single source, leaving other sources
+    intact. Not operator-gated, matching bearing_store_clear above - bearing
+    data isn't considered as sensitive/high-stakes to clear as payload or
+    car position data. """
+    global bearing_store
+    if not isinstance(data, dict) or not data.get("source"):
+        return
+    logging.warning("Client requested bearing data from source '%s' be cleared." % data["source"])
+    bearing_store.remove_source(data["source"])
+
+
 @socketio.on("mark_recovered", namespace="/chasemapper")
 def mark_payload_recovered(data):
     """ Mark a payload as recovered, by uploading a station position """
@@ -2213,7 +2423,7 @@ def aprs_listener_callback(data):
     """
     try:
         if "time_dt" not in data:
-            data["time_dt"] = pytz.utc.localize(datetime.utcnow())
+            data["time_dt"] = datetime.now(timezone.utc)
 
         logging.info(
             "APRS position update: %s lat=%.5f lon=%.5f alt=%.1f"
@@ -2510,7 +2720,7 @@ def udp_listener_summary_callback(data):
     else:
         # Otherwise use the current UTC time.
 
-        output["time_dt"] = pytz.utc.localize(datetime.utcnow())
+        output["time_dt"] = datetime.now(timezone.utc)
 
     # Copy out any extra fields that we want to pass on to the GUI.
     for _field in EXTRA_FIELDS:
@@ -2538,7 +2748,7 @@ def udp_listener_car_callback(data):
         _alt = 0.0
 
     _comment = "CAR"
-    _time_dt = pytz.utc.localize(datetime.utcnow())
+    _time_dt = datetime.now(timezone.utc)
 
     logging.debug("Car Position: %.5f, %.5f" % (_lat, _lon))
 
@@ -2628,7 +2838,7 @@ def handle_client_car_position(client_id, name, data):
     except Exception:
         _alt = 0.0
 
-    _time_dt = pytz.utc.localize(datetime.utcnow())
+    _time_dt = datetime.now(timezone.utc)
 
     _car_position_update = {
         "time": _time_dt,
@@ -2813,6 +3023,32 @@ def check_data_age():
                     )
             except Exception:
                 logging.exception("Exception while checking client car data age for %s", _client_id)
+
+        # Same aging for per-client computed routes (client_routes) — without this
+        # a chaser who closes the app mid-chase leaves their last route sitting in
+        # memory indefinitely.
+        with client_routes_lock:
+            _route_client_ids = list(client_routes.keys())
+
+        for _client_id in _route_client_ids:
+            try:
+                with client_routes_lock:
+                    _entry = client_routes.get(_client_id)
+                if not _entry:
+                    continue
+
+                if (_now - _entry["last_seen"]) > (
+                    chasemapper_config["payload_max_age"] * 60.0
+                ):
+                    with client_routes_lock:
+                        client_routes.pop(_client_id, None)
+
+                    logging.info(
+                        "Client route %s older than maximum age - removed from data store."
+                        % _client_id
+                    )
+            except Exception:
+                logging.exception("Exception while checking client route data age for %s", _client_id)
 
         time.sleep(2)
 
@@ -3069,7 +3305,7 @@ class WebHandler(logging.Handler):
                 # Convert log record into a dictionary
                 log_data = {
                     "level": record.levelname,
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "msg": message,
                 }
                 # Emit to all socket.io clients
@@ -3126,6 +3362,11 @@ if __name__ == "__main__":
     except Exception as e:
         logging.critical("Failed to initialise services: %s" % str(e))
         sys.exit(1)
+
+    # Hosting/preview environments assign a listen port via $PORT; honour it
+    # over the configured flask_port so the server binds wherever expected.
+    if os.environ.get("PORT"):
+        chasemapper_config["flask_port"] = int(os.environ["PORT"])
 
     logging.info(
         "Starting Chasemapper Server on: http://%s:%d/"

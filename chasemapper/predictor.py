@@ -5,11 +5,71 @@
 #   Copyright (C) 2018  Mark Jessop <vk5qi@rfhead.net>
 #   Released under GNU GPL v3 or later
 #
+import glob
 import logging
+import os
 import subprocess
 from threading import Thread
 
 model_download_running = False
+
+
+def get_wind_profile(gfs_path, lat, lon, at_time):
+    """ Read the local GFS data and return wind speed/direction by altitude
+    near (lat, lon), closest in time to at_time.
+
+    This is a display-only helper - any failure (missing directory, no GFS
+    files, bad file contents) returns an empty list rather than raising, so
+    it can never break the actual landing prediction.
+    """
+    try:
+        import numpy as np
+        from cusfpredict.reader import read_cusf_gfs
+
+        gfs_files = glob.glob(os.path.join(gfs_path, "gfs_*.dat"))
+        if not gfs_files:
+            return []
+
+        # Treat naive datetimes as UTC, consistent with chasemapper.tawhiri.
+        if at_time.tzinfo is None:
+            import pytz
+
+            at_time = pytz.utc.localize(at_time)
+        _target_ts = at_time.timestamp()
+
+        def _file_timestamp(filename):
+            return int(os.path.basename(filename).split("_")[1])
+
+        _closest_file = min(
+            gfs_files, key=lambda f: abs(_file_timestamp(f) - _target_ts)
+        )
+
+        _gfs = read_cusf_gfs(_closest_file)
+
+        _lat_idx = int(np.argmin(np.abs(_gfs["latitudes"] - lat)))
+        _lon_idx = int(np.argmin(np.abs(_gfs["longitudes"] - (lon % 360))))
+
+        _profile = []
+        for _level in range(_gfs["pressure_level_count"]):
+            _height, _ugrd, _vgrd, _speed, _direction = _gfs["data"][
+                _level, _lat_idx, _lon_idx
+            ]
+            _profile.append(
+                {
+                    "altitude_m": float(_height),
+                    "pressure_hpa": float(_gfs["pressures"][_level]),
+                    "speed_ms": float(_speed),
+                    "direction_deg": float(_direction) % 360.0,
+                }
+            )
+
+        _profile.sort(key=lambda p: p["altitude_m"])
+
+        return _profile
+
+    except Exception as e:
+        logging.error("Error reading wind profile from GFS data: %s" % str(e))
+        return []
 
 
 def predictor_download_model(command, callback):

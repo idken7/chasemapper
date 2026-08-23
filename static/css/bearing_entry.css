@@ -1,0 +1,134 @@
+/* EasyBearing (`/bearing`) - absolute bearing entry. See
+   doc/design-prompt-manual-bearing-entry.md (screens 11/11b desktop,
+   M13 mobile) and static/css/bearing_pages.css for shared page chrome. */
+
+.bp-dial-sheet {
+	position: fixed;
+	left: 50%;
+	bottom: 20px;
+	transform: translateX(-50%);
+	z-index: 1000;
+	width: 520px;
+	max-width: calc(100vw - 24px);
+	background: rgba(10, 13, 22, 0.92);
+	border: 1px solid rgba(255, 203, 5, 0.28);
+	border-radius: 20px;
+	padding: 20px 26px;
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	box-shadow: 0 20px 44px rgba(0, 0, 0, 0.4);
+}
+
+.bp-dial-col { flex-shrink: 0; text-align: center; }
+.bp-dial-label {
+	color: rgba(230, 238, 246, 0.45);
+	font-size: 10px;
+	letter-spacing: 0.08em;
+	margin-bottom: 2px;
+}
+
+.bp-dial-wrap {
+	position: relative;
+	width: 172px;
+	height: 172px;
+	touch-action: none;
+	cursor: grab;
+}
+.bp-dial-wrap:active { cursor: grabbing; }
+.bp-dial-svg { display: block; width: 100%; height: 100%; }
+.bp-dial-readout {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: none;
+	color: var(--cd-maize);
+	font-size: 34px;
+	font-weight: 600;
+	line-height: 1;
+}
+
+.bp-controls-col { flex: 1 1 auto; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.bp-nudge-row { display: flex; gap: 6px; }
+.bp-nudge-btn {
+	flex: 1 1 0;
+	text-align: center;
+	padding: 12px 0;
+	border-radius: 10px;
+	background: rgba(255, 255, 255, 0.07);
+	border: none;
+	color: var(--cd-fg);
+	font-family: var(--cd-font-mono);
+	font-size: 13px;
+	font-weight: 700;
+	cursor: pointer;
+}
+.bp-nudge-btn:hover, .bp-nudge-btn:focus { background: rgba(255, 255, 255, 0.13); }
+.bp-nudge-btn:active { background: rgba(255, 203, 5, 0.2); color: var(--cd-maize); }
+
+.bp-send-btn {
+	padding: 16px;
+	border-radius: 12px;
+	background: var(--cd-maize);
+	color: var(--cd-bg);
+	font-weight: 700;
+	font-size: 16px;
+	text-align: center;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	border: none;
+	cursor: pointer;
+}
+.bp-send-btn:hover, .bp-send-btn:focus { filter: brightness(1.05); }
+.bp-send-btn svg { flex-shrink: 0; }
+
+.bp-dial-hint {
+	color: rgba(230, 238, 246, 0.4);
+	font-size: 10.5px;
+	text-align: center;
+}
+
+/* Warning state: hide the normal dial/controls, show the shared warning
+   card + a disabled dial "ghost" in their place. */
+.bp-dial-sheet .bp-normal-state { display: flex; gap: 26px; align-items: center; width: 100%; }
+.bp-dial-sheet .bp-warning-state { display: none; width: 100%; }
+.bp-dial-sheet.bp-sheet--warning .bp-normal-state { display: none; }
+.bp-dial-sheet.bp-sheet--warning .bp-warning-state { display: block; }
+
+@media (max-width: 640px) {
+	.bp-dial-sheet {
+		left: 0;
+		right: 0;
+		bottom: 0;
+		transform: none;
+		width: 100%;
+		max-width: none;
+		border-radius: 20px 20px 0 0;
+		padding: 14px 18px 20px;
+	}
+	.bp-dial-sheet .bp-normal-state {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 12px;
+	}
+	.bp-dial-sheet::before {
+		content: '';
+		display: block;
+		width: 36px;
+		height: 3px;
+		background: rgba(255, 255, 255, 0.2);
+		border-radius: 2px;
+		margin: 0 auto 2px;
+	}
+	.bp-dial-wrap { width: 168px; height: 168px; margin: 0 auto; }
+	.bp-dial-readout { font-size: 30px; }
+	.bp-nudge-row { width: 100%; }
+	/* Drop the +/-5 steps on narrow viewports to match the 4-button mobile
+	   layout (M13) - +/-1 and +/-10 cover the same practical range. */
+	.bp-nudge-btn[data-delta="5"], .bp-nudge-btn[data-delta="-5"] { display: none; }
+	.bp-send-btn { font-size: 14.5px; padding: 15px; }
+}

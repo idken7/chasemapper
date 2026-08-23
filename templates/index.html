@@ -4,15 +4,10 @@
     <title>Project Horus Chase Mapper</title>
 
     <link href="{{ url_for('static', filename='css/bootstrap.min.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/leaflet.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/leaflet-sidebar.min.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/leaflet-control-topcenter.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/leaflet-routing-machine.css') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/easy-button.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/tabulator_simple.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/font-awesome.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/jquery-ui.css') }}" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='vendor/cesium/Widgets/widgets.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/chasemapper.css') }}" rel="stylesheet">
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,51 +17,15 @@
     <script src="{{ url_for('static', filename='js/jquery-3.3.1.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/jquery-ui.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/leaflet.js') }}"></script>
-    <!-- Compatibility shim for older Leaflet plugins that use L.Mixin.Events -->
-    <script>
-        (function(){
-            if (typeof window.L !== 'undefined') {
-                window.L.Mixin = window.L.Mixin || {};
-                // Provide Events alias expected by legacy plugins to avoid deprecation warnings
-                if (!window.L.Mixin.Events && window.L.Evented) {
-                    try { window.L.Mixin.Events = window.L.Evented.prototype; } catch(e) { window.L.Mixin.Events = window.L.Evented; }
-                }
-            }
-        })();
-    </script>
-    <script>
-        // Filter noisy deprecation warnings from legacy Leaflet plugins (non-destructive)
-        (function(){
-            if (!window.console) return;
-            var _oldWarn = console.warn.bind(console);
-            console.warn = function(){
-                try {
-                    var msg = arguments[0] || '';
-                    if (typeof msg === 'string' && msg.indexOf('Deprecated include of L.Mixin.Events') !== -1) {
-                        // swallow this specific deprecation warning
-                        return;
-                    }
-                } catch(e){ /* ignore filter errors */ }
-                _oldWarn.apply(console, arguments);
-            };
-        })();
-    </script>
-    <!-- Leaflet plugins... -->
-    <script src="{{ url_for('static', filename='js/leaflet.rotatedMarker.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/leaflet-control-topcenter.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/leaflet-sidebar.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/Leaflet.Control.Custom.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/easy-button.js') }}"></script>
-
-    <!-- Leaflet Routing Machine (provides L.Routing) -->
-    <script src="{{ url_for('static', filename='js/leaflet-routing-machine.min.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/tabulator.min.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/d3.v3.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/micropolar-v0.2.2.js') }}"></script>
-    <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/';</script>
+    <!-- Self-hosted (not CDN) so the map keeps working with no internet
+         connectivity once the page has loaded once - see scripts/fetch_cesium.sh
+         and the Dockerfile for how static/vendor/cesium/ gets populated. -->
+    <script>window.CESIUM_BASE_URL = '{{ url_for("static", filename="vendor/cesium/") }}';</script>
     <script>
         // Provide a pre-Cesium global to control Ion token behavior. If no valid token
         // is configured, set to undefined so Cesium doesn't include an empty token
@@ -80,7 +39,7 @@
             }
         } catch (e) { window.__CESIUM_PRESET_ION_TOKEN = undefined; }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/cesium@1.126.0/Build/Cesium/Cesium.js"></script>
+    <script src="{{ url_for('static', filename='vendor/cesium/Cesium.js') }}"></script>
     <script>
         // After Cesium loads, apply the pre-set token (or undefined) to prevent
         // accidental empty-token requests.
@@ -114,16 +73,16 @@
 
     <script type="text/javascript" charset="utf-8">
 
-        // Object which will contain balloon markers and traces.
+        // Object which will contain balloon positions and traces, rendered on
+        // the map by cesium-map.js's syncBalloonEntity().
         // properties for each key in this object (key = callsign)
         //  latest_data - latest sonde telemetry object from SondeDecoded
-        //  marker: Leaflet marker object.
-        //  path: Leaflet polyline object.
-        //  pred_marker: Leaflet marker for predicted landing position.
-        //  pred_path: Leaflet polyline object for predicted path.
-        //  burst_marker: Leaflet marker for burst prediction.
-        //  abort_marker: Leaflet marker for abort landing prediction.
-        //  abort_path: Leaflet marker for abort prediction track.
+        //  path: plain array of [lat,lon,alt] breadcrumb points.
+        //  pred_marker: [lat,lon,alt] predicted landing position, or null.
+        //  pred_path: plain array of [lat,lon,alt] predicted flight path points.
+        //  burst_marker: [lat,lon,alt] burst prediction position, or null.
+        //  abort_marker: [lat,lon,alt] abort landing prediction, or null.
+        //  abort_path: plain array of [lat,lon,alt] abort prediction path points.
         var balloon_positions = {};
         var pending_prediction_updates = {};
         var pending_telemetry_updates = [];
@@ -226,11 +185,10 @@
         // properties will contain:
         //   latest_data: [lat,lon, alt] (latest car position)
         //   heading: Car heading (to point icon appropriately.)
-        //   marker: Leaflet marker
-        var chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
-
-        // Home position marker
-        var home_marker = 'NONE';
+        //   active: whether a car marker has been placed yet
+        //   path: plain array of [lat,lon,alt] breadcrumb points
+        //   trackVisible: whether the breadcrumb tail should be shown
+        var chase_car_position = {latest_data: [], heading:0, active: false, path: [], trackVisible: true};
 
         // Data Age variables - these are updated regularly to indicate
         // if we haven't received data in a while.
@@ -249,13 +207,6 @@
 
         // Global dark mode setting
         var dark_mode = false;
-        var dark_mode_layers = ["Alidade Smooth Dark", "Dark Matter"];
-
-        // Leaflet map instance.
-        var map;
-        // Routing Engine
-        var router;
-
 
         // Socket.IO Settings
         var namespace = '/chasemapper';
@@ -498,17 +449,25 @@
                 return $('<div>').addClass('log-line').addClass(cls).attr('data-log-level', normalized).text(text);
             }
 
+            function isScrolledToBottom($body) {
+                var el = $body[0];
+                return el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            }
+
             function renderLogEntries() {
                 var $body = $('#logPanelBody');
+                var stickToBottom = isScrolledToBottom($body);
                 $body.empty();
-                for (var i = logEntries.length - 1; i >= 0; i--) {
+                for (var i = 0; i < logEntries.length; i++) {
                     var entry = logEntries[i];
                     if (logLevelFilter.indexOf(normalizeLogLevel(entry.level)) === -1) {
                         continue;
                     }
                     $body.append(buildLogLine(entry));
                 }
-                $body.scrollTop(0);
+                if (stickToBottom) {
+                    $body.scrollTop($body[0].scrollHeight);
+                }
             }
 
             window.renderLogEntries = renderLogEntries;
@@ -538,375 +497,156 @@
                 };
                 logEntries.push(entry);
                 if (logLevelFilter.indexOf(normalizeLogLevel(entry.level)) !== -1) {
-                    $('#logPanelBody').prepend(buildLogLine(entry));
+                    var $body = $('#logPanelBody');
+                    var stickToBottom = isScrolledToBottom($body);
+                    $body.append(buildLogLine(entry));
+                    if (stickToBottom) {
+                        $body.scrollTop($body[0].scrollHeight);
+                    }
                 }
             });
 
             //
-            // LEAFLET MAP SETUP
+            // MAP SETUP (Cesium)
             //
-            // Setup a basic Leaflet map
-            // Default fallback: Ann Arbor, MI
-            var annArbor = [42.2808, -83.7430];
-            var initialCenter = annArbor;
-            if (typeof chase_config !== 'undefined' && chase_config.default_lat && chase_config.default_lon){
-                initialCenter = [chase_config.default_lat, chase_config.default_lon];
-            }
-            map = L.map('map', {
-                wheelPxPerZoomLevel: 100,  // Smooth continuous zoom instead of discrete levels
-                zoomSnap: 0,
-                zoomDelta: 0.5
-            }).setView(initialCenter, 10);
-
-            // Attempt to center on user's current location if available
+            // Attempt to center on the user's live location if available;
+            // Cesium's own default-position fly-in (triggered below via
+            // apply3DMapViewState -> applyCesiumMapViewState, which flies to
+            // chase_config.default_lat/lon) covers the fallback case.
             if (navigator && navigator.geolocation){
                 navigator.geolocation.getCurrentPosition(function(pos){
                     try{
                         var ucoords = [pos.coords.latitude, pos.coords.longitude];
-                        map.setView(ucoords, 13);
-                        // add or update a blue-dot current location marker (use circleMarker for reliability)
-                        try{
-                            var circleOptions = { radius: 8, color: '#FFFFFF', weight: 2, opacity: 1, fillColor: '#2E86FF', fillOpacity: 1, interactive: false };
-                            if (typeof window.user_location_marker === 'undefined' || window.user_location_marker === null){
-                                window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
-                            } else {
-                                try {
-                                    if (typeof window.user_location_marker.setLatLng === 'function') {
-                                        window.user_location_marker.setLatLng(ucoords);
-                                        if (typeof window.user_location_marker.setStyle === 'function') window.user_location_marker.setStyle(circleOptions);
-                                    } else {
-                                        window.user_location_marker.remove && window.user_location_marker.remove();
-                                        window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
-                                    }
-                                } catch(e2) {
-                                    window.user_location_marker.remove && window.user_location_marker.remove();
-                                    window.user_location_marker = L.circleMarker(ucoords, circleOptions).addTo(map);
-                                }
-                            }
-                        }catch(e){
-                            // fallback to simple marker if circleMarker fails
-                            try { window.user_location_marker && window.user_location_marker.remove && window.user_location_marker.remove(); window.user_location_marker = L.marker(ucoords).addTo(map); } catch(err){}
+                        if (typeof flyCesiumToPosition === 'function') {
+                            flyCesiumToPosition(ucoords, {duration: 1.2});
+                        }
+                        if (typeof syncUserLocationOnCesium === 'function') {
+                            syncUserLocationOnCesium(ucoords);
                         }
                     }catch(e){ console.warn('Failed to center on user location', e); }
                 }, function(err){
                     console.log('Geolocation unavailable or denied:', err && err.message ? err.message : err);
-                    // keep the initial center (Ann Arbor or configured default)
                 }, {enableHighAccuracy:true, timeout:10000});
             }
 
-            // Add OSM Map Layer
-            var osm_map = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            }).addTo(map);
+            // Units for rings
+            var ringSpacingLabel = document.getElementById("ring_spacing");
+            if (ringSpacingLabel != null) {
+                if (chase_config['unitselection'] == "imperial") { ringSpacingLabel.innerHTML = "Ring Spacing (ft)";}
+                if (chase_config['unitselection'] == "metric")   { ringSpacingLabel.innerHTML = "Ring Spacing (m)";}
+            }
 
-            // Add OSM Topo Map Layer
-            var osm_topo_map = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://wiki.openstreetmap.org/wiki/OpenTopoMap">OpenTopoMap</a> contributors'
-            });
-
-            // Add ESRI Satellite Map layers.
-            var esrimapLink = 
-            '<a href="http://www.esri.com/">Esri</a>';
-            var esriwholink = 
-            'i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community';
-            var esri_sat_map = L.tileLayer(
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            {
-                attribution: '&copy; '+esrimapLink+', '+esriwholink,
-                maxZoom: 18,
-            });
-            // Dark Matter map layer, one of the maps suitable for 'dark mode'
-            var dark_matter_map = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://carto.com/help/building-maps/basemap-list/">Carto</a>'
-            });
-
-            // Always-available aviation layer.
-            var aviation_world_nav_map = L.tileLayer(
-                'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
-                {
-                    attribution: '&copy; <a href="https://www.esri.com/">Esri</a> World Navigation Charts',
-                    maxZoom: 18,
+            // Bring Cesium up as the map engine.
+            set3DMapViewEnabled(true);
+            apply3DMapViewState();
+            // Apply stored 2D/3D camera-angle preference.
+            if (typeof getStored2DMode === 'function') {
+                var is2D = getStored2DMode();
+                if (is2D && typeof set2DMode === 'function') {
+                    set2DMode();
+                } else if (!is2D && typeof set3DMode === 'function') {
+                    set3DMode();
                 }
-            );
-
-            var map_layers = {'OSM':osm_map, 'OpenTopo':osm_topo_map, 'ESRI Satellite':esri_sat_map, 'Dark Matter':dark_matter_map, 'Aviation (World Navigation)':aviation_world_nav_map};
-
-            // Add ThunderForest layers, if we have a key provided.
-            if (chase_config.thunderforest_api_key !== 'none'){
-                // Thunderforest Outdoors layer.
-                var thunderforest_outdoors = L.tileLayer('https://tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey='+chase_config.thunderforest_api_key, 
-                {
-                    attribution: '&copy; <a href="http://www.thunderforest.com">Thunderforest</a>, Data &copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
-                });
-                map_layers['Outdoors (Terrain)'] = thunderforest_outdoors;
-
+            }
+            if (typeof Cesium === 'undefined') {
+                // static/vendor/cesium/ wasn't populated - see scripts/fetch_cesium.sh
+                // (local installs) or the Dockerfile (image builds).
+                console.error('Cesium failed to load - the map will not work.');
+                if (typeof window.showAppToast === 'function') {
+                    window.showAppToast('Map failed to load - see console for details', 8000);
+                }
             }
 
-            if (chase_config.stadia_api_key !== 'none'){
-                // Stadia Alidade Smooth Dark Layer.
-                var alidade_smooth_dark = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png?apikey='+chase_config.stadia_api_key, 
-                {
-                    attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="http://openstreetmap.org">OpenStreetMap</a> contributors'
-                });
-                map_layers['Alidade Smooth Dark'] = alidade_smooth_dark;
+            // Zoom buttons
+            document.getElementById('mapZoomInBtn').addEventListener('click', function(){
+                if (typeof window.zoomCesiumViewIn === 'function') window.zoomCesiumViewIn();
+            });
+            document.getElementById('mapZoomOutBtn').addEventListener('click', function(){
+                if (typeof window.zoomCesiumViewOut === 'function') window.zoomCesiumViewOut();
+            });
 
-            }
-
-            if (chase_config.openaip_api_key && chase_config.openaip_api_key !== 'none') {
-                var openaip_map = L.tileLayer(
-                    'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=' + encodeURIComponent(chase_config.openaip_api_key),
-                    {
-                        attribution: '&copy; <a href="https://www.openaip.net/">openAIP</a>',
-                        maxZoom: 14,
+            // Measure button
+            document.getElementById('measureDistanceButton').addEventListener('click', function(){
+                if (typeof window.toggleCesiumMeasureMode === 'function') {
+                    window.toggleCesiumMeasureMode();
+                    var panel = document.getElementById('cesiumMeasurePanel');
+                    if (panel) {
+                        panel.classList.add('is-open');
                     }
-                );
-                map_layers['Aviation (openAIP)'] = openaip_map;
+                }
+            });
+
+            // Scale control: approximate ground distance across ~100px near
+            // screen centre, in the user's chosen unit system.
+            // Largest "nice" 1/2/3/5-per-decade value <= maxVal - same rounding
+            // Leaflet's own L.control.scale uses, so the bar's length always
+            // lines up with a round, readable distance rather than an exact
+            // but awkward one (e.g. "3.6 km" for a 100px span).
+            function niceScaleValue(maxVal){
+                var pow10 = Math.pow(10, Math.floor(Math.log10(maxVal)));
+                var d = maxVal / pow10;
+                var step = (d >= 5) ? 5 : (d >= 3) ? 3 : (d >= 2) ? 2 : 1;
+                return step * pow10;
             }
 
-            // Add Offline map layers, if we have any.
-            for (var i = 0, len = chase_config.offline_tile_layers.length; i < len; i++) {
-                var _layer_name = chase_config.offline_tile_layers[i];
-                map_layers['Offline - ' + _layer_name] = L.tileLayer(location.protocol + '//' + document.domain + ':' + location.port + '/tiles/'+_layer_name+'/{z}/{x}/{y}.png');
-            }
+            function updateMapScaleControl(){
+                var el = document.getElementById('mapScaleControl');
+                var bar = document.getElementById('mapScaleBar');
+                var label = document.getElementById('mapScaleLabel');
+                if (!el || !bar || !label) return;
+                var viewer = (typeof getCesiumViewer === 'function') ? getCesiumViewer() : null;
+                if (!viewer) { el.style.display = 'none'; return; }
+                try {
+                    var scene = viewer.scene;
+                    var canvas = scene.canvas;
+                    var cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
+                    var maxBarPx = 90;
+                    var left = scene.camera.pickEllipsoid(new Cesium.Cartesian2(cx - maxBarPx / 2, cy), scene.globe.ellipsoid);
+                    var right = scene.camera.pickEllipsoid(new Cesium.Cartesian2(cx + maxBarPx / 2, cy), scene.globe.ellipsoid);
+                    if (!left || !right) { el.style.display = 'none'; return; }
+                    var maxMeters = Cesium.Cartesian3.distance(left, right);
+                    if (!isFinite(maxMeters) || maxMeters <= 0) { el.style.display = 'none'; return; }
 
-            // Add map scale.
-            if (chase_config['unitselection'] == "imperial") { L.control.scale({position: 'bottomright', imperial: true, metric: false}).addTo(map) ;}
-            if (chase_config['unitselection'] == "metric") { L.control.scale({position: 'bottomright', imperial: false, metric: true}).addTo(map) ;}
-
-
-
-	            // Units for rings
-	            var ringSpacingLabel = document.getElementById("ring_spacing");
-	            if (ringSpacingLabel != null) {
-	                if (chase_config['unitselection'] == "imperial") { ringSpacingLabel.innerHTML = "Ring Spacing (ft)";}
-	                if (chase_config['unitselection'] == "metric")   { ringSpacingLabel.innerHTML = "Ring Spacing (m)";}
-	            }
-
-            // Sidebar removed — using floating panels and bottom menubar instead.
-
-            // Add custom controls, which show various sets of data.
-
-            // Telemetry table removed (moved out of UI)
-
-            // Chase Car Speed Display
-            L.control.custom({
-                position: 'bottomleft',
-                content : "<div class='dataAgeHeader' id='chase_car_speed_header'></div><div id='chase_car_speed' class='chaseCarSpeed'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'speed_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-            // Chase Car Heading Display
-            L.control.custom({
-                position: 'bottomleft',
-                content : "<div class='dataAgeHeader' id='chase_car_heading_header'></div><div id='chase_car_heading' class='chaseCarSpeed'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'heading_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
-            // Time-to-landing display - shows the time until landing for the currently tracked payload.
-            L.control.custom({
-                position: 'bottomleft',
-                content : "<div id='time_to_landing' class='timeToLanding'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'ttl_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
-            // Time-to-landing display - shows the time until landing for the currently tracked payload.
-            L.control.custom({
-                position: 'bottomcenter',
-                content : "<div id='timeseq_notice' class='timeToLanding'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'ttl_display',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
-            L.control.custom({
-                position: 'bottomright',
-                content : "<div id='bearing_plot'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'bearing_plot_control',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
-            // Used to show log replay time information, if received.
-            L.control.custom({
-                position: 'bottomcenter',
-                content : "<div id='log_time' class='chaseCarSpeed'></div>",
-                classes : 'btn-group-vertical btn-group-sm',
-                id: 'log_time_control',
-                style   :
-                {
-                    margin: '5px',
-                    padding: '0px 0 0 0',
-                    cursor: 'pointer',
-                }
-            })
-            .addTo(map);
-
-
-
-            // Measure button (standalone, top-right, above Follow Car)
-            L.easyButton(
-                '<svg viewBox="0 0 24 24" width="26" height="26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9zm3 0a.5.5 0 0 0-.5.5v2h1v-2H6zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2zm-11 7h1v2H6v-2zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2z"/></svg>',
-                function(btn, map) {
-                    if (typeof window.toggleCesiumMeasureMode === 'function') {
-                        window.toggleCesiumMeasureMode();
-                        var panel = document.getElementById('cesiumMeasurePanel');
-                        if (panel) {
-                            panel.classList.add('is-open');
+                    var niceValue, niceMeters, barPx, unitLabel;
+                    if (chase_config && chase_config.unitselection === 'imperial') {
+                        var maxFeet = maxMeters * 3.28084;
+                        var maxMiles = maxFeet / 5280;
+                        if (maxMiles >= 1) {
+                            niceValue = niceScaleValue(maxMiles);
+                            barPx = maxBarPx * (niceValue / maxMiles);
+                            unitLabel = niceValue + ' mi';
+                        } else {
+                            niceValue = niceScaleValue(maxFeet);
+                            barPx = maxBarPx * (niceValue / maxFeet);
+                            unitLabel = niceValue + ' ft';
                         }
-                    }
-                },
-                'Measure distance',
-                'measureDistanceButton',
-                {
-                    position: 'topright'
-                }
-            ).addTo(map);
-
-            // Follow buttons removed (disabled) — feature unused
-
-            // EasyButton: Toggle 3D extrusion markers
-            L.easyButton('fa-cube', function(btn, map){
-                try{
-                    // Toggle between 2D and 3D mode (all within Cesium view)
-                    if (typeof toggle2D3DMode === 'function') {
-                        toggle2D3DMode();
-                    }
-                }catch(e){
-                    console.warn('2D/3D toggle failed', e);
-                }
-            }, 'Toggle 2D/3D view', 'toggle3DButton', { position: 'topright' }).addTo(map);
-
-            window.setTimeout(function() {
-                // The Cesium library is loaded from a CDN. In a chase vehicle with
-                // poor/blocked connectivity the CDN may be unreachable, leaving
-                // `Cesium` undefined. Only promote the 3D view to primary when the
-                // library actually loaded; otherwise stay on the 2D Leaflet map and
-                // let the user know, rather than showing a blank 3D canvas.
-                var cesiumAvailable = (typeof Cesium !== 'undefined');
-
-                if (cesiumAvailable) {
-                    // Enable 3D Cesium view as the primary map
-                    if (typeof set3DMapViewEnabled === 'function') {
-                        set3DMapViewEnabled(true);
                     } else {
-                        localStorage.setItem('enable_3d_map_view', '1');
-                        if (typeof chase_config !== 'undefined') {
-                            chase_config.enable_3d_map_view = true;
+                        var maxKm = maxMeters / 1000;
+                        if (maxKm >= 1) {
+                            niceValue = niceScaleValue(maxKm);
+                            barPx = maxBarPx * (niceValue / maxKm);
+                            unitLabel = niceValue + ' km';
+                        } else {
+                            niceValue = niceScaleValue(maxMeters);
+                            barPx = maxBarPx * (niceValue / maxMeters);
+                            unitLabel = niceValue + ' m';
                         }
                     }
 
-                    if (typeof apply3DMapViewState === 'function') {
-                        apply3DMapViewState();
-                    }
-
-                    // Apply stored 2D/3D mode preference
-                    if (typeof getStored2DMode === 'function') {
-                        var is2D = getStored2DMode();
-                        if (is2D && typeof set2DMode === 'function') {
-                            set2DMode();
-                        } else if (!is2D && typeof set3DMode === 'function') {
-                            set3DMode();
-                        }
-                    }
-                } else {
-                    // Cesium CDN unreachable — fall back to the 2D Leaflet map.
-                    console.warn('Cesium unavailable (CDN blocked/offline) — falling back to 2D map.');
-                    if (typeof set3DMapViewEnabled === 'function') {
-                        set3DMapViewEnabled(false);
-                    } else {
-                        localStorage.setItem('enable_3d_map_view', '0');
-                        if (typeof chase_config !== 'undefined') {
-                            chase_config.enable_3d_map_view = false;
-                        }
-                    }
-                    if (typeof apply3DMapViewState === 'function') {
-                        apply3DMapViewState();
-                    }
-                    if (typeof window.showAppToast === 'function') {
-                        window.showAppToast('3D map unavailable — using 2D map');
-                    }
+                    el.style.display = '';
+                    bar.style.width = Math.max(20, Math.round(barPx)) + 'px';
+                    label.textContent = unitLabel;
+                } catch (e) {
+                    el.style.display = 'none';
                 }
-
-                if (typeof update3DButtonVisual === 'function') {
-                    update3DButtonVisual();
-                }
-            }, 0);
-
-            map.zoomControl.setPosition('topright');
-
-            // Add handlers for zoom buttons to also work on Cesium view
-            try {
-                var zoomInBtn = document.querySelector('.leaflet-control-zoom-in');
-                var zoomOutBtn = document.querySelector('.leaflet-control-zoom-out');
-                if (zoomInBtn) {
-                    zoomInBtn.addEventListener('click', function() {
-                        // Always zoom Cesium view (it's always active)
-                        if (typeof window.zoomCesiumViewIn === 'function') {
-                            window.zoomCesiumViewIn();
-                        }
-                    });
-                }
-                if (zoomOutBtn) {
-                    zoomOutBtn.addEventListener('click', function() {
-                        // Always zoom Cesium view (it's always active)
-                        if (typeof window.zoomCesiumViewOut === 'function') {
-                            window.zoomCesiumViewOut();
-                        }
-                    });
-                }
-            } catch (e) {
-                // ignore zoom button setup errors
             }
+            setInterval(updateMapScaleControl, 1000);
 
-            // Experimental routing control
-            // Currently disabled, as there is currently not enough control around how the map is re-panned
-            // after a route is calculated.
-            // router = L.Routing.control({
-            //     waypoints: [null],
-            //     show: false,
-            //     showAlternatives: false
-            // }).addTo(map);
-
-            // Handler for when the user manually moves the map. This turns off
-            // the auto-follow options.
-            // Note we have to use 'dragend' else map movements from auto-follow would trigger this.
-            function mapMovedEvent(e){
-                // The user has panned the map, stop following things.
+            // Handler for when the user manually moves the map (drag,
+            // scroll-zoom, pinch) - see the notifyUserMapInteraction wiring in
+            // cesium-map.js's ensureViewer(). This turns off the auto-follow
+            // options.
+            function mapMovedEvent(){
                 $('input:radio[name=autoFollow]').val(['none']);
                 if (balloon_currently_following !== 'none') {
                     balloon_currently_following = 'none';
@@ -915,7 +655,7 @@
                     }
                 }
             }
-            map.on('dragend',mapMovedEvent);
+            window.onCesiumUserMapInteraction = mapMovedEvent;
 
             // Initialize draggable floating panels (allow moving them out of the way
             // if they ever end up overlapping another panel or control).
@@ -932,15 +672,6 @@
             } catch (e) {
                 // jQuery UI may not be available; ignore.
             }
-
-
-            map.on('baselayerchange', function (e) {
-                if(dark_mode_layers.includes(e.name)){
-                    dark_mode = true;
-                }else {
-                    dark_mode = false;
-                }
-            });
 
             initTables();
 
@@ -1006,6 +737,13 @@
                 destroyAllBearings();
             });
 
+            socket.on('bearing_source_removed', function(data){
+                if (data && data.removed && data.removed.length){
+                    removeBearings(data.removed);
+                    renderDoaPanel();
+                }
+            });
+
 
             $("#downloadModel").click(function(){
                 socket.emit('download_model', {data: 'plzkthx'});
@@ -1056,14 +794,10 @@
                         'Clear',
                         function() {
                             socket.emit('car_data_clear', {data: 'plzkthx'});
-                            if (chase_car_position.marker !== "NONE"){
-                                chase_car_position.marker.remove();
+                            if (typeof clearChaseCarOnCesium === 'function') {
+                                clearChaseCarOnCesium();
                             }
-                            if (chase_car_position.path !== "NONE"){
-                                chase_car_position.path.remove();
-                            }
-
-                            chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
+                            chase_car_position = {latest_data: [], heading:0, active: false, path: [], trackVisible: true};
                         }
                     );
                 }
@@ -1137,12 +871,11 @@
                 // Clears the server-side record of my independently-shared
                 // location (a no-op if "Share My Location" isn't in use).
                 clearMyCarTrack();
-                if (chase_car_position && chase_car_position.marker !== "NONE" && my_device_position_active){
-                    chase_car_position.marker.remove();
-                    if (chase_car_position.path !== "NONE"){
-                        chase_car_position.path.remove();
+                if (chase_car_position && chase_car_position.active && my_device_position_active){
+                    if (typeof clearChaseCarOnCesium === 'function') {
+                        clearChaseCarOnCesium();
                     }
-                    chase_car_position = {latest_data: [], heading:0, marker: 'NONE', path: 'NONE'};
+                    chase_car_position = {latest_data: [], heading:0, active: false, path: [], trackVisible: true};
                 }
             });
 
@@ -1151,14 +884,10 @@
                 // Read state of checkbox (may be absent from the current UI, in
                 // which case default to showing the track).
                 var _car_track_enabled = getCheckboxState("chaseCarTrack", true);
-                // Only continue if we actually have a chase car track polyline to
-                // show/hide. Until the first car fix arrives, chase_car_position.path
-                // is the sentinel string 'NONE' (not a Leaflet layer), so guard on it.
-                if (chase_car_position && chase_car_position.path && chase_car_position.path !== "NONE"){
-                    if (_car_track_enabled == false){
-                        chase_car_position.path.remove();
-                    }else{
-                        chase_car_position.path.addTo(map);
+                if (chase_car_position){
+                    chase_car_position.trackVisible = _car_track_enabled;
+                    if (typeof syncCesiumAfterCarUpdate === 'function') {
+                        syncCesiumAfterCarUpdate();
                     }
                 }
             };
@@ -1294,10 +1023,58 @@
 
 <body>
 
+<!-- #map itself is unused (no map library attaches to it - Cesium renders
+     into #cesiumMap below) but kept as a layout placeholder since a lot of
+     existing CSS still targets its #map/.map selectors for sizing. -->
 <div id="map" class="map" data-test="map"></div>
 
 <!-- Cesium 3D viewer container (hidden until enabled) -->
 <div id="cesiumMap" aria-hidden="true"></div>
+
+<!-- Map corner controls - plain DOM overlays (not tied to any map library).
+     Positioned via .map-corner/.map-corner-* in chasemapper.css, replacing
+     the old Leaflet control-corner system. -->
+<div id="mapCornerControls" class="map-corner-controls">
+    <div class="map-corner map-corner-bottom-left">
+        <div class="map-corner-widget" id="speed_display">
+            <div class="dataAgeHeader" id="chase_car_speed_header"></div>
+            <div id="chase_car_speed" class="chaseCarSpeed"></div>
+        </div>
+        <div class="map-corner-widget" id="heading_display">
+            <div class="dataAgeHeader" id="chase_car_heading_header"></div>
+            <div id="chase_car_heading" class="chaseCarSpeed"></div>
+        </div>
+        <div class="map-corner-widget" id="ttl_display">
+            <div id="time_to_landing" class="timeToLanding"></div>
+        </div>
+    </div>
+    <div class="map-corner map-corner-bottom-center">
+        <div class="map-corner-widget" id="timeseq_display">
+            <div id="timeseq_notice" class="timeToLanding"></div>
+        </div>
+        <div class="map-corner-widget" id="log_time_control">
+            <div id="log_time" class="chaseCarSpeed"></div>
+        </div>
+    </div>
+    <div class="map-corner map-corner-bottom-right">
+        <div class="map-corner-widget" id="bearing_plot_control">
+            <div id="bearing_plot"></div>
+        </div>
+    </div>
+    <div class="map-corner map-corner-top-right">
+        <button type="button" id="measureDistanceButton" class="map-icon-btn" aria-label="Measure distance" title="Measure distance">
+            <svg viewBox="0 0 24 24" width="26" height="26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9zm3 0a.5.5 0 0 0-.5.5v2h1v-2H6zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2zm-11 7h1v2H6v-2zm3 0H8v4h1v-4zm3 0h-1v2h1v-2zm2 0h-1v4h1v-4zm3 0h-1v2h1v-2z"/></svg>
+        </button>
+        <div class="map-icon-btn-group">
+            <button type="button" id="mapZoomInBtn" class="map-icon-btn" aria-label="Zoom in">+</button>
+            <button type="button" id="mapZoomOutBtn" class="map-icon-btn" aria-label="Zoom out">&minus;</button>
+        </div>
+        <div id="mapScaleControl" class="map-scale-control" style="display:none;">
+            <div id="mapScaleBar" class="map-scale-bar"></div>
+            <div id="mapScaleLabel" class="map-scale-label mono"></div>
+        </div>
+    </div>
+</div>
 
 <!-- Cesium loader overlay shown while Cesium initializes -->
 <div id="cesiumLoader" style="display:none; position:fixed; inset:0; z-index:10000; pointer-events:none;">
@@ -1351,18 +1128,23 @@
     </div>
     <div class="btn-group topbar-action-group" role="group" aria-label="Topbar actions">
         <button class="topbar-action-btn nav-pill" id="topbarTrackBtn" data-target="track" type="button" title="Track">
+            <span class="nav-pill-icon" aria-hidden="true">TRK</span>
             <span class="nav-pill-label">Track</span>
         </button>
         <button class="topbar-action-btn nav-pill" id="topbarRouteBtn" data-target="route" type="button" title="Route">
+            <span class="nav-pill-icon" aria-hidden="true">RTE</span>
             <span class="nav-pill-label">Route</span>
         </button>
         <button class="topbar-action-btn nav-pill" id="topbarAprsBtn" data-target="aprs" type="button" title="APRS">
+            <span class="nav-pill-icon" aria-hidden="true">APRS</span>
             <span class="nav-pill-label">APRS</span>
         </button>
         <button class="topbar-action-btn nav-pill" id="topbarLogBtn" data-target="log" type="button" title="Log">
+            <span class="nav-pill-icon" aria-hidden="true">LOG</span>
             <span class="nav-pill-label">Log</span>
         </button>
         <button class="topbar-action-btn nav-pill" id="topbarSettingsBtn" data-target="settings" type="button" title="Settings">
+            <span class="nav-pill-icon" aria-hidden="true">SET</span>
             <span class="nav-pill-label">Settings</span>
         </button>
     </div>
@@ -1448,7 +1230,6 @@
 
     <!-- Floating log panel -->
     <div id="logPanel" class="log-panel">
-        <div class="panel-resize-handle" id="logPanelResizeHandle" data-resize-target="logPanel" title="Drag to resize panel" aria-label="Resize panel"></div>
         <div class="log-panel-header">
             <span class="log-panel-title">Log Messages</span>
                 <div id="logLevelFilter" class="log-filter-group" role="group" aria-label="Filter log messages by level">
@@ -1464,10 +1245,6 @@
     <!-- Settings modal/panel -->
     <div id="settingsPanel" class="settings-panel">
         <div class="settings-panel-content">
-            <div class="panel-resize-handle" id="panelResizeHandle" data-resize-target="settingsPanel" title="Drag to resize panel" aria-label="Resize panel"></div>
-            <div class="settings-header">
-                <span>Settings</span>
-            </div>
             <div class="settings-body">
                 <!-- APRS quick view (shown when APRS button selected) -->
                 <div id="aprsSection" style="display:none;">
@@ -1487,8 +1264,8 @@
                                 <div class="form-group settings-inline-row">
                                     <label for="themeSelect">Theme</label>
                                     <div id="themeSelect" class="button-select-group button-select-group-compact" role="group" aria-label="Theme selection">
-                                        <button type="button" class="btn btn-sm button-select-btn" data-value="light" title="Light theme">Light</button>
                                         <button type="button" class="btn btn-sm button-select-btn is-active" data-value="dark" title="Dark theme">Dark</button>
+                                        <button type="button" class="btn btn-sm button-select-btn" data-value="light" title="Light theme">Light</button>
                                     </div>
                                 </div>
                                 <div class="form-group settings-inline-row">
@@ -1507,13 +1284,20 @@
                                     <label for="cesiumMapModeSelect">3D Map Mode</label>
                                     <select id="cesiumMapModeSelect" class="form-control map-provider-select" aria-label="3D map mode selector"></select>
                                 </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="cameraAngleGroup">Camera Angle</label>
+                                    <div id="cameraAngleGroup" class="button-select-group button-select-group-compact" role="group" aria-label="Camera angle selection">
+                                        <button type="button" class="btn btn-sm button-select-btn" data-value="2d" title="Top-down view">2D</button>
+                                        <button type="button" class="btn btn-sm button-select-btn is-active" data-value="3d" title="Tilted view">3D</button>
+                                    </div>
+                                </div>
                             </div>
                         </section>
                         <section class="settings-group settings-group--full">
                             <h4>Tracking</h4>
                             <div class="settings-group-body">
                                 <div class="form-group">
-                                    <div class="settings-inline-row settings-inline-wrap">
+                                    <div class="settings-inline-row">
                                         <label for="timezoneSelection">APRS Timezone</label>
                                         <input id="timezoneSelection" class="form-control settings-inline-input" list="timezoneOptions" placeholder="local or America/New_York" aria-label="APRS timezone">
                                     </div>
@@ -1539,6 +1323,45 @@
                                         <input id="aprsPollInterval" type="number" class="form-control" value="30" min="5">
                                         <span class="recovery-input-units" aria-hidden="true">s</span>
                                     </div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="settings-group settings-group--full">
+                            <h4>Predictor Details</h4>
+                            <div class="settings-group-body">
+                                <div class="form-group settings-inline-row">
+                                    <label for="predAscentRateValue">Ascent Rate</label>
+                                    <div id="predAscentRateValue" class="predictor-detail-value">—</div>
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="predDescentRateValue">Descent Rate</label>
+                                    <div id="predDescentRateValue" class="predictor-detail-value">—</div>
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="predBurstAltitudeValue">Burst Altitude</label>
+                                    <div id="predBurstAltitudeValue" class="predictor-detail-value">—</div>
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="predLaunchPositionValue">Launch Position</label>
+                                    <div id="predLaunchPositionValue" class="predictor-detail-value">—</div>
+                                </div>
+                                <div class="form-group settings-inline-row">
+                                    <label for="predLaunchTimeValue">Launch Time</label>
+                                    <div id="predLaunchTimeValue" class="predictor-detail-value">—</div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Wind Profile</label>
+                                    <div id="windProfileUnavailable" class="text-muted wind-profile-unavailable">Not available (requires offline/GFS predictor mode).</div>
+                                    <table id="windProfileTable" class="wind-profile-table" style="display:none;">
+                                        <thead>
+                                            <tr>
+                                                <th>Altitude</th>
+                                                <th>Speed</th>
+                                                <th>Direction</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="windProfileTableBody"></tbody>
+                                    </table>
                                 </div>
                             </div>
                         </section>
@@ -1630,63 +1453,24 @@ function setTopbarSelection(mode){
 }
 
 function ensureSettingsPanelHeight() {
-    if (typeof window.getDockPanelHeight === 'function' && typeof window.setDockPanelHeight === 'function') {
-        var rememberedDockHeight = window.getDockPanelHeight();
-        if (rememberedDockHeight > 0) {
-            window.setDockPanelHeight(rememberedDockHeight, false);
-            return;
-        }
-    }
-
-    var panel = document.getElementById('settingsPanel');
-    if (!panel || typeof window.setDockPanelHeight !== 'function') {
-        return;
-    }
-
-    var current = parseFloat(panel.style.height || panel.style.maxHeight || '0');
-    if (isFinite(current) && current > 0) {
-        window.setDockPanelHeight(current, false);
-        return;
-    }
-
-    var remembered = parseFloat(window.__dockPanelHeight || window.__settingsPanelHeight || '0');
-    if (isFinite(remembered) && remembered > 0) {
-        window.setDockPanelHeight(remembered, false);
-        return;
-    }
-
-    if (typeof window.getSettingsPanelSnapOpenHeight === 'function') {
-        var openHeight = parseFloat(window.getSettingsPanelSnapOpenHeight());
-        if (isFinite(openHeight) && openHeight > 0) {
-            window.setDockPanelHeight(openHeight, true);
-            return;
-        }
-    }
-
-    window.setDockPanelHeight(420, true);
+    setDockPanelHeight(getDockPanelHeight());
 }
 
 function getDockPanelHeight() {
-    var remembered = parseFloat(window.__dockPanelHeight || window.__settingsPanelHeight || '0');
-    if (isFinite(remembered) && remembered > 0) {
-        return remembered;
-    }
-    // Default to the full available height (matching the Flight Deck design,
-    // which always shows Log/Settings spanning top:84 to bottom:24) rather
-    // than an arbitrary short height - users can still drag it shorter via
-    // the resize handle, which is what sets window.__dockPanelHeight above.
-    if (typeof window.getSettingsPanelSnapOpenHeight === 'function') {
-        var fallbackHeight = parseFloat(window.getSettingsPanelSnapOpenHeight());
-        if (isFinite(fallbackHeight) && fallbackHeight > 0) {
-            return fallbackHeight;
+    // Fixed height dependent on viewport size (matching the Flight Deck
+    // design, which always shows Log/Settings spanning top:84 to bottom:24) -
+    // there's no drag-to-resize any more, so this is just the one open height.
+    if (typeof window.getSettingsPanelOpenHeight === 'function') {
+        var height = parseFloat(window.getSettingsPanelOpenHeight());
+        if (isFinite(height) && height > 0) {
+            return height;
         }
     }
     return 420;
 }
 
-function setDockPanelHeight(height, persistHeight) {
-    var targetPanelId = arguments.length > 2 ? arguments[2] : null;
-    var maxOpen = typeof window.getSettingsPanelSnapOpenHeight === 'function' ? parseFloat(window.getSettingsPanelSnapOpenHeight()) : 0;
+function setDockPanelHeight(height, targetPanelId) {
+    var maxOpen = typeof window.getSettingsPanelOpenHeight === 'function' ? parseFloat(window.getSettingsPanelOpenHeight()) : 0;
     if (!isFinite(maxOpen) || maxOpen <= 0) {
         maxOpen = Math.max(240, Math.floor(window.innerHeight - 120));
     }
@@ -1721,11 +1505,6 @@ function setDockPanelHeight(height, persistHeight) {
         targetPanel.style.maxHeight = safeHeight + 'px';
     }
 
-    if (persistHeight !== false && safeHeight > 0) {
-        window.__dockPanelHeight = safeHeight;
-        window.__settingsPanelHeight = safeHeight;
-    }
-
     return safeHeight;
 }
 
@@ -1734,10 +1513,21 @@ window.setDockPanelHeight = setDockPanelHeight;
 
 // The nav/panel layout is no longer one bottom-left "dock" — the top bar is
 // fixed at the top, APRS/Settings panels hang top-left/top-right below it,
-// and the Log panel spans the bottom. So "which panel is covering part of
-// the map" has to be read from whichever panel is actually open, not from a
-// single dock element's position.
+// the Route panel hangs left, the DOA bearing card floats bottom-right, and
+// the Log panel spans the bottom. So "which panel is covering part of the
+// map" has to be read from whichever panel is actually open, not from a
+// single dock element's position. Route and APRS/Settings/Log are mutually
+// exclusive "screens" (see closeRoutePanel() calls in
+// toggleSettingsPanel()/toggleLogPanel(), and openRoutePanel() closing the
+// others) so at most one of these three is ever open at once - order among
+// them doesn't matter. The DOA card is force-hidden by CSS whenever any of
+// those three is open (body.route-panel-active / body.side-panel-open in
+// chasemapper.css), so it only ever needs to be checked as a last resort.
 function getOpenDockPanel() {
+    var routePanel = document.getElementById('routePanel');
+    if (routePanel && routePanel.classList.contains('panel-open')) {
+        return routePanel;
+    }
     var settingsPanel = document.getElementById('settingsPanel');
     if (settingsPanel && settingsPanel.classList.contains('panel-open')) {
         return settingsPanel;
@@ -1746,73 +1536,27 @@ function getOpenDockPanel() {
     if (logPanel && logPanel.classList.contains('panel-open')) {
         return logPanel;
     }
+    // The DOA card doesn't use the panel-open toggle (it's an always-rendered
+    // floating card, shown/hidden via plain display) - a computed-style check
+    // is what actually reflects whether it's currently taking up screen space.
+    var doaPanel = document.getElementById('doaBearingPanel');
+    if (doaPanel && getComputedStyle(doaPanel).display !== 'none') {
+        return doaPanel;
+    }
     return null;
 }
 window.getOpenDockPanel = getOpenDockPanel;
 
-function getOpenDockPanelWidth() {
-    var panel = getOpenDockPanel();
-    if (!panel || panel.id === 'logPanel') {
-        // The log panel spans the bottom full-width; it doesn't cover a
-        // horizontal side of the map, so it has no "width" to offset for.
-        return 0;
-    }
-    return panel.getBoundingClientRect().width;
-}
-
-function getVisibleMapCenterPoint() {
-    if (typeof map === 'undefined' || !map) {
-        return null;
-    }
-
-    var size = map.getSize();
-    var panel = getOpenDockPanel();
-
-    if (panel && panel.id === 'logPanel') {
-        var rect = panel.getBoundingClientRect();
-        var coveredHeight = Math.min(Math.max(rect.height, 0), size.y);
-        return L.point(size.x / 2, Math.max(0, size.y / 2 - coveredHeight / 2));
-    }
-
-    var coveredWidth = getOpenDockPanelWidth();
-    var dockOnLeft = true;
-    if (panel) {
-        var panelRect = panel.getBoundingClientRect();
-        dockOnLeft = panelRect.left < (size.x / 2);
-    }
-    var x = dockOnLeft ? (size.x / 2 + coveredWidth / 2) : (size.x / 2 - coveredWidth / 2);
-    return L.point(x, size.y / 2);
-}
-
 function panMapToVisibleCenter(latlng, panOptions) {
-    if (typeof map === 'undefined' || !map || !latlng) {
+    if (!latlng || typeof flyCesiumToPosition !== 'function') {
         return;
     }
-
-                if (typeof get3DMapViewEnabled === 'function' && get3DMapViewEnabled() && typeof flyCesiumToPosition === 'function') {
-                    flyCesiumToPosition(latlng, panOptions);
-                    return;
-                }
-
-    var targetLatLng = L.latLng(latlng);
-    if (!targetLatLng) {
-        return;
-    }
-
-    var options = panOptions || {};
-    var desiredPoint = getVisibleMapCenterPoint();
-    if (!desiredPoint) {
-        map.panTo(targetLatLng, options);
-        return;
-    }
-
-    var zoom = map.getZoom();
-    var size = map.getSize();
-    var targetPoint = map.project(targetLatLng, zoom);
-    var halfSize = L.point(size.x / 2, size.y / 2);
-    var desiredCenterPoint = targetPoint.subtract(desiredPoint.subtract(halfSize));
-    var desiredCenterLatLng = map.unproject(desiredCenterPoint, zoom);
-    map.panTo(desiredCenterLatLng, options);
+    // alignToFollowViewport: true is what makes this panel-aware (see
+    // flyCesiumToPosition/getFollowViewportAnchorPoint in cesium-map.js,
+    // which reads window.getOpenDockPanel() directly) - without it the
+    // fly-to just centers on the raw viewport, ignoring any open side
+    // panel/DOA card.
+    flyCesiumToPosition(latlng, Object.assign({alignToFollowViewport: true}, panOptions || {}));
 }
 
 window.panMapToVisibleCenter = panMapToVisibleCenter;
@@ -1826,7 +1570,7 @@ function openPanelWithAnimation($panel, animate) {
     }
     var shouldAnimate = animate !== false;
     if ($panel[0] && ($panel[0].id === 'logPanel' || $panel[0].id === 'settingsPanel')) {
-        setDockPanelHeight(getDockPanelHeight(), false, $panel[0].id);
+        setDockPanelHeight(getDockPanelHeight(), $panel[0].id);
     }
     
     if (shouldAnimate) {
@@ -1925,7 +1669,7 @@ function closePanel($panel) {
         var settingsOpen = $('#settingsPanel').hasClass('panel-open');
         var logOpen = $('#logPanel').hasClass('panel-open');
         if (!settingsOpen && !logOpen) {
-            setDockPanelHeight(0, false);
+            setDockPanelHeight(0);
         }
     };
 
@@ -1946,7 +1690,6 @@ function showSettingsPanel(mode) {
         $settingsPanel.attr('data-panel-mode', 'aprs');
         $('#aprsSection').show();
         $('#otherSection').hide();
-        $('#settingsPanel .settings-header span').text('APRS');
         ensureSettingsPanelHeight();
         if (!isAlreadyOpen || !isSameMode) {
             if (wasLogOpen) {
@@ -1966,7 +1709,6 @@ function showSettingsPanel(mode) {
         $settingsPanel.attr('data-panel-mode', 'settings');
         $('#otherSection').show();
         $('#aprsSection').hide();
-        $('#settingsPanel .settings-header span').text('Settings');
         if (navigator && navigator.geolocation){
             navigator.geolocation.getCurrentPosition(function(pos){ $('#currentLocationDisplay').text(pos.coords.latitude.toFixed(5)+', '+pos.coords.longitude.toFixed(5)); }, function(){}, {timeout:5000});
         }
@@ -1995,6 +1737,16 @@ function toggleSettingsPanel(mode) {
         return;
     }
 
+    // The Route panel and the APRS/Log/Settings panels are mutually
+    // exclusive "screens" (matching the Flight Deck design's Track/Route/
+    // APRS/Log/Settings tabs, which each show exactly one main view) - both
+    // are position:fixed at the same z-index, so leaving the Route panel
+    // open would otherwise have this panel render on top of it instead of
+    // replacing it.
+    if (typeof window.isRoutePanelOpen === 'function' && window.isRoutePanelOpen()) {
+        window.closeRoutePanel();
+    }
+
     showSettingsPanel(mode);
     setTopbarSelection(mode);
 }
@@ -2013,6 +1765,11 @@ function toggleLogPanel() {
         closePanel($('#logPanel'));
         setTopbarSelection('none');
     } else {
+        // See the matching comment in toggleSettingsPanel() - Route and
+        // Log/APRS/Settings are mutually-exclusive screens.
+        if (typeof window.isRoutePanelOpen === 'function' && window.isRoutePanelOpen()) {
+            window.closeRoutePanel();
+        }
         if (typeof window.renderLogEntries === 'function') {
             window.renderLogEntries();
         }
@@ -2075,20 +1832,45 @@ $(document).on('click', '.log-panel .log-panel-header', function(e){
     setTopbarSelection('none');
 });
 
-$(document).on('click', '.settings-panel .settings-header', function(e){
-    if ($(e.target).closest('button, input, select, label').length > 0) {
-        return;
-    }
-    closePanel($('#settingsPanel'));
-    setTopbarSelection('none');
-});
-
 // Theme toggle: persist and apply
 function applyTheme(isDark){
     if(isDark){
         $('body').addClass('dark-theme');
     } else {
         $('body').removeClass('dark-theme');
+    }
+}
+
+// Panels (route/log/settings/doa) and the map's zoom/measure control stack
+// anchor their top offset to --topbar-height rather than a value baked into
+// their own CSS, since the topbar's actual height changes with viewport
+// width AND content (icon-only vs labelled nav, subtitle hidden, the whole
+// bar hidden entirely below the mobile-tab-bar breakpoint, etc.) - a
+// hardcoded guess, or one only re-measured on window
+// resize, drifts out of sync (e.g. after a web font swaps in post-load)
+// and things end up overlapping the topbar. A ResizeObserver on #topbar
+// itself catches every case a plain 'resize' listener would miss, since it
+// fires whenever the topbar's own box actually changes size for any reason.
+//
+// Despite the name, --topbar-height needs to be the distance from the
+// viewport top to *below* the topbar, not just the topbar's own height -
+// the topbar itself floats at top:20px rather than sitting flush at 0, so
+// .getBoundingClientRect().bottom (which already folds that 20px in) is
+// the right read here, not .height on its own.
+function syncTopbarHeightVar(){
+    var topbar = document.getElementById('topbar');
+    if (!topbar) return;
+    document.documentElement.style.setProperty('--topbar-height', topbar.getBoundingClientRect().bottom + 'px');
+}
+
+function observeTopbarHeight(){
+    var topbar = document.getElementById('topbar');
+    if (!topbar) return;
+    syncTopbarHeightVar();
+    if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(syncTopbarHeightVar).observe(topbar);
+    } else {
+        window.addEventListener('resize', syncTopbarHeightVar);
     }
 }
 
@@ -2103,6 +1885,8 @@ $(document).ready(function(){
 
     // Default nav state: Track (pure map view, no panel open).
     setTopbarSelection('track');
+
+    observeTopbarHeight();
 });
 
 </script>

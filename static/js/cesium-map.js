@@ -39,6 +39,8 @@
         predictionEntities: {},
         chaseCarEntity: null,
         homeEntity: null,
+        rangeRingEntities: [],
+        bearingLineEntities: {},
         resizeTimer: null,
         resizeListenerBound: false,
     };
@@ -57,8 +59,23 @@
             {id: 'standard', label: 'Standard (OSM)'},
             {id: 'satellite', label: 'Satellite'},
             {id: 'terrain', label: 'Satellite + Terrain'},
-            {id: 'buildings', label: 'Satellite + Terrain + 3D Buildings'}
+            {id: 'buildings', label: 'Satellite + Terrain + 3D Buildings'},
+            {id: 'aviation', label: 'Aviation (World Navigation)'}
         ];
+
+        try {
+            if (typeof chase_config !== 'undefined' && chase_config && chase_config.thunderforest_api_key && chase_config.thunderforest_api_key !== 'none') {
+                modes.push({id: 'outdoors', label: 'Outdoors (Terrain)'});
+            }
+            if (typeof chase_config !== 'undefined' && chase_config && chase_config.stadia_api_key && chase_config.stadia_api_key !== 'none') {
+                modes.push({id: 'dark', label: 'Alidade Smooth Dark'});
+            }
+            if (typeof chase_config !== 'undefined' && chase_config && chase_config.openaip_api_key && chase_config.openaip_api_key !== 'none') {
+                modes.push({id: 'openaip', label: 'Aviation (openAIP)'});
+            }
+        } catch (e) {
+            // ignore dynamic mode build failures
+        }
 
         try {
             var offline = (typeof chase_config !== 'undefined' && chase_config && Array.isArray(chase_config.offline_tile_layers)) ? chase_config.offline_tile_layers : [];
@@ -134,6 +151,32 @@
         if (modeId === 'satellite' || modeId === 'terrain' || modeId === 'buildings') {
             return new Cesium.UrlTemplateImageryProvider({
                 url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+            });
+        }
+
+        if (modeId === 'aviation') {
+            return new Cesium.UrlTemplateImageryProvider({
+                url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
+                maximumLevel: 18
+            });
+        }
+
+        if (modeId === 'outdoors' && typeof chase_config !== 'undefined' && chase_config && chase_config.thunderforest_api_key && chase_config.thunderforest_api_key !== 'none') {
+            return new Cesium.UrlTemplateImageryProvider({
+                url: 'https://tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=' + chase_config.thunderforest_api_key
+            });
+        }
+
+        if (modeId === 'dark' && typeof chase_config !== 'undefined' && chase_config && chase_config.stadia_api_key && chase_config.stadia_api_key !== 'none') {
+            return new Cesium.UrlTemplateImageryProvider({
+                url: 'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png?apikey=' + chase_config.stadia_api_key
+            });
+        }
+
+        if (modeId === 'openaip' && typeof chase_config !== 'undefined' && chase_config && chase_config.openaip_api_key && chase_config.openaip_api_key !== 'none') {
+            return new Cesium.UrlTemplateImageryProvider({
+                url: 'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=' + encodeURIComponent(chase_config.openaip_api_key),
+                maximumLevel: 14
             });
         }
 
@@ -1148,6 +1191,28 @@
             // ignore
         }
 
+        // Notify index.html of a genuine user gesture (mouse-drag start,
+        // scroll-wheel zoom, touch drag/pinch) so it can turn off auto-follow -
+        // registered on viewer.screenSpaceEventHandler, a separate listener
+        // registry from the camera controller's own internal one, so this
+        // doesn't interfere with the built-in drag-to-pan/scroll-to-zoom
+        // behaviour. Deliberately keyed off raw input rather than
+        // camera.moveEnd, which also fires for our own programmatic
+        // flyTo calls (follow, focus, mode switches) and can't cheaply be
+        // told apart from a real user drag.
+        try {
+            var notifyUserMapInteraction = function() {
+                if (typeof window.onCesiumUserMapInteraction === 'function') {
+                    window.onCesiumUserMapInteraction();
+                }
+            };
+            viewer.screenSpaceEventHandler.setInputAction(notifyUserMapInteraction, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+            viewer.screenSpaceEventHandler.setInputAction(notifyUserMapInteraction, Cesium.ScreenSpaceEventType.WHEEL);
+            viewer.screenSpaceEventHandler.setInputAction(notifyUserMapInteraction, Cesium.ScreenSpaceEventType.PINCH_START);
+        } catch (e) {
+            // ignore
+        }
+
         try {
             viewer.screenSpaceEventHandler.setInputAction(function(movement) {
                 var picked = viewer.scene.pick(movement.position);
@@ -1358,7 +1423,7 @@
             position: position
         });
 
-        var path = toCesiumPositionList((payload && payload.pathData) || (balloonState && balloonState.path && typeof balloonState.path.getLatLngs === 'function' ? balloonState.path.getLatLngs() : []), {maxSegmentMeters: 15000, maxPoints: getMaxTrackPoints()});
+        var path = toCesiumPositionList((payload && payload.pathData) || (balloonState && balloonState.path) || [], {maxSegmentMeters: 15000, maxPoints: getMaxTrackPoints()});
         upsertBalloonEntity(callsign, 'path', {
             show: visible && path.length >= 2,
             polyline: {
@@ -1370,7 +1435,7 @@
             }
         });
 
-        var predPath = toCesiumPositionList((payload && payload.predPathData) || (balloonState && balloonState.pred_path && typeof balloonState.pred_path.getLatLngs === 'function' ? balloonState.pred_path.getLatLngs() : []), {maxSegmentMeters: 12000});
+        var predPath = toCesiumPositionList((payload && payload.predPathData) || (balloonState && balloonState.pred_path) || [], {maxSegmentMeters: 12000});
         upsertBalloonEntity(callsign, 'prediction', {
             show: visible && predPath.length >= 2,
             polyline: {
@@ -1382,7 +1447,7 @@
             }
         });
 
-        var predLanding = toCesiumPosition((payload && payload.predLandingData) || (balloonState && balloonState.pred_marker && balloonState.pred_marker.getLatLng ? balloonState.pred_marker.getLatLng() : null));
+        var predLanding = toCesiumPosition((payload && payload.predLandingData) || (balloonState && balloonState.pred_marker) || null);
         upsertBalloonEntity(callsign, 'landing', {
             show: visible && !!predLanding,
             position: predLanding,
@@ -1396,7 +1461,7 @@
             }
         });
 
-        var burst = toCesiumPosition((payload && payload.burstData) || (balloonState && balloonState.burst_marker && balloonState.burst_marker.getLatLng ? balloonState.burst_marker.getLatLng() : null));
+        var burst = toCesiumPosition((payload && payload.burstData) || (balloonState && balloonState.burst_marker) || null);
         upsertBalloonEntity(callsign, 'burst', {
             show: visible && !!burst,
             position: burst,
@@ -1410,9 +1475,10 @@
             }
         });
 
-        var abortPath = toCesiumPositionList((payload && payload.abortPathData) || (balloonState && balloonState.abort_path && typeof balloonState.abort_path.getLatLngs === 'function' ? balloonState.abort_path.getLatLngs() : []), {maxSegmentMeters: 12000});
+        var abortEnabled = (typeof chase_config === 'undefined' || !chase_config) ? true : chase_config.show_abort !== false;
+        var abortPath = toCesiumPositionList((payload && payload.abortPathData) || (balloonState && balloonState.abort_path) || [], {maxSegmentMeters: 12000});
         upsertBalloonEntity(callsign, 'abort-path', {
-            show: visible && abortPath.length >= 2,
+            show: visible && abortEnabled && abortPath.length >= 2,
             polyline: {
                 positions: abortPath,
                 clampToGround: false,
@@ -1422,9 +1488,9 @@
             }
         });
 
-        var abortLanding = toCesiumPosition((payload && payload.abortLandingData) || (balloonState && balloonState.abort_marker && balloonState.abort_marker.getLatLng ? balloonState.abort_marker.getLatLng() : null));
+        var abortLanding = toCesiumPosition((payload && payload.abortLandingData) || (balloonState && balloonState.abort_marker) || null);
         upsertBalloonEntity(callsign, 'abort', {
-            show: visible && !!abortLanding,
+            show: visible && abortEnabled && !!abortLanding,
             position: abortLanding,
             billboard: {
                 image: '/static/img/target-red.png',
@@ -1454,144 +1520,56 @@
             return;
         }
 
-        // Sample terrain to place the chase car exactly on the ground where possible
-        try {
-            var carto = Cesium.Cartographic.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
-            if (viewer && viewer.terrainProvider && typeof Cesium.sampleTerrainMostDetailed === 'function') {
-                Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto]).then(function(updated){
-                    try {
-                        var u = updated && updated[0] ? updated[0] : carto;
-                        var pos = Cesium.Cartesian3.fromRadians(u.longitude, u.latitude, u.height || 0);
-                        // update entity with sampled position
-                        cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
-                            show: true,
-                            position: pos,
-                            billboard: {
-                                image: '/static/img/car-blue.png',
-                                width: 55,
-                                height: 25,
-                                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                                verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                                disableDepthTestDistance: Number.POSITIVE_INFINITY
-                            },
-                            polyline: {
-                                positions: pathPoints,
-                                clampToGround: true,
-                                width: 2,
-                                arcType: Cesium.ArcType.GEODESIC,
-                                material: Cesium.Color.BLACK
-                            }
-                        });
-                    } catch (e) {
-                        // fallback to simple position
-                        var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
-                        cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
-                            show: true,
-                            position: fallbackPos,
-                            billboard: {
-                                image: '/static/img/car-blue.png',
-                                width: 55,
-                                height: 25,
-                                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                                verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                                disableDepthTestDistance: Number.POSITIVE_INFINITY
-                            },
-                            polyline: {
-                                positions: pathPoints,
-                                clampToGround: true,
-                                width: 2,
-                                arcType: Cesium.ArcType.GEODESIC,
-                                material: Cesium.Color.BLACK
-                            }
-                        });
-                    }
-                }).catch(function(){
-                    // sample failed - fallback
-                    var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
-                    cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
-                        show: true,
-                        position: fallbackPos,
-                        billboard: {
-                            image: '/static/img/car-blue.png',
-                            width: 55,
-                            height: 25,
-                            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                            verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                            disableDepthTestDistance: Number.POSITIVE_INFINITY
-                        },
-                        polyline: {
-                            positions: pathPoints,
-                            clampToGround: true,
-                            width: 2,
-                            arcType: Cesium.ArcType.GEODESIC,
-                            material: Cesium.Color.BLACK
-                        }
-                    });
-                });
-
-            } else {
-                // No terrain available - place at provided altitude
-                var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
-                cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
-                    show: true,
-                    position: fallbackPos,
-                    billboard: {
-                        image: '/static/img/car-blue.png',
-                        width: 55,
-                        height: 25,
-                        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                        verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                        disableDepthTestDistance: Number.POSITIVE_INFINITY
-                    },
-                    polyline: {
-                        positions: pathPoints,
-                        clampToGround: true,
-                        width: 2,
-                        arcType: Cesium.ArcType.GEODESIC,
-                        material: Cesium.Color.BLACK
-                    }
-                });
-            }
-            return;
-        } catch (e) {
-            // fall through to previous behaviour
-        }
-        // Get path points - handle Leaflet polyline or raw array
+        // chase_car_position.path is a plain array of [lat,lon,alt] breadcrumb
+        // points; trackVisible mirrors the "chaseCarTrack" display setting.
+        var trackVisible = chase_car_position.trackVisible !== false;
         var pathPoints = [];
-        if (chase_car_position.path && typeof chase_car_position.path.getLatLngs === 'function') {
-            pathPoints = toCesiumPositionList(chase_car_position.path.getLatLngs(), {maxSegmentMeters: 10000, maxPoints: getMaxTrackPoints()});
-        } else if (Array.isArray(chase_car_position.path) && chase_car_position.path.length > 0) {
+        if (trackVisible && Array.isArray(chase_car_position.path) && chase_car_position.path.length > 0) {
             pathPoints = toCesiumPositionList(chase_car_position.path, {maxSegmentMeters: 10000, maxPoints: getMaxTrackPoints()});
         }
-        
-        if (pathPoints.length === 0) {
-            pathPoints = [carPosition];
+
+        function placeCarEntity(position) {
+            cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
+                show: true,
+                position: position,
+                billboard: {
+                    image: '/static/img/car-blue.png',
+                    width: 55,
+                    height: 25,
+                    horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                    verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                    disableDepthTestDistance: Number.POSITIVE_INFINITY
+                },
+                polyline: {
+                    positions: pathPoints.length >= 2 ? pathPoints : [position, position],
+                    show: pathPoints.length >= 2,
+                    clampToGround: true,
+                    width: 2,
+                    arcType: Cesium.ArcType.GEODESIC,
+                    material: Cesium.Color.BLACK
+                }
+            });
         }
 
-        cesiumState.chaseCarEntity = upsertBalloonEntity('CHASE_CAR', 'track', {
-            show: true,
-            position: carPosition,
-            billboard: {
-                image: '/static/img/car-blue.png',
-                width: 55,
-                height: 25,
-                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                verticalOrigin: Cesium.VerticalOrigin.CENTER,
-                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                disableDepthTestDistance: Number.POSITIVE_INFINITY
-            },
-            polyline: {
-                positions: pathPoints,
-                clampToGround: true,
-                width: 2,
-                arcType: Cesium.ArcType.GEODESIC,
-                material: Cesium.Color.BLACK
+        var fallbackPos = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+
+        // Sample terrain to place the chase car exactly on the ground where possible.
+        if (viewer.terrainProvider && typeof Cesium.sampleTerrainMostDetailed === 'function') {
+            try {
+                var carto = Cesium.Cartographic.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+                Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto]).then(function(updated){
+                    var u = updated && updated[0] ? updated[0] : carto;
+                    placeCarEntity(Cesium.Cartesian3.fromRadians(u.longitude, u.latitude, u.height || 0));
+                }).catch(function(){
+                    placeCarEntity(fallbackPos);
+                });
+            } catch (e) {
+                placeCarEntity(fallbackPos);
             }
-        });
+        } else {
+            placeCarEntity(fallbackPos);
+        }
     }
 
     // Render another connected chaser's live position as a Cesium billboard +
@@ -1638,9 +1616,11 @@
         if (!viewer || !cesiumState.active || !Array.isArray(latlngs) || latlngs.length === 0) {
             return;
         }
-        // Prepare cartographics for terrain sampling
+        // Prepare cartographics for terrain sampling (latlngs may be {lat,lng}
+        // objects or plain [lat,lon] arrays - toCesiumPoint accepts both).
         try {
-            var cartos = latlngs.map(function(ll){ return Cesium.Cartographic.fromDegrees(ll.lng, ll.lat); });
+            var normalizedPoints = toCesiumPointList(latlngs);
+            var cartos = normalizedPoints.map(function(p){ return Cesium.Cartographic.fromDegrees(p[1], p[0]); });
             if (viewer.terrainProvider && typeof Cesium.sampleTerrainMostDetailed === 'function') {
                 Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartos).then(function(updated){
                     try {
@@ -1769,6 +1749,136 @@
         }
     }
 
+    // The browser's own geolocation fix (distinct from the configured
+    // home/receiver position above) - same blue-dot-with-white-ring styling.
+    function syncUserLocationOnCesium(position) {
+        var viewer = ensureViewer();
+        if (!viewer) {
+            return;
+        }
+        var pos = toCesiumPosition(position);
+        if (!pos) {
+            return;
+        }
+        upsertBalloonEntity('USER_LOCATION', 'marker', {
+            show: true,
+            position: pos,
+            point: {
+                pixelSize: 14,
+                color: Cesium.Color.fromCssColorString('#2E86FF'),
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 2,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY
+            }
+        });
+    }
+
+    // Remove another connected chaser's marker entity entirely (as opposed to
+    // just hiding it) - used when a chaser disconnects/goes stale rather than
+    // just toggling the "show other chasers" checkbox.
+    function removeOtherChaserEntity(key) {
+        var viewer = cesiumState.viewer;
+        if (!viewer) {
+            return;
+        }
+        try { viewer.entities.removeById('OTHER_CAR_' + key + ':track'); } catch (e) { /* ignore */ }
+    }
+
+    // Hide (not remove) the chase-car entity - used when switching to a
+    // profile with no live car position source (e.g. "station" or "none").
+    function clearChaseCarOnCesium() {
+        if (cesiumState.chaseCarEntity) {
+            cesiumState.chaseCarEntity.show = false;
+        }
+    }
+
+    function clearRangeRingsOnCesium() {
+        var viewer = cesiumState.viewer;
+        if (viewer) {
+            cesiumState.rangeRingEntities.forEach(function(entity) {
+                try { viewer.entities.remove(entity); } catch (e) { /* ignore */ }
+            });
+        }
+        cesiumState.rangeRingEntities = [];
+    }
+
+    // rings: array of {radius (metres), color (css color string), weight (px)}
+    function syncRangeRingsOnCesium(position, rings) {
+        var viewer = ensureViewer();
+        if (!viewer) {
+            return;
+        }
+        clearRangeRingsOnCesium();
+        var centre = toCesiumPosition(position);
+        if (!centre || !Array.isArray(rings)) {
+            return;
+        }
+        rings.forEach(function(ring, i) {
+            var entity = viewer.entities.add({
+                id: 'RANGE_RING_' + i,
+                position: centre,
+                ellipse: {
+                    semiMinorAxis: ring.radius,
+                    semiMajorAxis: ring.radius,
+                    fill: false,
+                    outline: true,
+                    outlineColor: Cesium.Color.fromCssColorString(ring.color).withAlpha(0.7),
+                    outlineWidth: ring.weight || 1,
+                    height: 0,
+                    heightReference: Cesium.HeightReference.CLAMP_TO_GROUND
+                }
+            });
+            cesiumState.rangeRingEntities.push(entity);
+        });
+    }
+
+    function recenterRangeRingsOnCesium(position) {
+        var centre = toCesiumPosition(position);
+        if (!centre) {
+            return;
+        }
+        cesiumState.rangeRingEntities.forEach(function(entity) {
+            entity.position = centre;
+        });
+    }
+
+    // Bearing lines (bearings.js) - one polyline entity per bearing id, keyed
+    // independently of the balloon/prediction/route entities above.
+    function syncBearingLineOnCesium(id, positions, color, weight, opacity) {
+        var viewer = ensureViewer();
+        if (!viewer) {
+            return null;
+        }
+        var path = toCesiumPositionList(positions);
+        if (path.length < 2) {
+            return null;
+        }
+        var entityId = 'BEARING_' + id;
+        var entity = viewer.entities.getById(entityId);
+        if (!entity) {
+            entity = viewer.entities.add({ id: entityId });
+        }
+        entity.polyline = {
+            positions: path,
+            clampToGround: false,
+            width: weight || 2.5,
+            arcType: Cesium.ArcType.GEODESIC,
+            material: toCesiumColor(color || '#FFCB05').withAlpha(opacity === undefined ? 1 : opacity)
+        };
+        entity.show = true;
+        cesiumState.bearingLineEntities[id] = entity;
+        return entity;
+    }
+
+    function removeBearingLineOnCesium(id) {
+        var viewer = cesiumState.viewer;
+        if (viewer) {
+            try { viewer.entities.removeById('BEARING_' + id); } catch (e) { /* ignore */ }
+        }
+        delete cesiumState.bearingLineEntities[id];
+    }
+
     function syncAllCesiumStateFromStore() {
         if (!cesiumState.active) {
             return;
@@ -1847,6 +1957,164 @@
         window.addEventListener('resize', scheduleCesiumResize);
     }
 
+    // Computes the camera position+orientation needed to view `targetPosition`
+    // from the given heading/pitch/range offset, with the target landing on
+    // `desiredScreenPoint` (defaults to dead-center when omitted/null)
+    // instead of always the raw viewport center. Used so a panel-aware
+    // fly-to (follow a callsign/position while a side panel is open) can
+    // animate directly to its final off-center position in one smooth
+    // motion, rather than flying to center and then snapping sideways once
+    // the flight completes.
+    //
+    // Works by temporarily calling camera.lookAt() (an instantaneous, not
+    // animated, positioning primitive) to read off exactly where flying to
+    // `offset` around the target would land the camera, then restoring the
+    // camera to its pre-call state - all synchronously, before any frame
+    // renders, so nothing actually visibly jumps. That destination is then
+    // nudged in its own screen-plane (right/up) to move the target from
+    // center onto the desired screen point, using the frustum's pixel-size
+    // math to convert the screen-space delta into a world-space shift.
+    function computeCameraDestination(viewer, targetPosition, offset, desiredScreenPoint) {
+        var camera = viewer.camera;
+        var canvas = viewer.scene && viewer.scene.canvas ? viewer.scene.canvas : null;
+
+        var saved = {
+            position: Cesium.Cartesian3.clone(camera.position),
+            direction: Cesium.Cartesian3.clone(camera.direction),
+            up: Cesium.Cartesian3.clone(camera.up),
+            right: Cesium.Cartesian3.clone(camera.right),
+            transform: Cesium.Matrix4.clone(camera.transform)
+        };
+
+        try {
+            camera.lookAt(targetPosition, offset);
+            var destPosition = Cesium.Cartesian3.clone(camera.positionWC);
+            var result = {
+                position: destPosition,
+                heading: camera.heading,
+                pitch: camera.pitch,
+                roll: camera.roll
+            };
+
+            if (desiredScreenPoint && canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+                var centerX = canvas.clientWidth / 2;
+                var centerY = canvas.clientHeight / 2;
+                var dx = desiredScreenPoint.x - centerX;
+                var dy = desiredScreenPoint.y - centerY;
+                if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) {
+                    var distance = Cesium.Cartesian3.distance(destPosition, targetPosition);
+                    if (isFinite(distance) && distance > 0) {
+                        var pixelSize = camera.frustum.getPixelDimensions(
+                            canvas.clientWidth,
+                            canvas.clientHeight,
+                            distance,
+                            viewer.scene.pixelRatio || 1,
+                            new Cesium.Cartesian2()
+                        );
+                        if (pixelSize && isFinite(pixelSize.x) && isFinite(pixelSize.y)) {
+                            var destRight = Cesium.Cartesian3.clone(camera.rightWC);
+                            var destUp = Cesium.Cartesian3.clone(camera.upWC);
+                            var shifted = Cesium.Cartesian3.clone(destPosition);
+                            Cesium.Cartesian3.add(shifted, Cesium.Cartesian3.multiplyByScalar(destRight, -dx * pixelSize.x, new Cesium.Cartesian3()), shifted);
+                            Cesium.Cartesian3.add(shifted, Cesium.Cartesian3.multiplyByScalar(destUp, dy * pixelSize.y, new Cesium.Cartesian3()), shifted);
+                            result.position = shifted;
+                        }
+                    }
+                }
+            }
+
+            return result;
+        } catch (e) {
+            return null;
+        } finally {
+            // Restore transform FIRST - position/direction/up/right were
+            // captured relative to the original transform, so reassigning
+            // them while camera.transform is still lookAt()'s temporary
+            // matrix would reinterpret those saved vectors in the wrong
+            // frame and leave the camera somewhere completely wrong.
+            camera.transform = saved.transform;
+            camera.position = saved.position;
+            camera.direction = saved.direction;
+            camera.up = saved.up;
+            camera.right = saved.right;
+        }
+    }
+
+    // Animates the camera directly from wherever it currently is to
+    // destPosition/destOrientation over `duration` seconds, via a plain
+    // position+angle lerp - not Cesium's built-in flyTo/flyToBoundingSphere
+    // tween. Cesium's own flyTo auto-inserts a "rise up, arc over, descend"
+    // detour for any reasonably long flight (CameraFlightPathFactory boosts
+    // altitude mid-flight so the camera doesn't appear to clip through the
+    // ground), which reads as "zoom all the way out, then back in" for what's
+    // meant to be a same-altitude pan to re-center on something. This moves
+    // laterally and adjusts zoom together, directly, with no such detour.
+    var cesiumCameraAnimationToken = 0;
+
+    function easeInOutCubic(t) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function animateCameraTo(viewer, destPosition, destOrientation, duration) {
+        var camera = viewer.camera;
+        var token = ++cesiumCameraAnimationToken;
+
+        if (!duration || duration <= 0) {
+            // endTransform: IDENTITY is required here - destPosition is a
+            // world-frame Cartesian3 (from computeCameraDestination's
+            // camera.positionWC), but setView's `destination` is otherwise
+            // applied relative to whatever camera.transform currently is
+            // (which this app leaves non-identity at times), silently
+            // reinterpreting a correct world position into a wildly wrong
+            // one (e.g. landing camera below the earth's surface).
+            camera.setView({destination: destPosition, orientation: destOrientation, endTransform: Cesium.Matrix4.IDENTITY});
+            if (typeof viewer.scene.requestRender === 'function') {
+                viewer.scene.requestRender();
+            }
+            return;
+        }
+
+        var startPosition = Cesium.Cartesian3.clone(camera.positionWC);
+        var startHeading = camera.heading;
+        var startPitch = camera.pitch;
+        var startRoll = camera.roll;
+        var headingDelta = Cesium.Math.negativePiToPi(destOrientation.heading - startHeading);
+        var rollDelta = Cesium.Math.negativePiToPi((destOrientation.roll || 0) - startRoll);
+        var durationMs = duration * 1000;
+        var startTime = null;
+        var scratchPosition = new Cesium.Cartesian3();
+
+        function step(now) {
+            if (token !== cesiumCameraAnimationToken) {
+                return; // superseded by a newer animation
+            }
+            if (startTime === null) {
+                startTime = now;
+            }
+            var t = Math.min(1, (now - startTime) / durationMs);
+            var e = easeInOutCubic(t);
+
+            Cesium.Cartesian3.lerp(startPosition, destPosition, e, scratchPosition);
+            camera.setView({
+                destination: scratchPosition,
+                orientation: {
+                    heading: startHeading + headingDelta * e,
+                    pitch: Cesium.Math.lerp(startPitch, destOrientation.pitch, e),
+                    roll: startRoll + rollDelta * e
+                },
+                // See the duration<=0 branch's comment - scratchPosition is
+                // also always a world-frame Cartesian3.
+                endTransform: Cesium.Matrix4.IDENTITY
+            });
+
+            if (t < 1) {
+                requestAnimationFrame(step);
+            }
+        }
+
+        requestAnimationFrame(step);
+    }
+
     function flyCesiumToPosition(latlng, panOptions) {
         var viewer = ensureViewer();
         if (!viewer) {
@@ -1870,17 +2138,34 @@
         var range = clampNumber(options.range, 1000, 50000, Math.max((normalized[2] || 0) * 2.5, cesiumState.camera.range));
         cesiumState.camera.range = range;
 
-        viewer.camera.flyToBoundingSphere(
-            new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0), 10.0),
-            {
-                duration: duration,
-                offset: getCameraOffset({
-                    heading: options.heading,
-                    pitch: options.pitch,
-                    range: range
-                })
-            }
-        );
+        var targetPosition = Cesium.Cartesian3.fromDegrees(normalized[1], normalized[0], normalized[2] || 0);
+        var offset = getCameraOffset({
+            heading: options.heading,
+            pitch: options.pitch,
+            range: range
+        });
+
+        // alignToFollowViewport (opted into by panMapToVisibleCenter, this
+        // function's "user pans/focuses somewhere" caller; passive
+        // camera-state refreshes from refocusCesiumCamera don't, to avoid
+        // re-nudging the camera on every minor heading/pitch/range tweak)
+        // lands the target on whatever's actually visible (i.e. not covered
+        // by an open side panel/DOA card) instead of the raw viewport
+        // center. computeCameraDestination() folds that offset into the
+        // flight's actual destination up front, so the camera animates
+        // directly there in one motion instead of flying to center and
+        // snapping sideways once the flight completes.
+        var anchor = (options.alignToFollowViewport === true && typeof getFollowViewportAnchorPoint === 'function') ? getFollowViewportAnchorPoint() : null;
+        var dest = computeCameraDestination(viewer, targetPosition, offset, anchor);
+
+        if (dest) {
+            animateCameraTo(viewer, dest.position, {heading: dest.heading, pitch: dest.pitch, roll: dest.roll}, duration);
+        } else {
+            viewer.camera.flyToBoundingSphere(
+                new Cesium.BoundingSphere(targetPosition, 10.0),
+                {duration: duration, offset: offset}
+            );
+        }
 
         if (typeof viewer.scene.requestRender === 'function') {
             viewer.scene.requestRender();
@@ -1923,58 +2208,6 @@
         return {x: leftEdge / 2, y: height / 2};
     }
 
-    function alignTargetToScreenPoint(targetPosition, desiredPoint) {
-        var viewer = cesiumState.viewer;
-        if (!viewer || !targetPosition || !desiredPoint) {
-            return;
-        }
-
-        var canvas = viewer.scene && viewer.scene.canvas ? viewer.scene.canvas : null;
-        if (!canvas || canvas.clientWidth <= 0 || canvas.clientHeight <= 0) {
-            return;
-        }
-
-        for (var i = 0; i < 3; i++) {
-            var transforms = Cesium.SceneTransforms || {};
-            var windowFn = transforms.wgs84ToWindowCoordinates || transforms.worldToWindowCoordinates;
-            var windowPos = typeof windowFn === 'function' ? windowFn(viewer.scene, targetPosition) : null;
-            if (!windowPos) {
-                return;
-            }
-
-            var dx = desiredPoint.x - windowPos.x;
-            var dy = desiredPoint.y - windowPos.y;
-            if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
-                break;
-            }
-
-            var distance = Cesium.Cartesian3.distance(viewer.camera.positionWC, targetPosition);
-            if (!isFinite(distance) || distance <= 0) {
-                break;
-            }
-
-            var pixelSize = viewer.camera.frustum.getPixelDimensions(
-                canvas.clientWidth,
-                canvas.clientHeight,
-                distance,
-                viewer.scene.pixelRatio || 1,
-                new Cesium.Cartesian2()
-            );
-
-            if (!pixelSize || !isFinite(pixelSize.x) || !isFinite(pixelSize.y)) {
-                break;
-            }
-
-            // Shift camera in view-plane so target appears at desired screen anchor.
-            viewer.camera.move(viewer.camera.right, -dx * pixelSize.x);
-            viewer.camera.move(viewer.camera.up, dy * pixelSize.y);
-        }
-
-        if (typeof viewer.scene.requestRender === 'function') {
-            viewer.scene.requestRender();
-        }
-    }
-
     function focusCesiumOnCallsign(callsign, panOptions) {
         var viewer = ensureViewer();
         if (!viewer) {
@@ -2005,20 +2238,26 @@
         var range = clampNumber(panOptions && panOptions.range, 1000, 50000, Math.max(alt * 2.5, cesiumState.camera.range));
         cesiumState.camera.range = range;
 
-        viewer.flyTo(entity, {
-            duration: panOptions && typeof panOptions.duration === 'number' ? panOptions.duration : 1.4,
-            offset: getCameraOffset({
-                heading: panOptions && panOptions.heading,
-                pitch: panOptions && panOptions.pitch,
-                range: range
-            }),
-            complete: function() {
-                if (panOptions && panOptions.alignToFollowViewport === true) {
-                    var desiredAnchor = getFollowViewportAnchorPoint();
-                    alignTargetToScreenPoint(entity.position && entity.position.getValue ? entity.position.getValue(Cesium.JulianDate.now()) : null, desiredAnchor);
-                }
-            }
+        var duration = panOptions && typeof panOptions.duration === 'number' ? panOptions.duration : 1.4;
+        var offset = getCameraOffset({
+            heading: panOptions && panOptions.heading,
+            pitch: panOptions && panOptions.pitch,
+            range: range
         });
+        var targetPosition = entity.position && entity.position.getValue ? entity.position.getValue(Cesium.JulianDate.now()) : null;
+
+        // See flyCesiumToPosition()'s matching comment: computeCameraDestination()
+        // folds the alignToFollowViewport offset into the flight's actual
+        // destination up front, so the camera animates directly there in one
+        // motion instead of flying to center and snapping sideways afterward.
+        var anchor = (panOptions && panOptions.alignToFollowViewport === true && typeof getFollowViewportAnchorPoint === 'function') ? getFollowViewportAnchorPoint() : null;
+        var dest = targetPosition ? computeCameraDestination(viewer, targetPosition, offset, anchor) : null;
+
+        if (dest) {
+            animateCameraTo(viewer, dest.position, {heading: dest.heading, pitch: dest.pitch, roll: dest.roll}, duration);
+        } else {
+            viewer.flyTo(entity, {duration: duration, offset: offset});
+        }
 
         if (typeof viewer.scene.requestRender === 'function') {
             viewer.scene.requestRender();
@@ -2262,4 +2501,12 @@
     window.clearCesiumMeasureLine = clearCesiumMeasureLine;
     window.getCesiumViewer = getCesiumViewer;
     window.getCesiumMeasurePanel = getCesiumMeasurePanel;
+    window.removeOtherChaserEntity = removeOtherChaserEntity;
+    window.clearChaseCarOnCesium = clearChaseCarOnCesium;
+    window.syncRangeRingsOnCesium = syncRangeRingsOnCesium;
+    window.clearRangeRingsOnCesium = clearRangeRingsOnCesium;
+    window.recenterRangeRingsOnCesium = recenterRangeRingsOnCesium;
+    window.syncBearingLineOnCesium = syncBearingLineOnCesium;
+    window.removeBearingLineOnCesium = removeBearingLineOnCesium;
+    window.syncUserLocationOnCesium = syncUserLocationOnCesium;
 })();

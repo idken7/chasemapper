@@ -15,7 +15,23 @@ var balloonDescentIcons = {};
 var balloonLandingIcons = {};
 var balloonPayloadIcons = {};
 
+// Habitat (or APRS?) sourced chase car icons - colour cycle. Declared
+// unconditionally (unlike the L.icon objects below) since car.js reads
+// car_colour_values/car_colour_idx directly for colour-naming, independent
+// of which map engine is active.
+var car_colour_values = ['red', 'green', 'yellow'];
+var car_colour_idx = 0;
+var habitat_car_icons = {};
+var habitat_car_icons_flipped = {};
+
 // TODO: Make these /static URLS be filled in with templates (or does it not matter?)
+//
+// Guarded on `L` existing: this file is shared with bearing_entry.html/oclock.html,
+// which still render with Leaflet and need these as real L.icon objects. The main
+// map (index.html) doesn't load Leaflet any more and renders balloon/car markers
+// directly as Cesium billboards (see cesium-map.js), so this block is simply
+// skipped there rather than throwing on the undefined `L`.
+if (typeof L !== 'undefined'){
 for (var _col in colour_values){
 	balloonAscentIcons[colour_values[_col]] =  L.icon({
         iconUrl: "/static/img/balloon-" + colour_values[_col] + '.png',
@@ -31,12 +47,12 @@ for (var _col in colour_values){
         iconUrl: "/static/img/target-" + colour_values[_col] + '.png',
         iconSize: [20, 20],
         iconAnchor: [10, 10]
-    });  
+    });
     balloonPayloadIcons[colour_values[_col]] = L.icon({
         iconUrl: "/static/img/payload-" + colour_values[_col] + '.png',
         iconSize: [17, 18],
         iconAnchor: [8, 14]
-    });  
+    });
 }
 
 // Burst Icon
@@ -73,12 +89,6 @@ var homeIcon = L.icon({
     iconAnchor: [13, 34]
 });
 
-
-// Habitat (or APRS?) sourced chase car icons.
-var car_colour_values = ['red', 'green', 'yellow'];
-var car_colour_idx = 0;
-var habitat_car_icons = {};
-var habitat_car_icons_flipped = {};
 for (var _col in car_colour_values){
     habitat_car_icons[car_colour_values[_col]] = L.icon({
     iconUrl: "/static/img/car-"+car_colour_values[_col]+".png",
@@ -91,6 +101,7 @@ for (var _col in car_colour_values){
     iconSize: [55,25],
     iconAnchor: [27,12] // Revisit this
     });
+}
 }
 
 
@@ -173,20 +184,21 @@ function calculate_lookangles(a, b) {
     };
 }
 
-// Append a point to a Leaflet polyline while keeping its point count bounded,
-// so a multi-hour session (balloon flight, or a chase-car track spanning the
-// whole drive) doesn't grow the track polyline - and the browser's per-point
-// render/pan/zoom cost - without limit. Trims in batches (only once the track
-// is `overshoot` points past the cap) rather than on every call, so the O(n)
-// rebuild this requires stays rare instead of running on every single message.
-function addBoundedLatLng(polyline, latlng, maxPoints, overshoot) {
+// Append a point to a plain path-point array while keeping its length
+// bounded, so a multi-hour session (balloon flight, or a chase-car track
+// spanning the whole drive) doesn't grow the track - and the browser's
+// per-point render/pan/zoom cost - without limit. Trims in batches (only
+// once the track is `overshoot` points past the cap) rather than on every
+// call, so the O(n) rebuild this requires stays rare instead of running on
+// every single message. Mutates `pathPoints` in place.
+function addBoundedLatLng(pathPoints, latlng, maxPoints, overshoot) {
     maxPoints = maxPoints || 8000;
     overshoot = overshoot || Math.max(200, Math.round(maxPoints * 0.05));
-    polyline.addLatLng(latlng);
-    var _latlngs = polyline.getLatLngs();
-    if (_latlngs.length > maxPoints + overshoot) {
-        polyline.setLatLngs(_latlngs.slice(_latlngs.length - maxPoints));
+    pathPoints.push(latlng);
+    if (pathPoints.length > maxPoints + overshoot) {
+        pathPoints.splice(0, pathPoints.length - maxPoints);
     }
+    return pathPoints;
 }
 
 function textToClipboard(text) {

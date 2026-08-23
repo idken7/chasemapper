@@ -1,0 +1,48 @@
+# Xcode
+build/
+DerivedData/
+.DS_Store
+.xcodeproj/xcuserdata/
+.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/
+*.xcworkspace/xcuserdata/
+*.xcworkspace/contents.xcworkspacedata
+
+# SPM
+.build/
+*.xcarchive
+.swiftpm/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.package/
+/.packages
+/*.xcodeproj
+
+# Carthage
+Carthage/Build/
+.carthage/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Misc
+*.log
+*.bak

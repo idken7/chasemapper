@@ -22,7 +22,7 @@ needed). See tests/integration/test_api_routes.py for the sibling REST-API
 test suite and the env-var reset conventions this file mirrors.
 """
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -391,8 +391,10 @@ def test_socketio_connect_auto_mode_exempts_private_ip(app_client, monkeypatch):
     monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
     monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "auto")
     monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
-    # Test client's REMOTE_ADDR defaults to 127.0.0.1 (private/loopback), so
-    # "auto" mode should not require a key.
+    # The test client doesn't populate a real REMOTE_ADDR (werkzeug's
+    # EnvironBuilder leaves it unset), so simulate a private/loopback client
+    # explicitly - "auto" mode should not require a key for it.
+    monkeypatch.setattr(horusmapper, "_get_client_ip", lambda: "127.0.0.1")
 
     client = _sio_client(app_client)
     try:
@@ -514,7 +516,7 @@ def test_car_data_clear_denied_without_valid_key_when_required(app_client, monke
     monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
 
     horusmapper.car_track.add_telemetry(
-        {"time": datetime.utcnow(), "lat": 1.0, "lon": 2.0, "alt": 3.0}
+        {"time": datetime.now(timezone.utc), "lat": 1.0, "lon": 2.0, "alt": 3.0}
     )
     try:
         client = _sio_client(app_client, query_string="api_key=s3cret-key")
@@ -544,7 +546,7 @@ def test_car_data_clear_succeeds_with_valid_key(app_client, monkeypatch):
     monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
 
     horusmapper.car_track.add_telemetry(
-        {"time": datetime.utcnow(), "lat": 1.0, "lon": 2.0, "alt": 3.0}
+        {"time": datetime.now(timezone.utc), "lat": 1.0, "lon": 2.0, "alt": 3.0}
     )
     try:
         client = _sio_client(app_client, query_string="api_key=s3cret-key")

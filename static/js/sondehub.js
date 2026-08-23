@@ -39,19 +39,8 @@ function handleSondeHubWebSocketPacket(data){
                 // Update the position data.
                 chase_vehicles[vcallsign].latest_data = [v_lat, v_lon, v_alt];
 
-                // Update the marker position.
-                chase_vehicles[vcallsign].marker.setLatLng(chase_vehicles[vcallsign].latest_data).update();
-
-                // Rotate/replace the icon to match the bearing.
-                var _car_heading = chase_vehicles[vcallsign].heading - 90.0;
-                if (_car_heading<=90.0){
-                    chase_vehicles[vcallsign].marker.setIcon(habitat_car_icons[chase_vehicles[vcallsign].colour]);
-                    chase_vehicles[vcallsign].marker.setRotationAngle(_car_heading);
-                }else{
-                    // We are travelling West - we need to use the flipped car icon.
-                    _car_heading = _car_heading - 180.0;
-                    chase_vehicles[vcallsign].marker.setIcon(habitat_car_icons_flipped[chase_vehicles[vcallsign].colour]);
-                    chase_vehicles[vcallsign].marker.setRotationAngle(_car_heading);
+                if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
+                    window.syncCesiumAfterOtherCarUpdate(vcallsign, vcallsign, chase_vehicles[vcallsign]);
                 }
 
             } else {
@@ -66,7 +55,7 @@ function handleSondeHubWebSocketPacket(data){
 
                 // Determine the vehicle distance from our current position.
                 var v_pos = {lat: v_lat, lon:v_lon, alt:v_alt};
-                if (chase_car_position.marker === "NONE"){
+                if (!chase_car_position.active){
                     var my_pos = {lat:chase_config.default_lat, lon:chase_config.default_lon, alt:0};
                 }else{
                     var my_pos = {lat:chase_car_position.latest_data[0], lon:chase_car_position.latest_data[1], alt:chase_car_position.latest_data[2]};
@@ -86,26 +75,11 @@ function handleSondeHubWebSocketPacket(data){
                     // Get an index for the car icon. This is incremented for each vehicle,
                     // giving each a different colour.
                     chase_vehicles[vcallsign].colour = car_colour_values[car_colour_idx];
-                    car_colour_idx = (car_colour_idx+1)%car_colour_values.length; 
+                    car_colour_idx = (car_colour_idx+1)%car_colour_values.length;
 
-                    // Create marker
-                    chase_vehicles[vcallsign].marker = L.marker(chase_vehicles[vcallsign].latest_data,
-                        {title:vcallsign, 
-                        icon: habitat_car_icons[chase_vehicles[vcallsign].colour], 
-                        rotationOrigin: "center center"});
-
-                    // Add tooltip, with custom CSS which removes all tooltip borders, and adds a text shadow.
-                    chase_vehicles[vcallsign].marker.bindTooltip(vcallsign, 
-                        {permanent: true,
-                            direction: 'center',
-                            offset:[0,25],
-                            className:'custom_label'}).openTooltip();
-                    if(shouldShowSondeHubVehicles()){
-                        // Add the car to the map if we have the show other cars button checked.
-                        chase_vehicles[vcallsign].marker.addTo(map);
-                        // Keep our own record of if this marker has been added to a map,
-                        // as we shouldn't be using the private _map property of the marker object.
-                        chase_vehicles[vcallsign].onmap = true;
+                    chase_vehicles[vcallsign].onmap = shouldShowSondeHubVehicles();
+                    if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
+                        window.syncCesiumAfterOtherCarUpdate(vcallsign, vcallsign, chase_vehicles[vcallsign]);
                     }
 
                 }
@@ -126,8 +100,8 @@ function pruneStaleChaseVehicles(){
     var _now = Date.now();
     $.each(chase_vehicles, function(vcallsign, vehicle){
         if (vehicle.last_seen && (_now - vehicle.last_seen) > CHASE_VEHICLE_STALE_MS){
-            if (vehicle.marker){
-                vehicle.marker.remove();
+            if (typeof window.removeOtherChaserEntity === 'function'){
+                window.removeOtherChaserEntity(vcallsign);
             }
             delete chase_vehicles[vcallsign];
         }
@@ -141,7 +115,9 @@ function flush_sondehub_vehicles(){
 	for (_car in chase_vehicles){
         // Remove from map if present.
         if(chase_vehicles[_car].onmap){
-            chase_vehicles[_car].marker.remove();
+            if (typeof window.removeOtherChaserEntity === 'function'){
+                window.removeOtherChaserEntity(_car);
+            }
             chase_vehicles[_car].onmap = false;
         }
         delete chase_vehicles[_car];
@@ -239,17 +215,9 @@ function show_sondehub_vehicles(){
 	var state = shouldShowSondeHubVehicles();
 
 	for (_car in chase_vehicles){
-		// Add to map, if its not already on there.
-		if(state){
-			if(!chase_vehicles[_car].onmap){
-				chase_vehicles[_car].marker.addTo(map);
-				chase_vehicles[_car].onmap = true;
-			}
-		} else{
-			if(chase_vehicles[_car].onmap){
-				chase_vehicles[_car].marker.remove();
-				chase_vehicles[_car].onmap = false;
-			}
+		chase_vehicles[_car].onmap = state;
+		if (typeof window.syncCesiumAfterOtherCarUpdate === 'function'){
+			window.syncCesiumAfterOtherCarUpdate(_car, chase_vehicles[_car].name, chase_vehicles[_car]);
 		}
 	}
 

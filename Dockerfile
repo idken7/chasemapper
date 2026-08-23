@@ -8,6 +8,7 @@ RUN apt-get update && \
   apt-get upgrade -y && \
   apt-get install -y \
   cmake \
+  curl \
   libgeos-dev \
   libatlas-base-dev && \
   rm -rf /var/lib/apt/lists/*
@@ -38,6 +39,15 @@ RUN unzip /root/cusf_predictor_wrapper-master.zip -d /root && \
   cmake .. && \
   make
 
+# Self-host Cesium's browser build instead of pulling it from a CDN at
+# request time - the map (templates/index.html) needs to keep working when a
+# chase vehicle has no signal to reach a CDN. CESIUM_VERSION must match the
+# version templates/index.html expects (window.CESIUM_BASE_URL etc).
+ARG CESIUM_VERSION=1.126.0
+RUN mkdir -p /root/chasemapper/static/vendor/cesium && \
+  curl -sL https://registry.npmjs.org/cesium/-/cesium-${CESIUM_VERSION}.tgz | \
+  tar -xz -C /root/chasemapper/static/vendor/cesium --strip-components=3 package/Build/Cesium
+
 # -------------------------
 # The application container
 # -------------------------
@@ -62,6 +72,10 @@ COPY --from=build /root/.local /root/.local
 # Copy predictor binary from the build container.
 COPY --from=build /root/cusf_predictor_wrapper-master/src/build/pred \
   /opt/chasemapper/
+
+# Copy the self-hosted Cesium build from the build container.
+COPY --from=build /root/chasemapper/static/vendor/cesium \
+  /opt/chasemapper/static/vendor/cesium
 
 # Copy in chasemapper.
 COPY . /opt/chasemapper

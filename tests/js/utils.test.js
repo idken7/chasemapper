@@ -80,59 +80,53 @@ describe('calculate_lookangles', () => {
 });
 
 describe('addBoundedLatLng', () => {
-  // Fake Leaflet polyline: just enough of the real API surface
-  // (addLatLng/getLatLngs/setLatLngs) for addBoundedLatLng to drive, without
-  // pulling in the whole Leaflet rendering stack for what's really a plain
-  // array-management test.
-  function makeFakePolyline(initial = []) {
-    let points = [...initial];
-    return {
-      addLatLng: (p) => { points.push(p); },
-      getLatLngs: () => points,
-      setLatLngs: (newPoints) => { points = [...newPoints]; },
-    };
-  }
-
+  // addBoundedLatLng mutates a plain array of [lat,lon(,alt)] points in
+  // place (push + trim), rather than a Leaflet polyline object.
   test('appends points normally while under the cap', () => {
-    const poly = makeFakePolyline();
+    const points = [];
     for (let i = 0; i < 10; i++) {
-      addBoundedLatLng(poly, [i, i], 100, 10);
+      addBoundedLatLng(points, [i, i], 100, 10);
     }
-    expect(poly.getLatLngs()).toHaveLength(10);
-    expect(poly.getLatLngs()[9]).toEqual([9, 9]);
+    expect(points).toHaveLength(10);
+    expect(points[9]).toEqual([9, 9]);
   });
 
   test('does not trim until maxPoints + overshoot is exceeded (batches the O(n) rebuild)', () => {
-    const poly = makeFakePolyline();
+    const points = [];
     // maxPoints=10, overshoot=5 -> trimming only kicks in once length > 15
     for (let i = 0; i < 15; i++) {
-      addBoundedLatLng(poly, [i, i], 10, 5);
+      addBoundedLatLng(points, [i, i], 10, 5);
     }
-    expect(poly.getLatLngs()).toHaveLength(15); // still untrimmed at exactly the threshold
+    expect(points).toHaveLength(15); // still untrimmed at exactly the threshold
 
-    addBoundedLatLng(poly, [15, 15], 10, 5); // 16th point crosses the threshold
-    expect(poly.getLatLngs()).toHaveLength(10); // trimmed back down to maxPoints
+    addBoundedLatLng(points, [15, 15], 10, 5); // 16th point crosses the threshold
+    expect(points).toHaveLength(10); // trimmed back down to maxPoints
   });
 
   test('trimming keeps the most recent points and drops the oldest', () => {
-    const poly = makeFakePolyline();
+    const points = [];
     // maxPoints=5, overshoot=2 -> trim triggers once length > 7, i.e. on the
     // 8th append (index 7), trimming back down to the most recent 5.
     for (let i = 0; i < 8; i++) {
-      addBoundedLatLng(poly, [i, i], 5, 2);
+      addBoundedLatLng(points, [i, i], 5, 2);
     }
-    const latlngs = poly.getLatLngs();
-    expect(latlngs).toHaveLength(5);
+    expect(points).toHaveLength(5);
     // Points 0..2 must be gone; the most recent (3..7) must remain, in order.
-    expect(latlngs).toEqual([[3, 3], [4, 4], [5, 5], [6, 6], [7, 7]]);
+    expect(points).toEqual([[3, 3], [4, 4], [5, 5], [6, 6], [7, 7]]);
   });
 
   test('uses sane defaults (8000 cap) when maxPoints/overshoot are omitted', () => {
-    const poly = makeFakePolyline();
+    const points = [];
     for (let i = 0; i < 100; i++) {
-      addBoundedLatLng(poly, [i, i]);
+      addBoundedLatLng(points, [i, i]);
     }
     // Far under the 8000 default cap - nothing should have been trimmed.
-    expect(poly.getLatLngs()).toHaveLength(100);
+    expect(points).toHaveLength(100);
+  });
+
+  test('mutates the array in place, matching how balloon.js relies on it', () => {
+    const points = [];
+    const returned = addBoundedLatLng(points, [1, 1]);
+    expect(returned).toBe(points);
   });
 });
