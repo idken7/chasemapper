@@ -784,7 +784,8 @@ body.dark-theme .recovery-modal-card input[type=number]::-webkit-inner-spin-butt
    those screens (only Track/Route). Hide the whole stack, not just zoom.
    body.side-panel-open is toggled by updateMapControlsVisibility() in
    index.html whenever #settingsPanel or #logPanel is open. */
-body.side-panel-open .leaflet-top.leaflet-right {
+body.side-panel-open .leaflet-top.leaflet-right,
+body.side-panel-open .map-corner-top-right {
 	display: none !important;
 }
 

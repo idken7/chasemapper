@@ -44,7 +44,7 @@ def test_chase_routing_modal_and_route_creation():
         page.goto(url)
 
         # Wait for the app's own init rather than a fixed sleep.
-        page.wait_for_selector("#chaseRoutingButton", timeout=5000)
+        page.wait_for_selector("#topbarRouteBtn", timeout=5000)
 
         # Inject balloon_positions and chase_car placeholders, then populate the
         # calls dropdown. pred_marker is a plain [lat, lon] array (see
@@ -57,9 +57,10 @@ def test_chase_routing_modal_and_route_creation():
             if (typeof populateCalls === 'function') populateCalls();
         """)
 
-        # Click the Chase Routing button (easyButton id 'chaseRoutingButton' -
-        # L.easyButton's `id` option sets an element id, not a class).
-        page.click('#chaseRoutingButton')
+        # Click the Route nav-pill (#topbarRouteBtn) - with no chase in progress
+        # this opens the Chase Routing modal (see the .nav-pill click handler
+        # in templates/index.html).
+        page.click('#topbarRouteBtn')
 
         # Wait for modal to open. Generous timeout: this environment makes real
         # network calls (map tiles, Cesium ion) that can occasionally delay

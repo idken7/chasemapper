@@ -93,6 +93,12 @@ def test_aprs_add_remove_flow():
                 }
             """) is True
 
+            # Restore a desktop-width viewport: below 720px the topbar (and the
+            # #topbarAprsBtn/#topbarSettingsBtn buttons used throughout the rest
+            # of this test) is hidden entirely in favour of a bottom tab bar
+            # (see the mobile-tab-bar breakpoint in chasemapper.css).
+            page.set_viewport_size({"width": 1280, "height": 900})
+
             # The prediction cadence setting should be visible in the menuDock settings panel.
             assert page.locator('#predUpdateRate').count() == 1
             assert page.locator('#predUpdateRate').input_value() == '15'
@@ -100,10 +106,12 @@ def test_aprs_add_remove_flow():
             assert (page.locator('#predictorModelValue').text_content() or '').strip() == 'GFS'
             assert (page.locator('#predictorModelTimeValue').text_content() or '').strip() == '01/02/2024, 03:04:05 UTC'
 
-            # The top-right 3D view control should toggle the actual map container.
-            page.click('#toggle3DButton')
+            # Cesium (3D) is now the map engine unconditionally from page load
+            # (the topbar redesign removed the old floating 2D/Leaflet<->3D/Cesium
+            # toggle button in favour of always-on Cesium; only the camera *angle*
+            # within Cesium - Settings > Mapping > Camera Angle - is still a
+            # user toggle, checked further down via #cameraAngleGroup).
             assert page.locator('#map').evaluate("el => el.classList.contains('map-3d-view')") is True
-            assert page.locator('#toggle3DButton').evaluate("el => el.classList.contains('is-active')") is True
 
             # The settings panel should remain readable in light mode and the
             # current-location UI should update the Cesium home marker. The
@@ -112,7 +120,7 @@ def test_aprs_add_remove_flow():
             page.evaluate("document.body.classList.remove('dark-theme')")
             page.click('#topbarSettingsBtn')
             page.wait_for_selector('#otherSection:visible', timeout=3000)
-            assert page.locator('#settingsPanel .settings-header').evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
+            assert page.locator('#settingsPanel .settings-group h4').first.evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
             assert page.locator('#settingsPanel .settings-group').first.evaluate("el => getComputedStyle(el).borderTopColor") != 'rgba(255, 255, 255, 0.12)'
             page.fill('#currentLat', '40.12345')
             page.fill('#currentLon', '-74.54321')
@@ -155,7 +163,14 @@ def test_aprs_add_remove_flow():
             assert (page.locator('#cesiumCameraSliderValue').text_content() or '').strip() == '-25°'
             assert page.evaluate("window.getCesiumCameraState && window.getCesiumCameraState().pitch") == -25
 
-            page.click('#toggle3DButton')
+            # Settings panel is open here (from the light-mode check above), so
+            # the Camera Angle control (Settings > Mapping) is visible - toggle
+            # it and back to confirm it flips the active button without
+            # affecting the (always-on) Cesium map container itself.
+            page.click('#cameraAngleGroup .button-select-btn[data-value="2d"]')
+            assert page.locator('#cameraAngleGroup .button-select-btn[data-value="2d"]').evaluate("el => el.classList.contains('is-active')") is True
+            page.click('#cameraAngleGroup .button-select-btn[data-value="3d"]')
+            assert page.locator('#cameraAngleGroup .button-select-btn[data-value="3d"]').evaluate("el => el.classList.contains('is-active')") is True
             assert page.locator('#map').evaluate("el => el.classList.contains('map-3d-view')") is True
 
             # Regression: refreshing an existing APRS balloon entry without prediction
@@ -184,7 +199,7 @@ def test_aprs_add_remove_flow():
 
                     add_new_balloon(baseData);
                     window.__aprsPredictionLayer = balloon_positions[callsign].pred_path;
-                    window.__aprsPredictionLatLngCount = balloon_positions[callsign].pred_path.getLatLngs().length;
+                    window.__aprsPredictionLatLngCount = balloon_positions[callsign].pred_path.length;
 
                     add_new_balloon({
                         telem: Object.assign({}, baseData.telem, {position: [42.1, -83.1, 1100]}),
@@ -197,8 +212,10 @@ def test_aprs_add_remove_flow():
                     });
 
                     window.__aprsPredictionLayerPreserved = balloon_positions[callsign].pred_path === window.__aprsPredictionLayer;
-                    window.__aprsPredictionLayerStillVisible = map.hasLayer(window.__aprsPredictionLayer);
-                    window.__aprsPredictionLatLngCountAfter = balloon_positions[callsign].pred_path.getLatLngs().length;
+                    const viewer = window.getCesiumViewer && window.getCesiumViewer();
+                    const predictionEntity = viewer && viewer.entities.getById(callsign + ':prediction');
+                    window.__aprsPredictionLayerStillVisible = !!(predictionEntity && predictionEntity.show);
+                    window.__aprsPredictionLatLngCountAfter = balloon_positions[callsign].pred_path.length;
                 }
             """)
             # Open the per-callsign summary view and verify enriched fields are shown.

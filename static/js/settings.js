@@ -1111,21 +1111,14 @@ function getAprsPredictionMeta(csKey) {
 
     if (typeof balloon_positions !== 'undefined' && balloon_positions.hasOwnProperty(csKey)) {
         var balloon = balloon_positions[csKey] || {};
-        var predPoints = 0;
-        try {
-            if (balloon.pred_path && typeof balloon.pred_path.getLatLngs === 'function') {
-                predPoints = balloon.pred_path.getLatLngs().length;
-            }
-        } catch (e) {
-            predPoints = 0;
-        }
+        var predPoints = Array.isArray(balloon.pred_path) ? balloon.pred_path.length : 0;
 
         return {
             last_prediction_ms: NaN,
             pred_path_points: predPoints,
-            pred_landing: balloon.pred_marker && balloon.pred_marker.getLatLng ? [balloon.pred_marker.getLatLng().lat, balloon.pred_marker.getLatLng().lng, 0] : [],
-            burst: balloon.burst_marker && balloon.burst_marker.getLatLng ? [balloon.burst_marker.getLatLng().lat, balloon.burst_marker.getLatLng().lng, 0] : [],
-            abort_landing: balloon.abort_marker && balloon.abort_marker.getLatLng ? [balloon.abort_marker.getLatLng().lat, balloon.abort_marker.getLatLng().lng, 0] : []
+            pred_landing: Array.isArray(balloon.pred_marker) ? balloon.pred_marker : [],
+            burst: Array.isArray(balloon.burst_marker) ? balloon.burst_marker : [],
+            abort_landing: Array.isArray(balloon.abort_marker) ? balloon.abort_marker : []
         };
     }
 

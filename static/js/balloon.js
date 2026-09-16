@@ -169,9 +169,19 @@ function add_new_balloon(data){
     balloon_positions[callsign].pred_age = balloon_positions[callsign].pred_age || 0;
 
     balloon_positions[callsign].path = pathData;
-    balloon_positions[callsign].pred_path = predPathData;
-    balloon_positions[callsign].pred_marker = (predLandingData.length == 3) ? predLandingData : null;
-    balloon_positions[callsign].burst_marker = (burstData.length == 3) ? burstData : null;
+    // A telemetry-only update (no fresh prediction computed yet) reports empty
+    // pred_path/pred_landing/burst - keep the last known values in that case
+    // rather than blanking the map's prediction layer out until the next
+    // recalculation comes in.
+    balloon_positions[callsign].pred_path = (predPathData.length > 0)
+        ? predPathData
+        : (existingBalloon ? existingBalloon.pred_path : []) || [];
+    balloon_positions[callsign].pred_marker = (predLandingData.length == 3)
+        ? predLandingData
+        : (existingBalloon ? existingBalloon.pred_marker : null);
+    balloon_positions[callsign].burst_marker = (burstData.length == 3)
+        ? burstData
+        : (existingBalloon ? existingBalloon.burst_marker : null);
     balloon_positions[callsign].abort_path = abortPathData;
     balloon_positions[callsign].abort_marker = (abortLandingData.length == 3) ? abortLandingData : null;
 

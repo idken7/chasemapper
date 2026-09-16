@@ -592,8 +592,8 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         var cs = window.balloon_currently_chased;
         if (!cs || cs === 'none') return;
         var predMarker = (window.balloon_positions && window.balloon_positions[cs]) ? window.balloon_positions[cs].pred_marker : null;
-        if (predMarker && typeof predMarker.getLatLng === 'function'){
-            setRouteToPrediction(cs, predMarker.getLatLng());
+        if (Array.isArray(predMarker) && predMarker.length >= 2){
+            setRouteToPrediction(cs, {lat: predMarker[0], lng: predMarker[1]});
         }
     };
 

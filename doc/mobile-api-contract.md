@@ -40,11 +40,18 @@ Request schema:
     "start_lat": { "type": "number", "minimum": -90, "maximum": 90 },
     "start_lon": { "type": "number", "minimum": -180, "maximum": 180 },
     "end_lat": { "type": "number", "minimum": -90, "maximum": 90 },
-    "end_lon": { "type": "number", "minimum": -180, "maximum": 180 }
+    "end_lon": { "type": "number", "minimum": -180, "maximum": 180 },
+    "client_id": { "type": "string" }
   },
   "additionalProperties": false
 }
 ```
+
+`client_id` is optional but recommended for mobile clients: when present, the
+computed route is stored per-client (so concurrent chasers each get their own
+route back from `GET /api/mobile_state`) rather than in the single
+server-wide "latest route" slot the desktop web app uses when it omits
+`client_id`.
 
 Response schema:
 
@@ -53,7 +60,7 @@ Response schema:
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://chasemapper.local/schemas/route-response-v1.json",
   "type": "object",
-  "required": ["feature", "distance_m", "duration_s", "provider", "provider_base"],
+  "required": ["feature", "distance_m", "duration_s", "provider", "provider_base", "steps", "alternatives"],
   "properties": {
     "feature": {
       "type": "object",
@@ -87,11 +94,45 @@ Response schema:
     "distance_m": { "type": "number", "minimum": 0 },
     "duration_s": { "type": "number", "minimum": 0 },
     "provider": { "type": "string" },
-    "provider_base": { "type": "string" }
+    "provider_base": { "type": "string" },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": ["string", "null"] },
+          "modifier": { "type": ["string", "null"] },
+          "name": { "type": ["string", "null"] },
+          "distance_m": { "type": ["number", "null"] },
+          "location": { "type": ["array", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "feature", "distance_m", "duration_s", "steps"],
+        "properties": {
+          "label": { "enum": ["fastest", "shortest"] },
+          "feature": { "type": "object" },
+          "distance_m": { "type": "number", "minimum": 0 },
+          "duration_s": { "type": "number", "minimum": 0 },
+          "steps": { "type": "array" }
+        },
+        "additionalProperties": true
+      }
+    }
   },
   "additionalProperties": false
 }
 ```
+
+`steps`/`alternatives` mirror the fastest route; `alternatives` also includes
+a `shortest`-labelled entry. The desktop web app computes its own turn list
+client-side (Leaflet Routing Machine) and ignores these fields, but mobile
+clients have no equivalent, so the backend provides them pre-normalized.
 
 ### 2) GET /api/latest_route
 
@@ -132,6 +173,13 @@ Response schema (GeoJSON Feature):
 ```
 
 ### 3) GET /api/mobile_state
+
+Query parameters:
+
+- `client_id` (optional string): when present, `route` reflects the route
+  most recently computed by this client via `POST /api/route` (see above).
+  When omitted, `route` reflects the shared server-wide latest route (the
+  one the desktop web app uses).
 
 Response schema:
 
@@ -183,7 +231,8 @@ Response schema:
         "duration_s": { "type": ["number", "null"], "minimum": 0 },
         "provider": { "type": ["string", "null"] },
         "provider_base": { "type": ["string", "null"] },
-        "updated_at": { "type": ["string", "null"] }
+        "updated_at": { "type": ["string", "null"] },
+        "steps": { "type": ["array", "null"] }
       },
       "additionalProperties": false
     },
