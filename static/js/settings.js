@@ -552,7 +552,6 @@ function openAprsPredictionSettingsModal(callsign) {
     var descentValue = override.hasOwnProperty('pred_desc_rate') ? override.pred_desc_rate : chase_config.pred_desc_rate;
 
     $('#aprsPredictionModalTitle').text('Prediction Settings for ' + csKey);
-    $('#aprsPredictionCallsign').text(csKey);
     $('#aprsPredictionBurstAlt').val(normalizeAprsPredictionNumber(burstValue, chase_config.pred_burst).toFixed(0));
     $('#aprsPredictionDescentRate').val(normalizeAprsPredictionNumber(descentValue, chase_config.pred_desc_rate).toFixed(1));
 
@@ -2120,7 +2119,7 @@ window.setInterval(function(){
 
 // ===== Panel height (fixed, dependent on viewport size) =====
 (function() {
-    function computeOpenHeight() {
+    function computeOpenHeight(panelId) {
         // The Log/Settings panels hang below the fixed top bar, so the open
         // height is "viewport height minus the top bar's own height minus a
         // small top gap minus a matching bottom margin" — see the panels'
@@ -2130,6 +2129,15 @@ window.setInterval(function(){
         var topOffset = topbar ? Math.max(0, topbar.getBoundingClientRect().bottom) : 56;
         var topGap = 12;
         var bottomMargin = 24;
+
+        // The Log panel reserves extra space above the mobile bottom tab bar
+        // (see the `.log-panel { bottom: 76px; }` mobile override in
+        // chasemapper.css, under the same `max-width: 720px` breakpoint as the
+        // tab bar itself) - match that here, otherwise the panel is sized too
+        // tall on mobile and its header ends up pushed off the top of the screen.
+        if (panelId === 'logPanel' && window.innerWidth <= 720) {
+            bottomMargin = 76;
+        }
 
         return Math.max(180, Math.floor(window.innerHeight - topOffset - topGap - bottomMargin));
     }
@@ -2144,7 +2152,7 @@ window.setInterval(function(){
         ['settingsPanel', 'logPanel'].forEach(function(id) {
             var panel = document.getElementById(id);
             if (panel && panel.classList.contains('panel-open')) {
-                window.setDockPanelHeight(computeOpenHeight(), id);
+                window.setDockPanelHeight(computeOpenHeight(id), id);
             }
         });
     }

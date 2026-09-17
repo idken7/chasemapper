@@ -41,12 +41,24 @@ function toggleTelemTableHide(){
 
 function markPayloadRecovered(callsign){
     // Grab the most recent telemetry, along with a few other parameters.
+    // Telemetry for a balloon payload lives in balloon_positions; an APRS-tracked
+    // callsign (chaser or payload followed via APRS) instead has its last position
+    // in aprs_telemetry_cache, so fall back to that when the payload table has
+    // no entry for this callsign.
+    var last_pos = (balloon_positions[callsign] && balloon_positions[callsign].latest_data.position)
+        || (typeof aprs_telemetry_cache !== 'undefined' && aprs_telemetry_cache[callsign] && aprs_telemetry_cache[callsign].position);
+
+    if (!last_pos) {
+        alert('No telemetry position is available yet for ' + callsign + '.');
+        return;
+    }
+
     var _recovery_data = {
         my_call: chase_config.habitat_call,
         payload_call: callsign,
         recovered: $("#recoverySuccessful").is(':checked'),
-        recovery_title: callsign, 
-        last_pos: balloon_positions[callsign].latest_data.position,
+        recovery_title: callsign,
+        last_pos: last_pos,
         message: ""
     };
 

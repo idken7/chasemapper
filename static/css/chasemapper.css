@@ -1280,6 +1280,11 @@ body.side-panel-open .map-corner-top-right {
 .settings-inline-row.settings-inline-wrap {
 	flex-wrap: wrap;
 }
+.settings-inline-row.settings-inline-wrap .settings-inline-input {
+	flex: 1 1 100%;
+	max-width: none;
+	margin-left: 0;
+}
 .settings-inline-row label {
 	margin: 0;
 	min-width: 110px;
