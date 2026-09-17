@@ -5,9 +5,12 @@
   "description": "Test harness for chasemapper's static/js frontend. The app itself ships with no build step or bundler - these are plain <script>-tag files with no module system, loaded here the same way a browser loads them (see tests/js/helpers/loadScript.js).",
   "scripts": {
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "lint": "eslint static/js"
   },
   "devDependencies": {
+    "eslint": "^10.10.0",
+    "globals": "^16.5.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "jquery": "^3.7.1"
