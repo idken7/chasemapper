@@ -426,6 +426,7 @@ def enforce_api_endpoint_security():
         "/api/route",
         "/api/latest_route",
         "/api/mobile_state",
+        "/api/device_position",
     }
 
     path = flask.request.path or ""
@@ -445,6 +446,15 @@ def enforce_api_endpoint_security():
         req_key = _request_api_key()
         if req_key != configured_key:
             return flask.jsonify({"error": "unauthorized"}), 401
+
+    # /api/device_position does its own per-(IP, client_id) rate limiting
+    # inside the route handler (see _device_position_rate_limit_config),
+    # mirroring the `device_position` Socket.IO event - skip the coarser
+    # per-IP-per-path limit below for that one path so multiple client_ids
+    # sharing one IP (e.g. a chase club on one hotspot) don't throttle each
+    # other out of a single shared bucket.
+    if path == "/api/device_position":
+        return None
 
     # Per-IP rate limiting.
     rl_enabled, rl_limit, rl_window_s = _rate_limit_config_for_endpoint(path, method)
@@ -1294,6 +1304,68 @@ def api_mobile_state():
     }
 
     return flask.jsonify(response), 200
+
+
+@app.route('/api/device_position', methods=['POST'])
+def api_device_position():
+    """REST equivalent of the `device_position` Socket.IO event, for mobile
+    clients reporting a position update from a background location task
+    (see mobile/src/location/backgroundLocationTask.ts) where no live
+    Socket.IO connection can be relied on to still be open. Reuses the exact
+    same rate-limiting, ownership-claim and position-handling logic as the
+    socket event (see device_position_update below) so both transports
+    behave identically and other connected clients see the update either way.
+    """
+    try:
+        data = flask.request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return flask.jsonify({"error": "invalid request body"}), 400
+
+        _client_id = data.get("client_id")
+
+        _rl_enabled, _rl_limit, _rl_window_s, _rl_ip_limit = _device_position_rate_limit_config()
+        if _rl_enabled and not _testing_mode():
+            _client_ip = _get_client_ip()
+            _ok_ip, _retry_ip = _consume_rate_limit(
+                _client_ip, "device_position:ip", _rl_ip_limit, _rl_window_s
+            )
+            if not _ok_ip:
+                return flask.jsonify({"error": "rate limit exceeded", "retry_after_s": _retry_ip}), 429
+            _ok, _retry = _consume_rate_limit(
+                _client_ip,
+                f"device_position:{_client_id or 'primary'}",
+                _rl_limit,
+                _rl_window_s,
+            )
+            if not _ok:
+                return flask.jsonify({"error": "rate limit exceeded", "retry_after_s": _retry}), 429
+
+        if _client_id:
+            # No Socket.IO session id exists for a plain HTTP request - anchor
+            # the ownership lease to a synthetic, per-client_id-stable id
+            # instead, so repeated REST calls from the same device don't
+            # fight each other for ownership. This still competes fairly
+            # against a real, concurrently-active socket connection sending
+            # the same client_id (e.g. while the app is foregrounded) via the
+            # same last-seen-within-grace-period rule _claim_client_car_ownership
+            # already applies.
+            _sid = f"rest:{_client_id}"
+            if not _claim_client_car_ownership(_client_id, _sid):
+                logging.warning(
+                    "Rejected REST device_position for client_id=%s from %s: owned by another active connection.",
+                    _client_id,
+                    _get_client_ip(),
+                )
+                return flask.jsonify({"error": "owned by another active connection"}), 409
+            _name = data.get("name") or _client_id
+            handle_client_car_position(_client_id, _name, data)
+        else:
+            udp_listener_car_callback(data)
+
+        return flask.jsonify({"ok": True}), 200
+    except Exception:
+        logging.exception("Error handling REST device_position update")
+        return flask.jsonify({"error": "internal error"}), 500
 
 
 def flask_emit_event(event_name="none", data={}):
@@ -3373,7 +3445,32 @@ if __name__ == "__main__":
         % (chasemapper_config["flask_host"], chasemapper_config["flask_port"])
     )
 
+    if not _get_configured_api_key() and chasemapper_config["flask_host"] not in ("127.0.0.1", "localhost", "::1"):
+        logging.warning(
+            "=====================================================================\n"
+            "  chasemapper is starting with NO API KEY configured and is bound to\n"
+            "  %s, i.e. reachable beyond this machine. Anyone who can reach this\n"
+            "  server can view and clear shared chase data - there is no login.\n"
+            "  Set CHASEMAPPER_API_KEY (and optionally CHASEMAPPER_REQUIRE_API_AUTH)\n"
+            "  to lock it down - see README.md \"Endpoint Security (Auth + Rate\n"
+            "  Limiting)\". This warning is silent-by-default behaviour, not a bug.\n"
+            "=====================================================================",
+            chasemapper_config["flask_host"],
+        )
+
     try:
+        # allow_unsafe_werkzeug=True is intentional, not an oversight: Flask-SocketIO's
+        # `threading` async mode (no eventlet/gevent - see README.md "A note on
+        # concurrency") only gets real WebSocket support via Werkzeug's dev server +
+        # the `simple-websocket` package, and the mobile app (mobile/src/api/socket.ts)
+        # hardcodes WebSocket-only transport with no polling fallback. Swapping to a
+        # standard WSGI server (e.g. gunicorn+gthread) would silently break mobile
+        # connectivity (long-polling only, no true WebSocket upgrade); adopting
+        # eventlet/gevent risks the background-thread regressions README.md's
+        # concurrency note warns about. This is the deliberate architecture for a
+        # single-process, LAN-oriented tool - mitigated via running as a non-root
+        # container user (Dockerfile) and the auth warning above, not by swapping
+        # servers.
         socketio.run(
             app,
             host=chasemapper_config["flask_host"],
