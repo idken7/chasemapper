@@ -1409,7 +1409,7 @@
                         <section class="settings-group settings-group--full">
                             <h4>Server Access</h4>
                             <div class="settings-group-body">
-                                <div class="form-group settings-inline-row">
+                                <div class="form-group settings-inline-row settings-inline-wrap">
                                     <label for="serverApiKey">API Key</label>
                                     <input id="serverApiKey" type="password" class="form-control settings-inline-input" placeholder="Only needed for internet-exposed servers" autocomplete="off">
                                 </div>
@@ -1453,15 +1453,15 @@ function setTopbarSelection(mode){
 }
 
 function ensureSettingsPanelHeight() {
-    setDockPanelHeight(getDockPanelHeight());
+    setDockPanelHeight(getDockPanelHeight('settingsPanel'), 'settingsPanel');
 }
 
-function getDockPanelHeight() {
+function getDockPanelHeight(panelId) {
     // Fixed height dependent on viewport size (matching the Flight Deck
     // design, which always shows Log/Settings spanning top:84 to bottom:24) -
     // there's no drag-to-resize any more, so this is just the one open height.
     if (typeof window.getSettingsPanelOpenHeight === 'function') {
-        var height = parseFloat(window.getSettingsPanelOpenHeight());
+        var height = parseFloat(window.getSettingsPanelOpenHeight(panelId));
         if (isFinite(height) && height > 0) {
             return height;
         }
@@ -1570,7 +1570,7 @@ function openPanelWithAnimation($panel, animate) {
     }
     var shouldAnimate = animate !== false;
     if ($panel[0] && ($panel[0].id === 'logPanel' || $panel[0].id === 'settingsPanel')) {
-        setDockPanelHeight(getDockPanelHeight(), $panel[0].id);
+        setDockPanelHeight(getDockPanelHeight($panel[0].id), $panel[0].id);
     }
     
     if (shouldAnimate) {
@@ -1947,7 +1947,6 @@ $(document).ready(function(){
             <div class="recovery-modal-card aprs-prediction-modal-card" role="dialog" aria-modal="true" aria-labelledby="aprsPredictionModalTitle">
                 <div class="recovery-modal-header">
                     <h3 id="aprsPredictionModalTitle" class="recovery-modal-title">Prediction Settings</h3>
-                    <div class="recovery-modal-subtitle">for <span id="aprsPredictionCallsign"></span></div>
                 </div>
                 <div class="recovery-modal-body">
                     <div class="recovery-input-row">
