@@ -22,8 +22,13 @@ RUN mkdir -p /root/.cache/pip/wheels/
 # Copy in requirements.txt.
 COPY requirements.txt /root/chasemapper/requirements.txt
 
-# Install Python packages.
-RUN pip3 install --user --break-system-packages  --no-warn-script-location \
+# Install Python packages system-wide (not --user): the final stage runs as
+# a non-root user (see below) whose $HOME differs from this build stage's,
+# and /root itself is 0700 (root-only traversal) so a --user install under
+# /root/.local would be entirely unreachable there regardless of file
+# permissions. /usr/local/lib/python3.11/site-packages is on the default
+# sys.path and, unlike /root, actually traversable by any user.
+RUN pip3 install --break-system-packages --no-warn-script-location \
   --ignore-installed -r /root/chasemapper/requirements.txt
 
 # Copy in chasemapper.
@@ -66,8 +71,18 @@ RUN apt-get update && \
   tini && \
   rm -rf /var/lib/apt/lists/*
 
-# Copy any additional Python packages from the build container.
-COPY --from=build /root/.local /root/.local
+# Run as a non-root user. UID/GID 1000 matches the default first-user account
+# on Debian/Ubuntu/Raspberry Pi OS (this project's documented deployment
+# target), so bind-mounted host directories (./gfs, ./horusmapper.cfg - see
+# docker-compose.yml) are writable without extra host-side chown steps for
+# the common single-user-Pi case. Override via docker-compose.yml's `user:`
+# field if your host's primary user has a different UID.
+RUN groupadd -g 1000 chasemapper && \
+  useradd -u 1000 -g chasemapper -m chasemapper
+
+# Copy the pip-installed packages from the build container's system-wide
+# site-packages (see the pip3 install comment above for why not --user).
+COPY --from=build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
 # Copy predictor binary from the build container.
 COPY --from=build /root/cusf_predictor_wrapper-master/src/build/pred \
@@ -80,11 +95,19 @@ COPY --from=build /root/chasemapper/static/vendor/cesium \
 # Copy in chasemapper.
 COPY . /opt/chasemapper
 
+# Own the app directory (and the predictor binary/Cesium assets copied above)
+# as the non-root user. The pip-installed packages under /usr/local stay
+# root-owned, which is fine - they're on the default system-wide
+# site-packages path and world-readable there (unlike /root, see above).
+RUN chown -R chasemapper:chasemapper /opt/chasemapper
+
 # Set the working directory.
 WORKDIR /opt/chasemapper
 
-# Ensure scripts from Python packages are in PATH.
-ENV PATH=/root/.local/bin:$PATH
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/', timeout=3)" || exit 1
+
+USER chasemapper
 
 # Use tini as init.
 ENTRYPOINT ["/usr/bin/tini", "--"]

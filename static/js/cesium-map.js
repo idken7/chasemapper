@@ -1320,13 +1320,6 @@
         }
     }
 
-    function setCesiumEntityVisible(entity, visible) {
-        if (!entity) {
-            return;
-        }
-        entity.show = visible !== false;
-    }
-
     function upsertBalloonEntity(callsign, kind, options) {
         var viewer = ensureViewer();
         if (!viewer) {
@@ -2496,6 +2489,7 @@
     window.set2DMode = set2DMode;
     window.set3DMode = set3DMode;
     window.get2DMode = get2DMode;
+    window.getStored2DMode = getStored2DMode;
     window.toggle2D3DMode = toggle2D3DMode;
     window.toggleCesiumMeasureMode = toggleCesiumMeasureMode;
     window.clearCesiumMeasureLine = clearCesiumMeasureLine;
