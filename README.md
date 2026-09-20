@@ -196,6 +196,8 @@ Once chasemapper is reachable from outside a trusted LAN, set `CHASEMAPPER_API_K
 ### A note on concurrency
 Chasemapper runs Flask-SocketIO in its default threading mode (no `eventlet` or `gevent` installed) - this is fine for a handful of concurrent chasers. If you expect many simultaneous connections, Flask-SocketIO will auto-detect and prefer `eventlet` if it's installed (`pip install eventlet`). This is **not** a drop-in change: eventlet's cooperative (greenlet-based) scheduling can interact with this app's existing background threads (the APRS tracker, GPS listeners, the data-age monitor) in ways plain OS threading doesn't, so test thoroughly before relying on it in production. This is a decision to make deliberately as a deployer, not something enabled by default - `eventlet` is intentionally not in `requirements.txt`.
 
+This threading mode is also why `horusmapper.py`'s server startup runs with `allow_unsafe_werkzeug=True`: real WebSocket support in threading mode only comes from Werkzeug's dev server plus the `simple-websocket` package, and the mobile app hardcodes WebSocket-only transport (no long-polling fallback), so swapping to a standard WSGI server like gunicorn would break mobile connectivity. See the comment above that `socketio.run()` call for the full reasoning.
+
 ## Live Predictions
 By default, chasemapper will attempt to request flight-path predictions from the SondeHub instance of the [Tawhiri Predictor](https://github.com/projecthorus/tawhiri), which requires an internet connection. If you have a semi-reliable internet connection during the flight, this might be all you need to get chasing!
 

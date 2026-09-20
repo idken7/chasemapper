@@ -3,6 +3,10 @@
 export const MOBILE_STATE_TIMEOUT_MS = 3000;
 export const ROUTE_TIMEOUT_MS = 9000;
 export const LATEST_ROUTE_TIMEOUT_MS = 3000;
+// POST /api/device_position — the background-location-task fallback for
+// emitDevicePosition() (see location/backgroundLocationTask.ts). Single small
+// JSON point, same budget as LATEST_ROUTE_TIMEOUT_MS.
+export const DEVICE_POSITION_TIMEOUT_MS = 3000;
 // Full-history payload (up to 20k path points per tracked callsign) — needs more room
 // than the compact mobile_state poll.
 export const TELEMETRY_ARCHIVE_TIMEOUT_MS = 8000;

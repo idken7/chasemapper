@@ -48,3 +48,25 @@ describe('isCesiumActive', () => {
     expect(typeof isCesiumActive()).toBe('boolean');
   });
 });
+
+describe('getStored2DMode', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test('is exported on window, matching how settings.js/index.html call it', () => {
+    // settings.js and index.html guard the persisted-mode restore with
+    // `typeof getStored2DMode === 'function' && getStored2DMode()` - this
+    // only protects them if the export actually exists.
+    expect(typeof window.getStored2DMode).toBe('function');
+    expect(window.getStored2DMode).toBe(getStored2DMode);
+  });
+
+  test('reflects the value persisted by set2DMode/set3DMode across a reload', () => {
+    set2DMode();
+    expect(getStored2DMode()).toBe(true);
+
+    set3DMode();
+    expect(getStored2DMode()).toBe(false);
+  });
+});

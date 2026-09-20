@@ -1,12 +1,24 @@
+# eccodes, cusfpredict and numpy are deliberately left unpinned: they pull in
+# a scientific-computing dependency tree (shapely, xarray, cfgrib, pandas)
+# whose wheel availability varies a lot across this project's 4-platform
+# container build matrix (linux/386, amd64, arm/v7, arm64 - see
+# .github/workflows/container.yml). On linux/386 specifically, some of these
+# (e.g. shapely) have no prebuilt wheel at all and must build from source,
+# and eccodes's own eccodeslib dependency has no i686 build whatsoever at
+# recent versions - pip needs backtracking freedom across eccodes/numpy/
+# shapely versions to find a combination where everything is either
+# installable as a wheel or actually buildable from source on that
+# architecture. Pinning any one of these three to a version resolved on a
+# different architecture removed that freedom and broke the linux/386 build.
 eccodes
 cusfpredict
-flask
-flask-socketio
-lxml
 numpy
-python-dateutil
-pytz
-requests
-pyserial
-simple-websocket
-aprslib
+flask==3.1.3
+flask-socketio==5.6.1
+lxml==6.1.3
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
+requests==2.34.2
+pyserial==3.5
+simple-websocket==1.1.0
+aprslib==0.7.2

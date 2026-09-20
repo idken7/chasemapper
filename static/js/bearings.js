@@ -34,8 +34,6 @@ var bearing_min_opacity = 0.1;
 // If any of these tags are in the bearing source name, we consider this a 'manual' bearing and make the line thicker.
 var manual_bearing_sources = ["BPI", "manual", "EasyBearing"];
 
-var bearing_large_plot = false;
-
 // How recent a bearing has to be to count as an "active source" in the DOA
 // Bearing Panel (the compass card / legend / stat readout). Deliberately
 // much shorter than bearing_max_age (which only governs how long a bearing
@@ -521,19 +519,6 @@ function bearingPlotRender(angles, doa, data_valid){
   .config(_config) // configure it
   .render(d3.select('#bearing_plot'));
 }
-
-function toggle_bearing_plot_size(){
-	if(bearing_large_plot == true){
-		bearing_large_plot = false;
-	}else{
-		bearing_large_plot = true;
-	}
-
-	console.log(bearing_large_plot);
-};
-
-// TODO: This is not working
-$("#bearing_plot").click(toggle_bearing_plot_size);
 
 /**
 	Returns the point that is a distance and heading away from

@@ -724,6 +724,114 @@ def test_device_position_rate_limit_bypassed_in_testing_mode(app_client, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# 9b. POST /api/device_position - the REST equivalent of the `device_position`
+#     event, used by the mobile app's background location task (no live
+#     socket to rely on while backgrounded). Reuses the same
+#     handle_client_car_position/udp_listener_car_callback,
+#     _claim_client_car_ownership and rate-limit machinery as the socket
+#     path, anchored to a synthetic per-client_id sid ("rest:<client_id>")
+#     since a plain HTTP request has no Socket.IO session id of its own.
+# ---------------------------------------------------------------------------
+
+
+def test_api_device_position_creates_independent_track(app_client):
+    listener = _sio_client(app_client)
+    try:
+        resp = app_client.post(
+            "/api/device_position",
+            json=_position(lat=39.1, lon=-83.1, alt=300.0, client_id="rest-car", name="Alice"),
+        )
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True}
+
+        assert "rest-car" in horusmapper.client_car_tracks
+        entry = horusmapper.client_car_tracks["rest-car"]
+        assert entry["name"] == "Alice"
+        state = entry["track"].get_latest_state()
+        assert (state["lat"], state["lon"], state["alt"]) == (39.1, -83.1, 300.0)
+
+        events = _telemetry_events(listener)
+        assert len(events) == 1
+        assert events[0]["car_id"] == "rest-car"
+    finally:
+        listener.disconnect(namespace="/chasemapper")
+
+
+def test_api_device_position_without_client_id_updates_primary_car_track(app_client):
+    assert horusmapper.car_track.get_latest_state() is None
+
+    resp = app_client.post("/api/device_position", json=_position(lat=1.0, lon=2.0, alt=3.0))
+    assert resp.status_code == 200
+
+    state = horusmapper.car_track.get_latest_state()
+    assert (state["lat"], state["lon"], state["alt"]) == (1.0, 2.0, 3.0)
+    assert "rest-car" not in horusmapper.client_car_tracks
+
+
+def test_api_device_position_rejects_when_owned_by_active_socket_connection(app_client):
+    owner = _sio_client(app_client)
+    try:
+        owner.emit(
+            "device_position", _position(lat=1.0, lon=1.0, client_id="carX"), namespace="/chasemapper"
+        )
+
+        resp = app_client.post(
+            "/api/device_position", json=_position(lat=9.0, lon=9.0, client_id="carX")
+        )
+        assert resp.status_code == 409
+
+        # Owner's position (not the rejected REST update) must be what's stored.
+        state = horusmapper.client_car_tracks["carX"]["track"].get_latest_state()
+        assert (state["lat"], state["lon"]) == (1.0, 1.0)
+    finally:
+        owner.disconnect(namespace="/chasemapper")
+
+
+def test_api_device_position_accepted_once_socket_owner_disconnects(app_client):
+    owner = _sio_client(app_client)
+    owner.emit("device_position", _position(lat=1.0, lon=1.0, client_id="carY"), namespace="/chasemapper")
+    owner.disconnect(namespace="/chasemapper")
+
+    # _release_client_car_ownership (run on the socket disconnect handler)
+    # frees the lease immediately - a REST update right after should succeed
+    # without waiting out CLIENT_CAR_OWNERSHIP_GRACE_S.
+    resp = app_client.post("/api/device_position", json=_position(lat=5.0, lon=5.0, client_id="carY"))
+    assert resp.status_code == 200
+
+    state = horusmapper.client_car_tracks["carY"]["track"].get_latest_state()
+    assert (state["lat"], state["lon"]) == (5.0, 5.0)
+
+
+def test_api_device_position_invalid_body_returns_400(app_client):
+    resp = app_client.post("/api/device_position", json=["not", "an", "object"])
+    assert resp.status_code == 400
+    assert "error" in resp.get_json()
+
+
+def test_api_device_position_auth_required_rejects_missing_key(app_client, monkeypatch):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
+
+    resp = app_client.post("/api/device_position", json=_position(client_id="authcar"))
+    assert resp.status_code == 401
+    assert "authcar" not in horusmapper.client_car_tracks
+
+
+def test_api_device_position_auth_required_accepts_correct_key(app_client, monkeypatch):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
+
+    resp = app_client.post(
+        "/api/device_position",
+        json=_position(client_id="authcar"),
+        headers={"X-API-Key": "s3cret-key"},
+    )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # 10. Rate limiting is bucketed per (ip, client_id), not just per ip - so
 #     several real people behind one shared IP/NAT don't throttle each
 #     other out of one bucket, while a coarser per-IP backstop still catches

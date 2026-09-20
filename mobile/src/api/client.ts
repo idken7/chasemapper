@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   ChasemapperConfig,
+  DevicePositionPayload,
   MobileState,
   RouteRequest,
   RouteResponse,
@@ -9,6 +10,7 @@ import type {
 import {
   CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   CIRCUIT_BREAKER_PAUSE_MS,
+  DEVICE_POSITION_TIMEOUT_MS,
   LATEST_ROUTE_TIMEOUT_MS,
   MOBILE_STATE_TIMEOUT_MS,
   RETRY_BASE_DELAY_MS,
@@ -197,6 +199,25 @@ export function postLatestRoute(
     body: feature,
     timeoutMs: LATEST_ROUTE_TIMEOUT_MS,
     circuitKey: 'latest_route',
+    apiKey,
+  });
+}
+
+// POST equivalent of the `device_position` Socket.IO event (emitDevicePosition
+// in api/socket.ts) — used by the background location task, where sustaining
+// a live socket connection isn't reliable. See horusmapper.py's
+// /api/device_position route, which reuses the exact same handling as the
+// socket event so either transport produces an identical result.
+export function postDevicePosition(
+  baseUrl: string,
+  apiKey: string | null,
+  payload: DevicePositionPayload
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(`${baseUrl}/api/device_position`, {
+    method: 'POST',
+    body: payload,
+    timeoutMs: DEVICE_POSITION_TIMEOUT_MS,
+    circuitKey: 'device_position',
     apiKey,
   });
 }
