@@ -122,6 +122,11 @@ var reconfigureCarMarker = function(profile_name){
 	// station position is always rendered by Cesium's own syncHomeEntity(),
 	// independent of the selected profile, so there's no separate marker to
 	// add/remove here any more.)
+	// No profiles when the config couldn't be loaded (e.g. a key-protected
+	// server and no key entered yet) - nothing to reconfigure.
+	if (!chase_config.profiles || !chase_config.profiles[profile_name]) {
+		return;
+	}
 	if( (chase_config.profiles[profile_name].car_source_type === "none") || (chase_config.profiles[profile_name].car_source_type === "station")){
 		if (chase_car_position.active){
 			if (typeof clearChaseCarOnCesium === 'function') {
