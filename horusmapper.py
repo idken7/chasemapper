@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse
 import os
 import secrets
+import hmac
 
 # Ensure application logs (INFO+) are sent to stdout so container logs show APRS activity
 import logging as _logging
@@ -178,6 +179,34 @@ def _get_configured_api_key():
     return cfg_key
 
 
+def _keys_match(provided_key, configured_key):
+    """Constant-time API key comparison. An empty/unset configured key never
+    matches anything (including an empty provided key)."""
+    if not configured_key:
+        return False
+    if not provided_key:
+        return False
+    return hmac.compare_digest(str(provided_key).encode("utf-8"), str(configured_key).encode("utf-8"))
+
+
+# Config keys that are server-side secrets and must never be sent to clients.
+# Map-tile keys (thunderforest/stadia/openaip) are deliberately NOT here - the
+# browser needs them to request tiles directly from those providers.
+_SERVER_ONLY_CONFIG_KEYS = ("aprs_api_key", "api_access_key")
+
+
+def _public_config():
+    """Copy of chasemapper_config that is safe to send to clients (REST
+    /get_config and the server_settings_update Socket.IO event)."""
+    try:
+        _cfg = dict(chasemapper_config)
+    except Exception:
+        return {}
+    for _k in _SERVER_ONLY_CONFIG_KEYS:
+        _cfg.pop(_k, None)
+    return _cfg
+
+
 def _auth_mode():
     # auto: require auth only for non-private IPs when key is configured.
     # true: require auth for all route/state endpoint requests.
@@ -214,6 +243,13 @@ def _rate_limit_config_for_endpoint(path, method):
         default_limit = 240
     elif path == "/api/mobile_state" and method == "GET":
         default_limit = 120
+    elif path in ("/get_config", "/get_telemetry_archive", "/get_bearings"):
+        # Fetched once per page load / socket reconnect - generous enough for
+        # a flapping mobile connection, still a cap on scraping.
+        default_limit = 60
+    elif path == "/download_model":
+        # Each call can start a multi-hundred-MB GFS download.
+        default_limit = 5
     else:
         default_limit = 120
 
@@ -292,7 +328,7 @@ def _require_operator_auth():
     configured_key = _get_configured_api_key()
     if not _require_api_auth_for_request(_get_client_ip(), configured_key):
         return True
-    return _request_api_key() == configured_key
+    return _keys_match(_request_api_key(), configured_key)
 
 
 def _deny_operator_action(action_name):
@@ -359,17 +395,40 @@ client_car_owners_by_sid = {}  # sid -> set of client_ids
 client_car_owners_lock = Lock()
 
 
+# Prefix of the synthetic "sid" that POST /api/device_position claims ownership
+# under (there's no Socket.IO session for a plain HTTP request).
+REST_OWNER_SID_PREFIX = "rest:"
+
+
+def _is_rest_owner_sid(sid):
+    return isinstance(sid, str) and sid.startswith(REST_OWNER_SID_PREFIX)
+
+
 def _claim_client_car_ownership(client_id, sid):
-    """Return True if `sid` is allowed to act as `client_id` right now."""
+    """Return True if `sid` is allowed to act as `client_id` right now.
+
+    The REST transport (POST /api/device_position, used by the mobile app's
+    background location task) is only a fallback for when the app's live
+    socket isn't usable, so a real socket connection always takes over a lease
+    held by a REST owner - otherwise a device returning to the foreground would
+    have its own socket updates rejected for up to the grace period. A REST
+    claimant still yields to an active (within-grace) socket owner.
+    """
     with client_car_owners_lock:
         _owner = client_car_owners.get(client_id)
         if _owner is not None:
             _owner_sid, _last_seen = _owner
-            if _owner_sid != sid and (time.monotonic() - _last_seen) < CLIENT_CAR_OWNERSHIP_GRACE_S:
+            _socket_takes_over_rest = _is_rest_owner_sid(_owner_sid) and not _is_rest_owner_sid(sid)
+            if (
+                _owner_sid != sid
+                and not _socket_takes_over_rest
+                and (time.monotonic() - _last_seen) < CLIENT_CAR_OWNERSHIP_GRACE_S
+            ):
                 return False
             if _owner_sid != sid:
-                # Stale lease (owner gone quiet past the grace period) - release it
-                # from its old sid's bookkeeping before handing it to the new one.
+                # Stale lease (owner gone quiet past the grace period), or a socket
+                # superseding a REST owner - release it from its old sid's
+                # bookkeeping before handing it to the new one.
                 _old_owned = client_car_owners_by_sid.get(_owner_sid)
                 if _old_owned is not None:
                     _old_owned.discard(client_id)
@@ -395,7 +454,7 @@ def _release_client_car_ownership(sid):
 def handle_socketio_connect(auth=None):
     """Reject the Socket.IO connection outright if an API key is configured
     and required for this client's IP (mirrors the REST API's policy)."""
-    if _require_socketio_connect_auth() and _request_api_key() != _get_configured_api_key():
+    if _require_socketio_connect_auth() and not _keys_match(_request_api_key(), _get_configured_api_key()):
         logging.warning(
             "Rejected Socket.IO connection from %s: missing/invalid API key.",
             _get_client_ip(),
@@ -427,6 +486,14 @@ def enforce_api_endpoint_security():
         "/api/latest_route",
         "/api/mobile_state",
         "/api/device_position",
+        # State/config reads used by the web UI and mobile app on load and on
+        # every reconnect - these expose full flight/bearing data and server
+        # config, so they follow the same key policy as the API above.
+        "/get_config",
+        "/get_telemetry_archive",
+        "/get_bearings",
+        # Triggers a (large) weather-model download on the server.
+        "/download_model",
     }
 
     path = flask.request.path or ""
@@ -444,7 +511,7 @@ def enforce_api_endpoint_security():
     configured_key = _get_configured_api_key()
     if _require_api_auth_for_request(client_ip, configured_key):
         req_key = _request_api_key()
-        if req_key != configured_key:
+        if not _keys_match(req_key, configured_key):
             return flask.jsonify({"error": "unauthorized"}), 401
 
     # /api/device_position does its own per-(IP, client_id) rate limiting
@@ -572,15 +639,22 @@ def _select_mobile_target(payloads_snapshot):
     }
 
 
+OSRM_PUBLIC_DEMO_URL = "https://router.project-osrm.org"
+
+
 def _get_osrm_base_url():
-    """Return OSRM base URL from config/env/default."""
+    """Return the OSRM base URL: CHASEMAPPER_OSRM_BASE_URL env var, then the
+    config file's [map] osrm_base_url, then the public demo server.
+
+    The env var wins (same precedence as CHASEMAPPER_API_KEY) so a Docker
+    deployment can override the config file without editing it.
+    """
+    env_url = (os.environ.get("CHASEMAPPER_OSRM_BASE_URL", "") or "").strip()
     try:
-        cfg_url = chasemapper_config.get("osrm_base_url", "")
+        cfg_url = (chasemapper_config.get("osrm_base_url", "") or "").strip()
     except Exception:
         cfg_url = ""
-
-    env_url = os.environ.get("CHASEMAPPER_OSRM_BASE_URL", "")
-    base_url = (cfg_url or env_url or "https://router.project-osrm.org").strip().rstrip("/")
+    base_url = (env_url or cfg_url or OSRM_PUBLIC_DEMO_URL).strip().rstrip("/")
     return base_url
 
 
@@ -1003,7 +1077,7 @@ def flask_get_telemetry_archive():
 
 @app.route("/get_config")
 def flask_get_config():
-    return json.dumps(chasemapper_config)
+    return json.dumps(_public_config())
 
 
 @app.route("/get_bearings")
@@ -1051,7 +1125,7 @@ def flask_test_state():
         payloads = {}
 
     state = {
-        'config': chasemapper_config,
+        'config': _public_config(),
         'aprs_callsigns': chasemapper_config.get('aprs_callsigns', []),
         'current_payloads': payloads,
     }
@@ -1628,7 +1702,7 @@ def client_settings_update(data):
         online_uploader.set_callsign(chasemapper_config["habitat_call"])
 
     # Push settings back out to all clients.
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
 
 @socketio.on("aprs_callsign_add", namespace="/chasemapper")
@@ -1642,7 +1716,7 @@ def aprs_callsign_add(data):
         return
 
     logging.info("APRS callsign added on server: %s", callsign)
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
     def _bootstrap() -> None:
         try:
@@ -1669,7 +1743,7 @@ def aprs_callsign_remove(data):
     _remaining = chasemapper_config.get("aprs_callsigns", [])
     _start_aprs_tracker_for_callsigns(_remaining)
     flask_emit_event("aprs_callsign_removed", {"callsign": callsign})
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
 
 @socketio.on("aprs_prediction_override_update", namespace="/chasemapper")
@@ -1708,7 +1782,7 @@ def aprs_prediction_override_update(data):
     _save_aprs_prediction_overrides()
     logging.info("APRS prediction override updated on server for %s", callsign)
     trigger_prediction_async("APRS prediction overrides updated")
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
 
 @socketio.on('client_request_prediction', namespace='/chasemapper')
@@ -2331,7 +2405,7 @@ def initPredictor():
             predictor_thread = Thread(target=predictorThread, daemon=True)
             predictor_thread.start()
 
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
 
 def model_download_finished(result):
@@ -2351,6 +2425,12 @@ def download_new_model(data):
     """ Trigger a download of a new weather model """
     global pred_settings, model_download_running
     # Don't action anything if there is a model download already running
+
+    # A model download can pull hundreds of MB (e.g. over a phone hotspot), so
+    # it's gated like the other shared operator actions.
+    if not _require_operator_auth():
+        _deny_operator_action("download_model")
+        return
 
     logging.info("Web Client Initiated request for new predictor data.")
 
@@ -3284,7 +3364,7 @@ def profile_change(data):
     )
 
     # Update all clients with the new profile selection
-    flask_emit_event("server_settings_update", chasemapper_config)
+    flask_emit_event("server_settings_update", _public_config())
 
 
 @socketio.on("device_position", namespace="/chasemapper")
