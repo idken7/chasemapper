@@ -1,5 +1,6 @@
 import { useTelemetryStore } from './telemetryStore';
-import type { PayloadTelem, TelemetryArchive } from '../api/types';
+import type { PayloadTelem, TelemetryArchive, TelemetryEventCar } from '../api/types';
+import { CHASE_VEHICLE_STALE_MS } from '../api/constants';
 
 function makeTelem(overrides: Partial<PayloadTelem> = {}): PayloadTelem {
   return {
@@ -115,5 +116,100 @@ describe('telemetryStore.hydrateFromArchive', () => {
     const archive = { GHOST: {} } as unknown as TelemetryArchive;
     useTelemetryStore.getState().hydrateFromArchive(archive);
     expect(useTelemetryStore.getState().balloons.GHOST).toBeUndefined();
+  });
+});
+
+function makeCarEvent(carId: string | undefined, overrides: Partial<TelemetryEventCar> = {}): TelemetryEventCar {
+  return {
+    callsign: 'CAR',
+    position: [42.0, -83.0, 250],
+    vel_v: 0,
+    heading: 90,
+    heading_valid: true,
+    heading_status: 'gps',
+    speed: 15,
+    car_id: carId,
+    car_name: carId,
+    ...overrides,
+  };
+}
+
+describe('telemetryStore other-chaser car lifecycle', () => {
+  const T0 = 1_000_000_000_000;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(T0);
+    useTelemetryStore.setState({ ownCar: null, primaryCar: null, otherCars: {}, otherCarsSeenAt: {} });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('records when each other chaser was last heard from', () => {
+    useTelemetryStore.getState().handleTelemetryEvent(makeCarEvent('car-a'), 'me');
+    const state = useTelemetryStore.getState();
+    expect(Object.keys(state.otherCars)).toEqual(['car-a']);
+    expect(state.otherCarsSeenAt['car-a']).toBe(T0);
+  });
+
+  test('pruneStaleCars drops only cars quiet for longer than the stale threshold', () => {
+    const store = useTelemetryStore.getState();
+    store.handleTelemetryEvent(makeCarEvent('old-car'), 'me');
+    jest.setSystemTime(T0 + CHASE_VEHICLE_STALE_MS - 60_000);
+    store.handleTelemetryEvent(makeCarEvent('fresh-car'), 'me');
+
+    useTelemetryStore.getState().pruneStaleCars(T0 + CHASE_VEHICLE_STALE_MS + 1);
+
+    const state = useTelemetryStore.getState();
+    expect(Object.keys(state.otherCars)).toEqual(['fresh-car']);
+    expect(Object.keys(state.otherCarsSeenAt)).toEqual(['fresh-car']);
+  });
+
+  test('a fresh update keeps a car alive past its original stale deadline', () => {
+    const store = useTelemetryStore.getState();
+    store.handleTelemetryEvent(makeCarEvent('car-a'), 'me');
+    jest.setSystemTime(T0 + CHASE_VEHICLE_STALE_MS - 1000);
+    store.handleTelemetryEvent(makeCarEvent('car-a', { position: [42.1, -83.1, 250] }), 'me');
+
+    useTelemetryStore.getState().pruneStaleCars(T0 + CHASE_VEHICLE_STALE_MS + 1000);
+
+    expect(useTelemetryStore.getState().otherCars['car-a']).toBeDefined();
+  });
+
+  test('pruning never removes our own car or the primary hardware car', () => {
+    const store = useTelemetryStore.getState();
+    store.handleTelemetryEvent(makeCarEvent('me'), 'me'); // own car
+    store.handleTelemetryEvent(makeCarEvent(undefined), 'me'); // legacy primary car
+    store.handleTelemetryEvent(makeCarEvent('car-a'), 'me');
+
+    useTelemetryStore.getState().pruneStaleCars(T0 + CHASE_VEHICLE_STALE_MS * 10);
+
+    const state = useTelemetryStore.getState();
+    expect(state.ownCar).not.toBeNull();
+    expect(state.primaryCar).not.toBeNull();
+    expect(state.otherCars).toEqual({});
+  });
+
+  test('pruneStaleCars leaves state untouched (same reference) when nothing is stale', () => {
+    useTelemetryStore.getState().handleTelemetryEvent(makeCarEvent('car-a'), 'me');
+    const before = useTelemetryStore.getState().otherCars;
+    useTelemetryStore.getState().pruneStaleCars(T0 + 1000);
+    expect(useTelemetryStore.getState().otherCars).toBe(before);
+  });
+
+  test('clearOtherCars empties other chasers but keeps our own car', () => {
+    const store = useTelemetryStore.getState();
+    store.handleTelemetryEvent(makeCarEvent('me'), 'me');
+    store.handleTelemetryEvent(makeCarEvent('car-a'), 'me');
+    store.handleTelemetryEvent(makeCarEvent('car-b'), 'me');
+
+    useTelemetryStore.getState().clearOtherCars();
+
+    const state = useTelemetryStore.getState();
+    expect(state.otherCars).toEqual({});
+    expect(state.otherCarsSeenAt).toEqual({});
+    expect(state.ownCar?.car_id).toBe('me');
   });
 });

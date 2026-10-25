@@ -4,6 +4,15 @@
 // secret for store builds). See mobile/README.md for how to obtain and set
 // GOOGLE_MAPS_API_KEY. Everything else is the same static config app.json
 // used to hold.
+
+// iOS permission prompt text. App Review rejects the plugins' generic
+// "Allow $(PRODUCT_NAME) to access your location" defaults, so every location
+// key gets a specific explanation of what the location is used for.
+const LOCATION_WHEN_IN_USE_PERMISSION =
+  'ChaseMapper uses your location to show your position on the chase map and share it with your chase team.';
+const LOCATION_ALWAYS_PERMISSION =
+  'ChaseMapper uses your location to keep sharing your position with your chase team while the app is in the background, e.g. while using a separate navigation app.';
+
 module.exports = {
   expo: {
     name: 'ChaseMapper',
@@ -57,16 +66,30 @@ module.exports = {
     plugins: [
       'expo-font',
       'expo-splash-screen',
-      'expo-secure-store',
+      [
+        'expo-secure-store',
+        {
+          // SecureStore only holds the API key, never behind biometric auth
+          // (no requireAuthentication), so don't ship an unused Face ID
+          // permission string - `false` makes the plugin delete the key.
+          faceIDPermission: false,
+        },
+      ],
       'react-native-maps',
       [
         'expo-location',
         {
-          locationWhenInUsePermission:
-            'ChaseMapper uses your location to show your position on the chase map and share it with your chase team.',
-          locationAlwaysAndWhenInUsePermission:
-            'ChaseMapper uses your location to keep sharing your position with your chase team while the app is in the background, e.g. while using a separate navigation app.',
-          isIOSBackgroundLocationEnabled: true,
+          locationWhenInUsePermission: LOCATION_WHEN_IN_USE_PERMISSION,
+          locationAlwaysAndWhenInUsePermission: LOCATION_ALWAYS_PERMISSION,
+          // Deprecated iOS key, but the plugin still writes it - give it the
+          // real explanation rather than the generic default text.
+          locationAlwaysPermission: LOCATION_ALWAYS_PERMISSION,
+          // The app never reads motion activity, so drop that permission string.
+          motionUsagePermission: false,
+          // Note the exact casing: the plugin reads `isIosBackgroundLocationEnabled`;
+          // an `isIOS...` spelling is silently ignored. (ios.infoPlist above also
+          // lists UIBackgroundModes: ['location'], so either alone would do.)
+          isIosBackgroundLocationEnabled: true,
           isAndroidBackgroundLocationEnabled: true,
         },
       ],

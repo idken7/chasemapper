@@ -104,6 +104,10 @@ export function SettingsScreen() {
   const locationShareError = useLocationShareStore((s) => s.error);
   const status = useConnectionStore((s) => s.status);
   const connectedChasers = useConnectionStore((s) => s.connectedChasers);
+  const lastError = useConnectionStore((s) => s.lastError);
+  // The server refuses a missing/wrong key with a connect_error of "unauthorized"
+  // and Socket.IO doesn't retry after that, so say why instead of a generic error.
+  const isUnauthorized = status === 'error' && !!lastError && lastError.includes('unauthorized');
   const config = useConfigStore((s) => s.config);
 
   const [editingServerUrl, setEditingServerUrl] = useState(false);
@@ -224,7 +228,7 @@ export function SettingsScreen() {
           </Row>
           <Row label="Status" last>
             <ValueText>
-              {STATUS_LABEL[status] ?? status}
+              {isUnauthorized ? 'Invalid or missing API key' : STATUS_LABEL[status] ?? status}
               {status === 'connected' ? ` · ${connectedChasers}` : ''}
             </ValueText>
           </Row>

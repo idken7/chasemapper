@@ -38,3 +38,17 @@ background location (see `src/location/useDevicePositionSharing.ts` and
 feature this backs). Background tracking additionally needs the OS-level
 background permission grant, requested separately after foreground - see
 that hook's comments for why.
+
+## Native projects (`ios/`, `android/`)
+
+`ios/` and `android/` are generated from `app.config.js` and are not committed.
+After changing `app.config.js` or adding a native package, regenerate them:
+
+```bash
+npx expo prebuild --clean -p ios
+```
+
+If Xcode builds then fail in a "[RNDeps]" or "Bundle React Native code" script
+phase with a missing `node`, point `ios/.xcode.env.local` at a stable Node path
+(it is gitignored and local to your machine), e.g.
+`export NODE_BINARY=/opt/homebrew/bin/node`.

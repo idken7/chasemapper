@@ -32,3 +32,9 @@ export const CIRCUIT_BREAKER_PAUSE_MS = 30000;
 // rate limit (see location/useLocationSharing.ts, wired up in Phase 5).
 export const DEVICE_POSITION_FOREGROUND_INTERVAL_MS = 4000;
 export const DEVICE_POSITION_BACKGROUND_INTERVAL_MS = 20000;
+
+// Other chasers' cars are dropped from the map once nothing has been heard from
+// them for this long - matches the desktop web app's CHASE_VEHICLE_STALE_MS
+// (static/js/sondehub.js), swept on the same 60s cadence.
+export const CHASE_VEHICLE_STALE_MS = 15 * 60 * 1000;
+export const CHASE_VEHICLE_PRUNE_INTERVAL_MS = 60 * 1000;
