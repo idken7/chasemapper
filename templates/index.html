@@ -17,6 +17,9 @@
     <script src="{{ url_for('static', filename='js/jquery-3.3.1.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/jquery-ui.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <!-- API key handling: must load before any AJAX request or Socket.IO connection. -->
+    <script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/connection_status.js') }}"></script>
 
     <script src="{{ url_for('static', filename='js/tabulator.min.js') }}"></script>
 
@@ -55,18 +58,18 @@
     </script>
 
     <!-- Custom scripts -->
-    <script src="{{ url_for('static', filename='js/habitat.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20260806-reliability2"></script>
+    <script src="{{ url_for('static', filename='js/habitat.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20261024-ship-readiness"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20260806-reliability2"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20261024-ship-readiness"></script>
     <script src="{{ url_for('static', filename='js/ui_dialogs.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/chase_routing.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/car.js') }}?v=20260806-reliability2"></script>
-    <script src="{{ url_for('static', filename='js/bearings.js') }}?v=20260806-reliability2"></script>
+    <script src="{{ url_for('static', filename='js/chase_routing.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/car.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/bearings.js') }}?v=20261024-ship-readiness"></script>
     <script src="{{ url_for('static', filename='js/paho-mqtt.js') }}"></script>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
@@ -278,37 +281,17 @@
             };
         }
 
-        // API key for servers configured with CHASEMAPPER_API_KEY (see README
-        // "Endpoint Security"). Only actually required for non-private-IP
-        // connections when the server has a key configured - harmless to
-        // send otherwise.
-        function getSavedApiKey(){
-            try{ return localStorage.getItem('chasemapper_api_key') || ''; }catch(e){ return ''; }
-        }
-        function setSavedApiKey(key){
-            try{ localStorage.setItem('chasemapper_api_key', key || ''); }catch(e){ /* ignore */ }
-        }
-
         $(document).ready(function() {
 
             // Connect to the Socket.IO server.
             // The connection URL has the following format:
             //     http[s]://<domain>:<port>[/<namespace>]
-            var _savedApiKey = getSavedApiKey();
-            var _connectOpts = _savedApiKey ? {query: {api_key: _savedApiKey}} : {};
-            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace, _connectOpts);
-
-            socket.on('connect_error', function(err){
-                var msg = (err && err.message) || '';
-                if (msg.indexOf('unauthorized') === -1){
-                    return;
-                }
-                var entered = window.prompt('This server requires an API key to connect. Enter it below:');
-                if (entered && entered.trim()){
-                    setSavedApiKey(entered.trim());
-                    location.reload();
-                }
-            });
+            // chasemapperSocketOptions()/registerSocketAuthHandler() come from
+            // static/js/auth.js, which also adds the saved API key to this
+            // page's AJAX requests.
+            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace, chasemapperSocketOptions());
+            registerSocketAuthHandler(socket);
+            registerSocketStatusHandlers(socket);
 
             socket.on('operator_action_denied', function(data){
                 alert('Action "' + ((data && data.action) || '') + '" was denied: this server requires a valid API key for that action. Set it in Settings > Server Access.');
@@ -1150,9 +1133,9 @@
     </div>
     <div class="d-flex align-items-center topbar-status topbar-status-right">
         <span id="aprsStatusDot" class="aprs-status-dot aprs-status-connecting" title="APRS status: connecting"></span>
-        <span class="topbar-status-label">LIVE</span>
+        <span id="serverStatusLabel" class="topbar-status-label server-status-connecting" title="Connection to the chasemapper server">CONNECTING</span>
         <span class="topbar-status-sep">&middot;</span>
-        <span id="chaserCountLabel" class="topbar-status-label mono" title="Chasers currently connected to this server">1 connected</span>
+        <span id="chaserCountLabel" class="topbar-status-label mono" title="Chasers currently connected to this server">&mdash;</span>
     </div>
 </div>
 

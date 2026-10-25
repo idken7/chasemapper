@@ -70,3 +70,26 @@ describe('getStored2DMode', () => {
     expect(getStored2DMode()).toBe(false);
   });
 });
+
+describe('setCesiumCameraPitch', () => {
+  test('is exported on window, matching how the camera-angle slider calls it', () => {
+    expect(typeof window.setCesiumCameraPitch).toBe('function');
+    expect(typeof window.getCesiumCameraState).toBe('function');
+  });
+
+  test('updates the stored pitch and returns it', () => {
+    expect(setCesiumCameraPitch(-25)).toBe(-25);
+    expect(getCesiumCameraState().pitch).toBe(-25);
+  });
+
+  test('clamps to the allowed range instead of storing an out-of-range pitch', () => {
+    expect(setCesiumCameraPitch(10)).toBe(-5);
+    expect(setCesiumCameraPitch(-120)).toBe(-89);
+  });
+
+  test('works with no viewer yet (cancelling camera motion must not throw before Cesium loads)', () => {
+    applyCesiumMapViewState(false);
+    expect(() => setCesiumCameraPitch(-40)).not.toThrow();
+    expect(getCesiumCameraState().pitch).toBe(-40);
+  });
+});

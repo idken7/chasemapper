@@ -30,20 +30,36 @@ def run_server_in_thread(cfg_path=None):
         port = sock.getsockname()[1]
 
     horusmapper.chasemapper_config['flask_port'] = port
+    # Bind to loopback, not the example config's 0.0.0.0: binding to 0.0.0.0
+    # makes Werkzeug do a reverse DNS lookup (socket.getfqdn) before it starts
+    # listening, which can take 30s+ on some machines and made this test time
+    # out before the server was up.
+    horusmapper.chasemapper_config['flask_host'] = '127.0.0.1'
 
     app, socketio = horusmapper.create_app()
 
     def _serve():
-        # Use flask host/port from config if present
-        host = horusmapper.chasemapper_config.get('flask_host', '127.0.0.1')
-        port = int(horusmapper.chasemapper_config.get('flask_port', 5001))
-        socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='127.0.0.1', port=port, allow_unsafe_werkzeug=True)
 
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
-    # Give server time to start
-    time.sleep(1.0)
     return t
+
+
+def wait_for_server(url, timeout_s=20.0):
+    """Poll `url` until it answers 200, or fail the test after `timeout_s`."""
+    deadline = time.monotonic() + timeout_s
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(url, timeout=1.0)
+            if r.status_code == 200:
+                return
+            last_error = 'HTTP %d' % r.status_code
+        except requests.RequestException as e:
+            last_error = e
+        time.sleep(0.2)
+    raise AssertionError('Test server at %s did not come up within %.0fs (last error: %s)' % (url, timeout_s, last_error))
 
 
 def test_aprs_add_remove_flow():
@@ -56,14 +72,7 @@ def test_aprs_add_remove_flow():
         config['pred_model'] = 'GFS'
         config['pred_model_time'] = '01/02/2024, 03:04:05 UTC'
         url = 'http://127.0.0.1:%d/' % config['flask_port']
-        # Wait until server responds to a simple request
-        for _ in range(30):
-            try:
-                r = requests.get(url, timeout=0.5)
-                if r.status_code == 200:
-                    break
-            except requests.RequestException:
-                time.sleep(0.2)
+        wait_for_server(url)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)

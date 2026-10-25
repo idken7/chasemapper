@@ -22,6 +22,8 @@
     <script src="{{ url_for('static', filename='js/jquery-3.3.1.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/jquery-ui.min.js')}}"></script>
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <!-- API key handling: must load before any AJAX request or Socket.IO connection. -->
+    <script src="{{ url_for('static', filename='js/auth.js') }}"></script>
     <script src="{{ url_for('static', filename='js/leaflet.js') }}"></script>
     <!-- Leaflet plugins... -->
     <script src="{{ url_for('static', filename='js/leaflet.rotatedMarker.js') }}"></script>
@@ -171,7 +173,11 @@
             // Connect to the Socket.IO server.
             // The connection URL has the following format:
             //     http[s]://<domain>:<port>[/<namespace>]
-            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace);
+            // chasemapperSocketOptions()/registerSocketAuthHandler() come from
+            // static/js/auth.js, which also adds the saved API key to this
+            // page's AJAX requests.
+            socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port + namespace, chasemapperSocketOptions());
+            registerSocketAuthHandler(socket);
 
             // Grab the System config on startup.
             // Refer to config.py for the contents of the configuration blob.

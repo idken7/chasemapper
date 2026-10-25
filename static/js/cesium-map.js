@@ -270,16 +270,69 @@
         updateCameraSliderDisplay();
     }
 
+    // Stop any camera motion still in progress: both our own animateCameraTo()
+    // tweens (cancelled by bumping their token) and any native Cesium flyTo.
+    // Without this, a flight started earlier (e.g. by a location change)
+    // keeps heading for its *old* orientation, and when it ends the moveEnd
+    // listener copies that old pitch back over a pitch the user just chose.
+    function cancelCesiumCameraMotion() {
+        cesiumCameraAnimationToken++;
+        try {
+            if (cesiumState.viewer && cesiumState.viewer.camera && typeof cesiumState.viewer.camera.cancelFlight === 'function') {
+                cesiumState.viewer.camera.cancelFlight();
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    // Move the live camera to cesiumState.camera's heading/pitch. With a focus
+    // target, refocus on it (its flight ends at the new orientation). Without
+    // one, refocusCesiumCamera() is a no-op, so turn the camera in place -
+    // otherwise the viewer keeps its old pitch and the next moveEnd (from any
+    // source) would overwrite the new value with it.
+    function applyCameraStateToViewer() {
+        if (!cesiumState.active) {
+            return;
+        }
+        if (cesiumState.camera.focus) {
+            refocusCesiumCamera();
+            return;
+        }
+        var viewer = cesiumState.viewer;
+        if (!viewer || !viewer.camera || typeof viewer.camera.setView !== 'function') {
+            return;
+        }
+        try {
+            // Same world-frame position, new orientation. endTransform:
+            // IDENTITY for the reason given in animateCameraTo() - the camera
+            // transform isn't always identity here.
+            viewer.camera.setView({
+                destination: Cesium.Cartesian3.clone(viewer.camera.positionWC),
+                orientation: {
+                    heading: Cesium.Math.toRadians(cesiumState.camera.heading),
+                    pitch: Cesium.Math.toRadians(cesiumState.camera.pitch),
+                    roll: 0
+                },
+                endTransform: Cesium.Matrix4.IDENTITY
+            });
+            if (viewer.scene && typeof viewer.scene.requestRender === 'function') {
+                viewer.scene.requestRender();
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
     function setCesiumCameraPitch(pitch) {
+        cancelCesiumCameraMotion();
         applyCameraState({
             heading: cesiumState.camera.heading,
             pitch: pitch,
             range: cesiumState.camera.range
         });
 
-        if (cesiumState.active) {
-            refocusCesiumCamera();
-        }
+        applyCameraStateToViewer();
 
         updateCameraSliderDisplay();
         return cesiumState.camera.pitch;
@@ -2271,10 +2324,9 @@
     }
 
     function setCesiumCameraState(nextState) {
+        cancelCesiumCameraMotion();
         applyCameraState(nextState);
-        if (cesiumState.active) {
-            refocusCesiumCamera();
-        }
+        applyCameraStateToViewer();
         return {
             heading: cesiumState.camera.heading,
             pitch: cesiumState.camera.pitch,
