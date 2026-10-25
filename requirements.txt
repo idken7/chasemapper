@@ -11,6 +11,12 @@
 eccodes
 cusfpredict
 numpy
+# pandas comes in via cusfpredict -> xarray. There are no prebuilt pandas wheels
+# for linux/arm/v7 (32-bit Raspberry Pi OS), so the container build compiles it
+# from source, and pandas 3.1.0's source fails to compile there (bundled xsimd
+# mismatch: "'load_unaligned' is not a member of 'xsimd'"). 3.0.6 builds fine.
+# Lift this cap once a 3.1.x release builds on arm/v7 again.
+pandas<3.1
 flask==3.1.3
 flask-socketio==5.6.1
 lxml==6.1.3
