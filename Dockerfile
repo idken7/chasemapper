@@ -99,7 +99,14 @@ COPY . /opt/chasemapper
 # as the non-root user. The pip-installed packages under /usr/local stay
 # root-owned, which is fine - they're on the default system-wide
 # site-packages path and world-readable there (unlike /root, see above).
-RUN chown -R chasemapper:chasemapper /opt/chasemapper
+#
+# log_files/ and gfs/ are excluded from the build context (.dockerignore keeps
+# local chase logs and model data out of the image), so create them here. They
+# must exist and be owned by the app user: docker-compose's named log volume
+# copies this directory's ownership when first created, and without it the
+# chase logger can't write (and running without compose would have no folder).
+RUN mkdir -p /opt/chasemapper/log_files /opt/chasemapper/gfs && \
+  chown -R chasemapper:chasemapper /opt/chasemapper
 
 # Set the working directory.
 WORKDIR /opt/chasemapper
