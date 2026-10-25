@@ -58,18 +58,18 @@
     </script>
 
     <!-- Custom scripts -->
-    <script src="{{ url_for('static', filename='js/habitat.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/habitat.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/sondehub.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20261025-camera-fix"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/cesium-map.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/balloon.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/predictions.js') }}?v=20261025-camera-fix"></script>
     <script src="{{ url_for('static', filename='js/ui_dialogs.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/chase_routing.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/car.js') }}?v=20261024-ship-readiness"></script>
-    <script src="{{ url_for('static', filename='js/bearings.js') }}?v=20261024-ship-readiness"></script>
+    <script src="{{ url_for('static', filename='js/chase_routing.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/car.js') }}?v=20261025-camera-fix"></script>
+    <script src="{{ url_for('static', filename='js/bearings.js') }}?v=20261025-camera-fix"></script>
     <script src="{{ url_for('static', filename='js/paho-mqtt.js') }}"></script>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
@@ -519,18 +519,10 @@
                 if (chase_config['unitselection'] == "metric")   { ringSpacingLabel.innerHTML = "Ring Spacing (m)";}
             }
 
-            // Bring Cesium up as the map engine.
+            // Bring Cesium up as the map engine. (The saved 2D/3D camera angle
+            // is restored by cesium-map.js when the viewer is created.)
             set3DMapViewEnabled(true);
             apply3DMapViewState();
-            // Apply stored 2D/3D camera-angle preference.
-            if (typeof getStored2DMode === 'function') {
-                var is2D = getStored2DMode();
-                if (is2D && typeof set2DMode === 'function') {
-                    set2DMode();
-                } else if (!is2D && typeof set3DMode === 'function') {
-                    set3DMode();
-                }
-            }
             if (typeof Cesium === 'undefined') {
                 // static/vendor/cesium/ wasn't populated - see scripts/fetch_cesium.sh
                 // (local installs) or the Dockerfile (image builds).

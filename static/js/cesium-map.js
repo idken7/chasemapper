@@ -48,6 +48,9 @@
     var CESIUM_CAMERA_STORAGE_KEY = 'chasemapper_cesium_camera';
     var CESIUM_MAP_MODE_STORAGE_KEY = 'chasemapper_cesium_map_mode';
     var CESIUM_2D_MODE_STORAGE_KEY = 'chasemapper_cesium_2d_mode';
+    // Above this camera height (no focus target), 2D/3D/pitch changes don't tilt
+    // the camera in place - see applyCameraStateToViewer().
+    var MAX_IN_PLACE_TILT_HEIGHT_M = 1000000;
     var DEFAULT_CAMERA_STATE = {
         heading: 0,
         pitch: -35,
@@ -193,6 +196,17 @@
         return Math.min(Math.max(parsed, minValue), maxValue);
     }
 
+    // Headings are compass degrees (Cesium reports 0..360). Wrap rather than
+    // clamp: clamping to -180..180 turned a saved 354 deg (just west of north)
+    // into 180 deg, so the camera faced south after every reload.
+    function normalizeHeading(value, fallback) {
+        var parsed = parseFloat(value);
+        if (!isFinite(parsed)) {
+            return fallback;
+        }
+        return ((parsed % 360) + 360) % 360;
+    }
+
     function getStoredCameraState() {
         var stored = null;
         try {
@@ -212,7 +226,7 @@
         try {
             var parsed = JSON.parse(stored);
             return {
-                heading: clampNumber(parsed.heading, -180, 180, DEFAULT_CAMERA_STATE.heading),
+                heading: normalizeHeading(parsed.heading, DEFAULT_CAMERA_STATE.heading),
                 pitch: clampNumber(parsed.pitch, -89, -5, DEFAULT_CAMERA_STATE.pitch),
                 range: clampNumber(parsed.range, 1000, 50000, DEFAULT_CAMERA_STATE.range)
             };
@@ -303,6 +317,16 @@
         if (!viewer || !viewer.camera || typeof viewer.camera.setView !== 'function') {
             return;
         }
+        // From far out (e.g. the whole-globe view before anything is
+        // focused), tilting in place would point the camera past the Earth.
+        // Leave it; the next focus/flight uses the new state.
+        try {
+            if (viewer.camera.positionCartographic && viewer.camera.positionCartographic.height > MAX_IN_PLACE_TILT_HEIGHT_M) {
+                return;
+            }
+        } catch (e) {
+            return;
+        }
         try {
             // Same world-frame position, new orientation. endTransform:
             // IDENTITY for the reason given in animateCameraTo() - the camera
@@ -368,44 +392,41 @@
         persistCameraState();
     }
 
+    // Switch between top-down (2D) and tilted (3D). The camera re-orients
+    // around whatever it's focused on (home, a balloon, a chaser) via
+    // applyCameraStateToViewer(), keeping its range. It used to fly "in place"
+    // from the camera's current position, which on page load cancelled the
+    // initial flight to home while the camera was still at the whole-globe
+    // default - leaving it ~12,000 km up, tilted to look past the Earth.
     function set2DMode() {
-        cesiumState.is2DMode = true;
-        cesiumState.camera.pitch = -90;
-        if (cesiumState.viewer) {
-            try {
-                cesiumState.viewer.camera.flyTo({
-                    destination: cesiumState.viewer.camera.position,
-                    orientation: {
-                        heading: Cesium.Math.toRadians(cesiumState.camera.heading),
-                        pitch: Cesium.Math.toRadians(-90),
-                        roll: 0
-                    },
-                    duration: 0.8
-                });
-            } catch (e) {}
-        }
+        setCameraMode(true);
+    }
+
+    function set3DMode() {
+        setCameraMode(false);
+    }
+
+    function setCameraMode(is2D) {
+        cesiumState.is2DMode = !!is2D;
+        cesiumState.camera.pitch = is2D ? -90 : -35;
+        cancelCesiumCameraMotion();
+        applyCameraStateToViewer();
+        updateCameraSliderDisplay();
         persist2DMode();
         persistCameraState();
     }
 
-    function set3DMode() {
-        cesiumState.is2DMode = false;
-        cesiumState.camera.pitch = -35;
-        if (cesiumState.viewer) {
-            try {
-                cesiumState.viewer.camera.flyTo({
-                    destination: cesiumState.viewer.camera.position,
-                    orientation: {
-                        heading: Cesium.Math.toRadians(cesiumState.camera.heading),
-                        pitch: Cesium.Math.toRadians(-35),
-                        roll: 0
-                    },
-                    duration: 0.8
-                });
-            } catch (e) {}
+    // Apply the saved 2D/3D preference to camera state only - no camera
+    // movement. ensureViewer() calls it when the viewer is created, before the
+    // first flight to home, so that flight lands at the right pitch.
+    function restoreStored2DMode() {
+        cesiumState.is2DMode = getStored2DMode();
+        if (cesiumState.is2DMode) {
+            cesiumState.camera.pitch = -90;
+        } else if (!(cesiumState.camera.pitch > -89)) {
+            cesiumState.camera.pitch = -35;
         }
-        persist2DMode();
-        persistCameraState();
+        return cesiumState.is2DMode;
     }
 
     function get2DMode() {
@@ -662,6 +683,26 @@
         return setCesiumMeasureMode(true);
     }
 
+    // Distance from the camera to what it's looking at. The camera's height
+    // alone is only right when looking straight down: at -35 deg the view
+    // distance is ~1.7x the height, so saving the height made every 2D->3D
+    // toggle (and every reload) zoom further in.
+    function estimateViewRange(camera) {
+        if (!camera || !camera.positionCartographic) {
+            return NaN;
+        }
+        var height = camera.positionCartographic.height;
+        var focus = cesiumState.camera.focus;
+        if (focus && focus.type === 'position' && Array.isArray(focus.position) && isFinite(focus.position[2])) {
+            height -= focus.position[2];
+        }
+        var sinPitch = Math.sin(-camera.pitch);
+        if (!(sinPitch > 0.1)) {
+            return height;
+        }
+        return height / sinPitch;
+    }
+
     function syncCameraStateFromViewer() {
         if (!cesiumState.viewer || !cesiumState.viewer.camera) {
             return;
@@ -669,14 +710,14 @@
 
         cesiumState.camera.heading = Cesium.Math.toDegrees(cesiumState.viewer.camera.heading);
         cesiumState.camera.pitch = Cesium.Math.toDegrees(cesiumState.viewer.camera.pitch);
-        cesiumState.camera.range = clampNumber(cesiumState.viewer.camera.positionCartographic && cesiumState.viewer.camera.positionCartographic.height, 1000, 50000, cesiumState.camera.range);
+        cesiumState.camera.range = clampNumber(estimateViewRange(cesiumState.viewer.camera), 1000, 50000, cesiumState.camera.range);
         persistCameraState();
         updateCameraSliderDisplay();
     }
 
     function applyCameraState(state) {
         var next = state || {};
-        cesiumState.camera.heading = clampNumber(next.heading, -180, 180, cesiumState.camera.heading);
+        cesiumState.camera.heading = normalizeHeading(next.heading, cesiumState.camera.heading);
         cesiumState.camera.pitch = clampNumber(next.pitch, -89, -5, cesiumState.camera.pitch);
         cesiumState.camera.range = clampNumber(next.range, 1000, 50000, cesiumState.camera.range);
         persistCameraState();
@@ -1233,6 +1274,8 @@
         viewer.scene.moon.show = false;
 
         applyCameraState(getStoredCameraState());
+        // Saved 2D/3D preference (applyCameraState alone clamps pitch to -89).
+        restoreStored2DMode();
 
         cesiumState.viewer = viewer;
 
@@ -2442,24 +2485,36 @@
             moveLeafletControlsToBody();
             cesiumContainer.classList.add('cesium-active');
 
+            var isNewViewer = !cesiumState.viewer;
             var viewer = ensureViewer();
             setContainerVisible(true);
             if (viewer) {
                 resizeCesiumViewer();
-                syncCameraStateFromViewer();
-                syncAllCesiumStateFromStore();
-                try {
-                    if (typeof chase_config !== 'undefined' && chase_config && isFinite(parseFloat(chase_config.default_lat)) && isFinite(parseFloat(chase_config.default_lon))) {
-                        flyCesiumToPosition([
-                            parseFloat(chase_config.default_lat),
-                            parseFloat(chase_config.default_lon),
-                            isFinite(parseFloat(chase_config.default_alt)) ? parseFloat(chase_config.default_alt) : 0
-                        ], {duration: 1.2});
-                    }
-                } catch (e) {
-                    // ignore
+                // A just-created viewer still has Cesium's default whole-globe
+                // camera; copying that into our state would overwrite the saved
+                // camera angle on every page load. Only sync from a viewer the
+                // user has already been moving around.
+                if (!isNewViewer) {
+                    syncCameraStateFromViewer();
                 }
-                refocusCesiumCamera();
+                syncAllCesiumStateFromStore();
+                // Fly to the home position only when the map first appears.
+                // This function also runs on every server_settings_update (any
+                // chaser changing a setting), and used to re-fly everyone's
+                // camera back to home - and refocus it - each time.
+                if (isNewViewer) {
+                    try {
+                        if (typeof chase_config !== 'undefined' && chase_config && isFinite(parseFloat(chase_config.default_lat)) && isFinite(parseFloat(chase_config.default_lon))) {
+                            flyCesiumToPosition([
+                                parseFloat(chase_config.default_lat),
+                                parseFloat(chase_config.default_lon),
+                                isFinite(parseFloat(chase_config.default_alt)) ? parseFloat(chase_config.default_alt) : 0
+                            ], {duration: 1.2});
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
+                }
                 try {
                     viewer.scene.requestRender();
                 } catch (e) {
@@ -2542,6 +2597,7 @@
     window.set3DMode = set3DMode;
     window.get2DMode = get2DMode;
     window.getStored2DMode = getStored2DMode;
+    window.restoreStored2DMode = restoreStored2DMode;
     window.toggle2D3DMode = toggle2D3DMode;
     window.toggleCesiumMeasureMode = toggleCesiumMeasureMode;
     window.clearCesiumMeasureLine = clearCesiumMeasureLine;

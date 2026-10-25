@@ -84,6 +84,23 @@ def test_aprs_add_remove_flow():
             page = browser.new_page()
             page.goto(url)
 
+            # Regression: on load the camera must fly to the home position, not
+            # get stuck at Cesium's whole-globe default (a competing 2D/3D
+            # restore flight once left it ~12,000 km up, looking into space).
+            # Check where it settles, not just that it passed below the
+            # threshold - the bug dipped in and then flew back out.
+            page.wait_for_function("() => !!(window.getCesiumViewer && window.getCesiumViewer())", timeout=UI_TIMEOUT_MS)
+            camera_height = lambda: page.evaluate("() => window.getCesiumViewer().camera.positionCartographic.height")
+            deadline = time.time() + UI_TIMEOUT_MS / 1000.0
+            last = None
+            while time.time() < deadline:
+                time.sleep(1.0)
+                current = camera_height()
+                if last is not None and abs(current - last) < 1.0:
+                    break  # camera has stopped moving
+                last = current
+            assert camera_height() < 200000, 'camera settled %.0f km up, not near home' % (camera_height() / 1000.0)
+
             # Open APRS panel
             page.click('#topbarAprsBtn')
 
