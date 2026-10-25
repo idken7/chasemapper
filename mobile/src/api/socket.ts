@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { getConfig, getTelemetryArchive } from './client';
+import { CHASE_VEHICLE_PRUNE_INTERVAL_MS } from './constants';
 import { useConnectionStore } from '../store/connectionStore';
 import { useTelemetryStore } from '../store/telemetryStore';
 import { useConfigStore } from '../store/configStore';
@@ -103,11 +104,17 @@ export function useChaseMapperSocket() {
     socket.on('connect', () => {
       useConnectionStore.getState().setStatus('connected');
       useConnectionStore.getState().setReconnectAttempt(0);
+      // Drop every other chaser's car before asking for a replay: the server's
+      // client_connected handler re-sends the cars it currently tracks, so this
+      // refills the map with exactly the live set. Without it, cars the server
+      // no longer knows about (e.g. after a server restart, or chasers who left
+      // while we were disconnected) would stay frozen on the map forever.
+      useTelemetryStore.getState().clearOtherCars();
       socket.emit('client_connected', {});
       // server_settings_update only fires on config *mutations* — bootstrap the
       // canonical config here so screens (APRS callsigns, units, profiles) aren't
       // stuck waiting for someone to change a setting first.
-      getConfig(serverUrl).then(
+      getConfig(serverUrl, apiKey).then(
         (config) => useConfigStore.getState().setConfig(config),
         () => {} // non-critical bootstrap; server_settings_update will eventually arrive
       );
@@ -116,7 +123,7 @@ export function useChaseMapperSocket() {
       // history here, same as the desktop client's fetchTelemetryArchive(), so the
       // actual-path trail/prediction/landing/burst aren't stuck empty until enough
       // live updates trickle in to rebuild them from scratch.
-      getTelemetryArchive(serverUrl).then(
+      getTelemetryArchive(serverUrl, apiKey).then(
         (archive) => useTelemetryStore.getState().hydrateFromArchive(archive),
         () => {} // non-critical bootstrap; live socket events still populate everything else
       );
@@ -178,7 +185,15 @@ export function useChaseMapperSocket() {
     // landing in later phases — wired up alongside those screens rather than
     // dispatched to nowhere here.
 
+    // Chasers who stop sending positions (left the chase, lost signal) never get
+    // an explicit removal event, so sweep them out once they go quiet - same
+    // cadence and threshold as the desktop web app's pruneStaleChaseVehicles().
+    const pruneTimer = setInterval(() => {
+      useTelemetryStore.getState().pruneStaleCars(Date.now());
+    }, CHASE_VEHICLE_PRUNE_INTERVAL_MS);
+
     return () => {
+      clearInterval(pruneTimer);
       socket.disconnect();
       socketRef.current = null;
       activeSocket = null;

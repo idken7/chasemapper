@@ -9,6 +9,11 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Generous on purpose: CI runners have no GPU, so Cesium renders the globe in
+# software and can keep the page's main thread busy for seconds at a time.
+# Locally these waits return almost immediately.
+UI_TIMEOUT_MS = 15000
 sys.path.insert(0, str(ROOT))
 
 import horusmapper
@@ -30,20 +35,36 @@ def run_server_in_thread(cfg_path=None):
         port = sock.getsockname()[1]
 
     horusmapper.chasemapper_config['flask_port'] = port
+    # Bind to loopback, not the example config's 0.0.0.0: binding to 0.0.0.0
+    # makes Werkzeug do a reverse DNS lookup (socket.getfqdn) before it starts
+    # listening, which can take 30s+ on some machines and made this test time
+    # out before the server was up.
+    horusmapper.chasemapper_config['flask_host'] = '127.0.0.1'
 
     app, socketio = horusmapper.create_app()
 
     def _serve():
-        # Use flask host/port from config if present
-        host = horusmapper.chasemapper_config.get('flask_host', '127.0.0.1')
-        port = int(horusmapper.chasemapper_config.get('flask_port', 5001))
-        socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='127.0.0.1', port=port, allow_unsafe_werkzeug=True)
 
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
-    # Give server time to start
-    time.sleep(1.0)
     return t
+
+
+def wait_for_server(url, timeout_s=20.0):
+    """Poll `url` until it answers 200, or fail the test after `timeout_s`."""
+    deadline = time.monotonic() + timeout_s
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(url, timeout=1.0)
+            if r.status_code == 200:
+                return
+            last_error = 'HTTP %d' % r.status_code
+        except requests.RequestException as e:
+            last_error = e
+        time.sleep(0.2)
+    raise AssertionError('Test server at %s did not come up within %.0fs (last error: %s)' % (url, timeout_s, last_error))
 
 
 def test_aprs_add_remove_flow():
@@ -56,19 +77,29 @@ def test_aprs_add_remove_flow():
         config['pred_model'] = 'GFS'
         config['pred_model_time'] = '01/02/2024, 03:04:05 UTC'
         url = 'http://127.0.0.1:%d/' % config['flask_port']
-        # Wait until server responds to a simple request
-        for _ in range(30):
-            try:
-                r = requests.get(url, timeout=0.5)
-                if r.status_code == 200:
-                    break
-            except requests.RequestException:
-                time.sleep(0.2)
+        wait_for_server(url)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             page.goto(url)
+
+            # Regression: on load the camera must fly to the home position, not
+            # get stuck at Cesium's whole-globe default (a competing 2D/3D
+            # restore flight once left it ~12,000 km up, looking into space).
+            # Check where it settles, not just that it passed below the
+            # threshold - the bug dipped in and then flew back out.
+            page.wait_for_function("() => !!(window.getCesiumViewer && window.getCesiumViewer())", timeout=UI_TIMEOUT_MS)
+            camera_height = lambda: page.evaluate("() => window.getCesiumViewer().camera.positionCartographic.height")
+            deadline = time.time() + UI_TIMEOUT_MS / 1000.0
+            last = None
+            while time.time() < deadline:
+                time.sleep(1.0)
+                current = camera_height()
+                if last is not None and abs(current - last) < 1.0:
+                    break  # camera has stopped moving
+                last = current
+            assert camera_height() < 200000, 'camera settled %.0f km up, not near home' % (camera_height() / 1000.0)
 
             # Open APRS panel
             page.click('#topbarAprsBtn')
@@ -78,7 +109,7 @@ def test_aprs_add_remove_flow():
             page.click('[data-test="aprs-add-btn"]')
 
             # Wait for the list item to appear
-            page.wait_for_selector('[data-test="aprs-item-TEST1"]', timeout=3000)
+            page.wait_for_selector('[data-test="aprs-item-TEST1"]', timeout=UI_TIMEOUT_MS)
 
             # Recheck layout at a narrow width to catch button overflow regressions.
             page.set_viewport_size({"width": 360, "height": 900})
@@ -119,7 +150,7 @@ def test_aprs_add_remove_flow():
             # what this check is actually about.
             page.evaluate("document.body.classList.remove('dark-theme')")
             page.click('#topbarSettingsBtn')
-            page.wait_for_selector('#otherSection:visible', timeout=3000)
+            page.wait_for_selector('#otherSection:visible', timeout=UI_TIMEOUT_MS)
             assert page.locator('#settingsPanel .settings-group h4').first.evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
             assert page.locator('#settingsPanel .settings-group').first.evaluate("el => getComputedStyle(el).borderTopColor") != 'rgba(255, 255, 255, 0.12)'
             page.fill('#currentLat', '40.12345')
@@ -221,7 +252,7 @@ def test_aprs_add_remove_flow():
             # Open the per-callsign summary view and verify enriched fields are shown.
             # Use a JS click to avoid Playwright visibility timing flakiness
             page.locator('[data-test="aprs-view-TEST1"]').evaluate("el => el.click()")
-            page.wait_for_selector('#aprsCallsignModal.is-open', timeout=3000)
+            page.wait_for_selector('#aprsCallsignModal.is-open', timeout=UI_TIMEOUT_MS)
             assert page.locator('#aprsCallsignModalTitle').text_content() == 'Callsign Summary: TEST1'
             assert page.locator('#aprsCallsignModal .aprs-summary-section').first.evaluate("el => getComputedStyle(el).borderTopColor") != 'rgba(255, 255, 255, 0.06)'
             assert page.locator('#aprsCallsignModal .aprs-summary-section h4').first.evaluate("el => getComputedStyle(el).color") != 'rgb(255, 255, 255)'
@@ -231,7 +262,7 @@ def test_aprs_add_remove_flow():
             assert pred_age_text == '—' or pred_age_text.endswith('s')
             # Use JS click to avoid pointer interception by floating UI elements
             page.locator('#aprsCallsignModal .recovery-modal-footer .btn.btn-secondary').evaluate("el => el.click()")
-            page.wait_for_selector('#aprsCallsignModal', state='hidden', timeout=3000)
+            page.wait_for_selector('#aprsCallsignModal', state='hidden', timeout=UI_TIMEOUT_MS)
 
             assert page.evaluate("window.__aprsPredictionLayerPreserved") is True
             assert page.evaluate("window.__aprsPredictionLayerStillVisible") is True
@@ -240,7 +271,7 @@ def test_aprs_add_remove_flow():
             # Open per-callsign prediction settings.
             # Use JS click to avoid visibility/timing flakiness
             page.locator('[data-test="aprs-settings-TEST1"]').evaluate("el => el.click()")
-            page.wait_for_selector('#aprsPredictionModal.is-open', timeout=3000)
+            page.wait_for_selector('#aprsPredictionModal.is-open', timeout=UI_TIMEOUT_MS)
             assert page.locator('#aprsPredictionModalTitle').text_content() == 'Prediction Settings for TEST1'
 
             # Change the settings and save them.
@@ -248,7 +279,7 @@ def test_aprs_add_remove_flow():
             page.fill('#aprsPredictionDescentRate', '5.5')
             page.click('#aprsPredictionModalSubmitBtn')
 
-            page.wait_for_selector('#aprsPredictionModal', state='hidden', timeout=3000)
+            page.wait_for_selector('#aprsPredictionModal', state='hidden', timeout=UI_TIMEOUT_MS)
             assert config['aprs_prediction_overrides']['TEST1']['pred_burst'] == 29000.0
             assert config['aprs_prediction_overrides']['TEST1']['pred_desc_rate'] == 5.5
 
@@ -257,12 +288,12 @@ def test_aprs_add_remove_flow():
             page.locator('[data-test="aprs-remove-TEST1"]').evaluate("el => el.click()")
 
             # Assert it is removed.
-            page.wait_for_function("() => document.querySelector('[data-test=\"aprs-item-TEST1\"]') === null", timeout=2000)
+            page.wait_for_function("() => document.querySelector('[data-test=\"aprs-item-TEST1\"]') === null", timeout=UI_TIMEOUT_MS)
 
             # Switch into the Settings view and confirm the interval rows reuse the same
             # recovery-style row structure as the prediction modal fields.
             page.evaluate("toggleSettingsPanel('settings')")
-            page.wait_for_selector('#otherSection:visible', timeout=3000)
+            page.wait_for_selector('#otherSection:visible', timeout=UI_TIMEOUT_MS)
             assert page.evaluate("""
                 () => {
                     const predRow = document.querySelector('#predUpdateRate')?.closest('.recovery-input-row');
@@ -275,16 +306,16 @@ def test_aprs_add_remove_flow():
 
             # Use JS click to avoid visibility/timing flakiness with floating UI
             page.locator('[data-test="clear-payload"]').evaluate("el => el.click()")
-            page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=3000)
+            page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=UI_TIMEOUT_MS)
             assert page.locator('#destructiveConfirmModalTitle').text_content() == 'Clear Payload Data'
             page.locator('#destructiveConfirmModalCancelBtn').evaluate("el => el.click()")
-            page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=3000)
+            page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=UI_TIMEOUT_MS)
 
             page.locator('[data-test="clear-car"]').evaluate("el => el.click()")
-            page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=3000)
+            page.wait_for_selector('#destructiveConfirmModal.is-open', timeout=UI_TIMEOUT_MS)
             assert page.locator('#destructiveConfirmModalTitle').text_content() == 'Clear Chase-Car Track'
             page.locator('#destructiveConfirmModalSubmitBtn').evaluate("el => el.click()")
-            page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=3000)
+            page.wait_for_selector('#destructiveConfirmModal', state='hidden', timeout=UI_TIMEOUT_MS)
 
             browser.close()
     finally:

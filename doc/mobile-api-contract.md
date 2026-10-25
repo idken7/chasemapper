@@ -4,13 +4,24 @@ This document defines the mobile-facing API contract for route and chase-state c
 
 - Version: `v1`
 - Transport: HTTPS + JSON (`application/json`)
-- Auth: `X-API-Key` header (recommended for internet-exposed deployments)
+- Auth: `X-API-Key` header (recommended for internet-exposed deployments) - see [Authentication](#authentication)
 - Time format: ISO-8601 UTC strings
+
+## Authentication
+
+When the server has an API key configured (`CHASEMAPPER_API_KEY`), these are all covered by the same key policy (`CHASEMAPPER_REQUIRE_API_AUTH`: `auto` exempts private-network client IPs, `true` requires the key from everyone) and the same per-IP rate limiting:
+
+- `POST /api/route`, `GET|POST /api/latest_route`, `GET /api/mobile_state`
+- `POST /api/device_position`
+- `GET /get_config`, `GET /get_telemetry_archive`, `GET /get_bearings`
+- The Socket.IO connection to the `/chasemapper` namespace
+
+REST requests send the key as an `X-API-Key` header (an `api_key` query parameter is also accepted). The Socket.IO connection sends it once, as an `api_key` query parameter on the connection URL. A missing or wrong key gets `401 {"error": "unauthorized"}` on REST, and a refused connection on Socket.IO.
 
 ## Base Behavior
 
 - Success codes: `200`
-- Client errors: `400`, `401`, `404`, `429`
+- Client errors: `400`, `401`, `404`, `409`, `429`
 - Server/upstream errors: `500`, `502`
 
 Common error payload shape:
@@ -23,6 +34,8 @@ Common error payload shape:
 ```
 
 `retry_after_s` is present for `429` rate-limit responses.
+
+`409` is only returned by `POST /api/device_position`, when another live connection currently owns that `client_id`'s car (see below).
 
 ## JSON Schemas
 
@@ -250,6 +263,49 @@ Response schema:
 }
 ```
 
+### 4) POST /api/device_position
+
+REST equivalent of the `device_position` Socket.IO event: a fallback for when the live socket is down, e.g. after the OS drops it while the app is backgrounded. The server handles it exactly like the socket event, so other clients see the update either way.
+
+Client rules (the mobile app's background location task follows these):
+- Only send it while the Socket.IO connection is not connected. iOS keeps a backgrounded app with active location updates running, socket included, and positions keep flowing over the socket then; a REST copy would only be refused with `409`.
+- Send at most one every 20s. iOS delivers background fixes by distance, not time, so at driving speed an unthrottled client would exceed the per-car rate limit below.
+
+Request:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevicePositionRequest",
+  "type": "object",
+  "required": ["latitude", "longitude"],
+  "properties": {
+    "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+    "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+    "altitude": { "type": "number" },
+    "heading": { "type": "number" },
+    "heading_status": { "type": "string" },
+    "client_id": { "type": "string", "description": "Persisted per-device id. Omit only for the legacy single primary car." },
+    "name": { "type": "string", "description": "Display name for this chaser; defaults to client_id." }
+  }
+}
+```
+
+Responses:
+
+- `200 {"ok": true}`
+- `400` - body is not a JSON object
+- `409 {"error": "owned by another active connection"}` - a live Socket.IO connection is currently sending positions for this `client_id`. For the mobile app that is normally this same device, just foregrounded again, so treat it as "already handled": don't retry it, don't show it as an error, and don't count it towards the circuit breaker. A live socket connection always takes a car over from REST updates; REST updates only take over once the socket has been quiet for the ownership grace period (20s).
+- `429` - per-`client_id` (and coarser per-IP) rate limit, same limits as the socket event
+
+### 5) GET /get_config
+
+The server's shared configuration (prediction settings, APRS callsigns, map tile settings, etc.) - the same object pushed over Socket.IO as `server_settings_update` whenever a client changes a setting. Server-only secrets (`aprs_api_key`, `api_access_key`) are never included in either. Map tile provider keys are included, because clients need them to fetch tiles.
+
+### 6) GET /get_telemetry_archive
+
+Full history per tracked payload (`telem`, `path`, `pred_path`, `pred_landing`, `burst`, `abort_path`, `abort_landing`), keyed by callsign. Fetch once on every Socket.IO (re)connect: the live socket only carries the latest point or a full replacement prediction, never the accumulated path.
+
 ## Update Cadence
 
 ### Recommended Polling Intervals
@@ -281,6 +337,8 @@ Response schema:
 - `GET /api/mobile_state`: client timeout `3s`
 - `POST /api/route`: client timeout `8-10s`
 - `GET /api/latest_route`: client timeout `3s`
+- `GET /get_config`: client timeout `3s`
+- `GET /get_telemetry_archive`: client timeout `8s` (can be large)
 
 ### Retry Matrix
 
@@ -295,12 +353,22 @@ Response schema:
   - refresh/reload API key and retry once
 - `400`/`404`:
   - treat as non-retryable request/data issue unless app state changed.
+- `409` (`POST /api/device_position` only):
+  - not a failure - another live connection is already delivering this car's positions
+  - do not retry, and do not count towards the circuit breaker.
 
 ### Circuit Breaker Recommendation
 
 - After `5` consecutive failures on a single endpoint:
   - pause active polling for `30s`
   - keep UI in degraded mode with last known data timestamp.
+
+## Other Chasers' Cars
+
+Other chasers arrive as `telemetry_event` messages with `callsign: "CAR"` and a `car_id`. The server never sends an explicit "car left" event, so clients must expire them themselves:
+
+- Drop a car not heard from for `15 min`, checked every `60s` (same as the desktop web client).
+- On every Socket.IO (re)connect, clear all other cars before emitting `client_connected`. The server's `client_connected` handler replays the cars it currently tracks, so this refills the map with exactly the live set (and drops cars the server forgot, e.g. after a server restart).
 
 ## Compatibility Notes
 

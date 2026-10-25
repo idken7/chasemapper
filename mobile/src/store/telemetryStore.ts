@@ -11,6 +11,7 @@ import type {
   TelemetryEventCar,
 } from '../api/types';
 import { isCarTelemetry } from '../api/types';
+import { CHASE_VEHICLE_STALE_MS } from '../api/constants';
 
 // Mirrors static/js/utils.js's `colour_values` — a 3-colour round-robin assigned to
 // each newly-seen callsign in arrival order, so the same marker/path colour lines up
@@ -40,6 +41,10 @@ interface TelemetryState {
   primaryCar: CarState | null;
   ownCar: TelemetryEventCar | null;
   otherCars: Record<string, TelemetryEventCar>;
+  // When each entry in otherCars was last heard from (Date.now() ms), keyed the
+  // same way - kept separate so otherCars stays the plain server payload that
+  // TrackScreen renders.
+  otherCarsSeenAt: Record<string, number>;
   balloons: Record<string, BalloonTrack>;
   target: TargetState | null;
   followedCallsign: string | null;
@@ -53,6 +58,12 @@ interface TelemetryState {
   clearBalloon: (callsign: string) => void;
   clearAllPayloads: () => void;
   clearPrimaryCar: () => void;
+  // Forget every other chaser's car (called on each socket (re)connect, right
+  // before the server replays its current set of active cars).
+  clearOtherCars: () => void;
+  // Drop other chasers' cars not heard from in CHASE_VEHICLE_STALE_MS. Never
+  // touches ownCar or primaryCar.
+  pruneStaleCars: (nowMs: number) => void;
 }
 
 function emptyBalloonTrack(telem: PayloadTelem): BalloonTrack {
@@ -73,6 +84,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   primaryCar: null,
   ownCar: null,
   otherCars: {},
+  otherCarsSeenAt: {},
   balloons: {},
   target: null,
   followedCallsign: null,
@@ -89,7 +101,11 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
       if (isOwn) {
         set({ ownCar: event });
       } else if (event.car_id) {
-        set((state) => ({ otherCars: { ...state.otherCars, [event.car_id as string]: event } }));
+        const carId = event.car_id;
+        set((state) => ({
+          otherCars: { ...state.otherCars, [carId]: event },
+          otherCarsSeenAt: { ...state.otherCarsSeenAt, [carId]: Date.now() },
+        }));
       } else {
         // Legacy primary hardware car, echoed back over the socket rather than mobile_state.
         set({
@@ -184,4 +200,24 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   clearAllPayloads: () => set({ balloons: {}, target: null }),
 
   clearPrimaryCar: () => set({ primaryCar: null }),
+
+  clearOtherCars: () => set({ otherCars: {}, otherCarsSeenAt: {} }),
+
+  pruneStaleCars: (nowMs) =>
+    set((state) => {
+      const staleIds = Object.keys(state.otherCars).filter((carId) => {
+        const seenAt = state.otherCarsSeenAt[carId];
+        // No timestamp should never happen (handleTelemetryEvent always records
+        // one), but treat it as stale rather than letting it live forever.
+        return seenAt === undefined || nowMs - seenAt > CHASE_VEHICLE_STALE_MS;
+      });
+      if (staleIds.length === 0) return state;
+      const otherCars = { ...state.otherCars };
+      const otherCarsSeenAt = { ...state.otherCarsSeenAt };
+      for (const carId of staleIds) {
+        delete otherCars[carId];
+        delete otherCarsSeenAt[carId];
+      }
+      return { otherCars, otherCarsSeenAt };
+    }),
 }));

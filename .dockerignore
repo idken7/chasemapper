@@ -1,0 +1,43 @@
+# Keep the Docker build context to what the server needs at runtime.
+# Without this file, `COPY . /opt/chasemapper` pulls in the local config
+# (live API keys), chase logs (location history), virtualenvs and the mobile
+# app's native build output - gigabytes, some of it private.
+
+# Local config and runtime data. The config is bind-mounted by
+# docker-compose.yml; GFS data and logs live in volumes.
+horusmapper.cfg
+horusmapper.cfg/
+log_files/
+gfs/
+
+# Python / Node environments and caches
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+**/node_modules/
+
+# Separate clients and prototypes (not part of the server image)
+mobile/
+mobile-prototype/
+ios-app/
+
+# Tests and dev tooling
+tests/
+.github/
+.claude/
+.vscode/
+.idea/
+
+# Downloaded by the Dockerfile itself
+static/vendor/cesium/
+
+# VCS and OS files
+.git/
+.gitignore
+**/.DS_Store
+
+# Stray generated notes
+FINAL_DELIVERY_SUMMARY.md
+XCODE_PROJECT_FIXED.md

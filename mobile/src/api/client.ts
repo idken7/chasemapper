@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   ChasemapperConfig,
+  DevicePositionPayload,
   MobileState,
   RouteRequest,
   RouteResponse,
@@ -9,6 +10,7 @@ import type {
 import {
   CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   CIRCUIT_BREAKER_PAUSE_MS,
+  DEVICE_POSITION_TIMEOUT_MS,
   LATEST_ROUTE_TIMEOUT_MS,
   MOBILE_STATE_TIMEOUT_MS,
   RETRY_BASE_DELAY_MS,
@@ -124,6 +126,14 @@ async function requestJson<T>(url: string, opts: RequestOptions): Promise<T> {
         throw new ApiError(429, body?.error ?? 'rate limited', body?.retry_after_s ?? (Number.isFinite(headerRetry) ? headerRetry : undefined));
       }
 
+      // 409: the server understood the request and deliberately declined it (e.g.
+      // /api/device_position when this client_id's car is currently owned by a live
+      // socket connection). Non-retryable, and not a sign the endpoint is unhealthy,
+      // so it must not count towards opening the circuit breaker.
+      if (res.status === 409) {
+        throw new ApiError(409, body?.error ?? 'conflict');
+      }
+
       // 401/400/404: non-retryable request/auth issues.
       if (res.status === 401 || res.status === 400 || res.status === 404) {
         recordFailure(opts.circuitKey);
@@ -201,12 +211,33 @@ export function postLatestRoute(
   });
 }
 
-export function getConfig(baseUrl: string): Promise<ChasemapperConfig> {
-  // Not auth/rate-limited per the contract doc, but shares the same client for consistency.
+// POST equivalent of the `device_position` Socket.IO event (emitDevicePosition
+// in api/socket.ts) — used by the background location task, where sustaining
+// a live socket connection isn't reliable. See horusmapper.py's
+// /api/device_position route, which reuses the exact same handling as the
+// socket event so either transport produces an identical result.
+export function postDevicePosition(
+  baseUrl: string,
+  apiKey: string | null,
+  payload: DevicePositionPayload
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(`${baseUrl}/api/device_position`, {
+    method: 'POST',
+    body: payload,
+    timeoutMs: DEVICE_POSITION_TIMEOUT_MS,
+    circuitKey: 'device_position',
+    apiKey,
+  });
+}
+
+// Covered by the same API-key + per-IP rate-limit policy as /api/* (see
+// doc/mobile-api-contract.md). The payload never includes server-only secrets
+// (aprs_api_key / api_access_key) — the server strips them.
+export function getConfig(baseUrl: string, apiKey: string | null): Promise<ChasemapperConfig> {
   return requestJson<ChasemapperConfig>(`${baseUrl}/get_config`, {
     timeoutMs: MOBILE_STATE_TIMEOUT_MS,
     circuitKey: 'get_config',
-    apiKey: null,
+    apiKey,
   });
 }
 
@@ -214,11 +245,11 @@ export function getConfig(baseUrl: string): Promise<ChasemapperConfig> {
 // burst, abort path) — the live socket only ever carries the latest point or a
 // full-replacement prediction, never the accumulated history. Mirrors the desktop
 // web client's fetchTelemetryArchive(), called once per socket connect/reconnect.
-// Not auth/rate-limited, same as /get_config.
-export function getTelemetryArchive(baseUrl: string): Promise<TelemetryArchive> {
+// Same auth/rate-limit policy as /get_config.
+export function getTelemetryArchive(baseUrl: string, apiKey: string | null): Promise<TelemetryArchive> {
   return requestJson<TelemetryArchive>(`${baseUrl}/get_telemetry_archive`, {
     timeoutMs: TELEMETRY_ARCHIVE_TIMEOUT_MS,
     circuitKey: 'telemetry_archive',
-    apiKey: null,
+    apiKey,
   });
 }

@@ -458,6 +458,12 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         if (typeof window.renderRoutingActivePill === 'function') { window.renderRoutingActivePill(); }
     }
 
+    // Headers for requests to this server's /api/* endpoints, plus the saved
+    // API key when auth.js is loaded (it isn't in some unit tests).
+    function serverHeaders(headers){
+        return (typeof chasemapperAuthHeaders === 'function') ? chasemapperAuthHeaders(headers) : (headers || {});
+    }
+
     // Route fetch helper: prefer backend /api/route, fallback to direct OSRM
     //
     // Overlapping calls are possible on a flaky connection - a slow/retried
@@ -494,7 +500,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         var _seq = ++_routeFetchSeq;
         fetch('/api/route', {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
+            headers: serverHeaders({'Content-Type':'application/json'}),
             body: JSON.stringify({ start_lat: startLat, start_lon: startLon, end_lat: endLat, end_lon: endLon })
         }).then(function(resp){
             if (!resp.ok) throw new Error('Backend route failed: ' + resp.status);
@@ -514,7 +520,10 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
         }).catch(function(backendErr){
             if (_seq !== _routeFetchSeq) return;
             console.warn('Backend routing failed, trying direct OSRM', backendErr);
-            var base = window.osrm_base || 'https://router.project-osrm.org/route/v1/driving/';
+            // Same OSRM server the backend uses (osrm_base_url in horusmapper.cfg),
+            // falling back to the public demo server.
+            var _cfgOsrm = (typeof chase_config !== 'undefined' && chase_config && chase_config.osrm_base_url) ? String(chase_config.osrm_base_url).replace(/\/+$/, '') : '';
+            var base = window.osrm_base || (_cfgOsrm ? _cfgOsrm + '/route/v1/driving/' : 'https://router.project-osrm.org/route/v1/driving/');
             var url = base + startLon + ',' + startLat + ';' + endLon + ',' + endLat + '?overview=full&geometries=geojson&annotations=distance,duration&alternatives=true&steps=true';
             fetch(url).then(function(resp){ return resp.json(); }).then(function(j){
                 if (_seq !== _routeFetchSeq) return;
@@ -540,7 +549,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     function pushLatestRouteToServer(geojson){
         try{
             if (!geojson || !window.fetch) return;
-            fetch('/api/latest_route', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(geojson) }).then(function(resp){
+            fetch('/api/latest_route', { method: 'POST', headers: serverHeaders({'Content-Type':'application/json'}), body: JSON.stringify(geojson) }).then(function(resp){
                 if (!resp.ok) console.warn('Failed to push latest route to server', resp.status);
             }).catch(function(e){ console.warn('Push latest route failed', e); });
         }catch(e){ console.warn('pushLatestRouteToServer error', e); }
@@ -567,7 +576,7 @@ window.last_route_calc_time = null; // timestamp to avoid clustering recalculati
     $(document).on('click', '#exportRouteBtn', function(){
         if (!window.latestChaseRouteGeoJSON){
             // try fetching from server
-            fetch('/api/latest_route').then(function(r){ if (!r.ok) { $('#gpsStatus').text('No route to export'); return; } return r.json(); }).then(function(j){ if (!j) return; window.latestChaseRouteGeoJSON = j; doExport(window.latestChaseRouteGeoJSON); }).catch(function(){ $('#gpsStatus').text('No route to export'); });
+            fetch('/api/latest_route', { headers: serverHeaders() }).then(function(r){ if (!r.ok) { $('#gpsStatus').text('No route to export'); return; } return r.json(); }).then(function(j){ if (!j) return; window.latestChaseRouteGeoJSON = j; doExport(window.latestChaseRouteGeoJSON); }).catch(function(){ $('#gpsStatus').text('No route to export'); });
             return;
         }
         doExport(window.latestChaseRouteGeoJSON);

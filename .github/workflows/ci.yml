@@ -94,6 +94,12 @@ jobs:
       - name: Install Playwright browsers
         run: python -m playwright install --with-deps chromium
 
+      # The map is Cesium-only; without static/vendor/cesium (gitignored, fetched
+      # here the same way the Dockerfile does) Cesium.js 404s and every Cesium
+      # assertion in tests/gui fails.
+      - name: Fetch Cesium
+        run: bash scripts/fetch_cesium.sh
+
       - name: Start server for tests/e2e (expects http://localhost:5001)
         run: |
           CHASEMAPPER_TESTING=1 nohup python3 horusmapper.py --nolog \

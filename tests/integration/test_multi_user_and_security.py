@@ -21,6 +21,7 @@ Flask-SocketIO's `SocketIOTestClient` (no live server / real socket
 needed). See tests/integration/test_api_routes.py for the sibling REST-API
 test suite and the env-var reset conventions this file mirrors.
 """
+import json
 import time
 from datetime import datetime, timezone
 
@@ -724,6 +725,114 @@ def test_device_position_rate_limit_bypassed_in_testing_mode(app_client, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# 9b. POST /api/device_position - the REST equivalent of the `device_position`
+#     event, used by the mobile app's background location task (no live
+#     socket to rely on while backgrounded). Reuses the same
+#     handle_client_car_position/udp_listener_car_callback,
+#     _claim_client_car_ownership and rate-limit machinery as the socket
+#     path, anchored to a synthetic per-client_id sid ("rest:<client_id>")
+#     since a plain HTTP request has no Socket.IO session id of its own.
+# ---------------------------------------------------------------------------
+
+
+def test_api_device_position_creates_independent_track(app_client):
+    listener = _sio_client(app_client)
+    try:
+        resp = app_client.post(
+            "/api/device_position",
+            json=_position(lat=39.1, lon=-83.1, alt=300.0, client_id="rest-car", name="Alice"),
+        )
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True}
+
+        assert "rest-car" in horusmapper.client_car_tracks
+        entry = horusmapper.client_car_tracks["rest-car"]
+        assert entry["name"] == "Alice"
+        state = entry["track"].get_latest_state()
+        assert (state["lat"], state["lon"], state["alt"]) == (39.1, -83.1, 300.0)
+
+        events = _telemetry_events(listener)
+        assert len(events) == 1
+        assert events[0]["car_id"] == "rest-car"
+    finally:
+        listener.disconnect(namespace="/chasemapper")
+
+
+def test_api_device_position_without_client_id_updates_primary_car_track(app_client):
+    assert horusmapper.car_track.get_latest_state() is None
+
+    resp = app_client.post("/api/device_position", json=_position(lat=1.0, lon=2.0, alt=3.0))
+    assert resp.status_code == 200
+
+    state = horusmapper.car_track.get_latest_state()
+    assert (state["lat"], state["lon"], state["alt"]) == (1.0, 2.0, 3.0)
+    assert "rest-car" not in horusmapper.client_car_tracks
+
+
+def test_api_device_position_rejects_when_owned_by_active_socket_connection(app_client):
+    owner = _sio_client(app_client)
+    try:
+        owner.emit(
+            "device_position", _position(lat=1.0, lon=1.0, client_id="carX"), namespace="/chasemapper"
+        )
+
+        resp = app_client.post(
+            "/api/device_position", json=_position(lat=9.0, lon=9.0, client_id="carX")
+        )
+        assert resp.status_code == 409
+
+        # Owner's position (not the rejected REST update) must be what's stored.
+        state = horusmapper.client_car_tracks["carX"]["track"].get_latest_state()
+        assert (state["lat"], state["lon"]) == (1.0, 1.0)
+    finally:
+        owner.disconnect(namespace="/chasemapper")
+
+
+def test_api_device_position_accepted_once_socket_owner_disconnects(app_client):
+    owner = _sio_client(app_client)
+    owner.emit("device_position", _position(lat=1.0, lon=1.0, client_id="carY"), namespace="/chasemapper")
+    owner.disconnect(namespace="/chasemapper")
+
+    # _release_client_car_ownership (run on the socket disconnect handler)
+    # frees the lease immediately - a REST update right after should succeed
+    # without waiting out CLIENT_CAR_OWNERSHIP_GRACE_S.
+    resp = app_client.post("/api/device_position", json=_position(lat=5.0, lon=5.0, client_id="carY"))
+    assert resp.status_code == 200
+
+    state = horusmapper.client_car_tracks["carY"]["track"].get_latest_state()
+    assert (state["lat"], state["lon"]) == (5.0, 5.0)
+
+
+def test_api_device_position_invalid_body_returns_400(app_client):
+    resp = app_client.post("/api/device_position", json=["not", "an", "object"])
+    assert resp.status_code == 400
+    assert "error" in resp.get_json()
+
+
+def test_api_device_position_auth_required_rejects_missing_key(app_client, monkeypatch):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
+
+    resp = app_client.post("/api/device_position", json=_position(client_id="authcar"))
+    assert resp.status_code == 401
+    assert "authcar" not in horusmapper.client_car_tracks
+
+
+def test_api_device_position_auth_required_accepts_correct_key(app_client, monkeypatch):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
+
+    resp = app_client.post(
+        "/api/device_position",
+        json=_position(client_id="authcar"),
+        headers={"X-API-Key": "s3cret-key"},
+    )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # 10. Rate limiting is bucketed per (ip, client_id), not just per ip - so
 #     several real people behind one shared IP/NAT don't throttle each
 #     other out of one bucket, while a coarser per-IP backstop still catches
@@ -948,3 +1057,282 @@ def test_manual_bearing_without_client_id_keeps_legacy_behaviour(app_client):
         assert _bearing["source"] == "EasyBearing"
     finally:
         client.disconnect(namespace="/chasemapper")
+
+
+# ---------------------------------------------------------------------------
+# 10. REST vs Socket.IO ownership of the same client_id. The mobile app's
+#     background location task POSTs to /api/device_position under the
+#     synthetic sid "rest:<client_id>"; when the app returns to the
+#     foreground its live socket must take the car back immediately rather
+#     than be locked out for CLIENT_CAR_OWNERSHIP_GRACE_S. A REST update must
+#     still yield to an active socket owner.
+# ---------------------------------------------------------------------------
+
+
+def test_claim_socket_takes_over_active_rest_lease_and_cleans_bookkeeping():
+    assert horusmapper._claim_client_car_ownership("carR", "rest:carR") is True
+    # Lease is fresh (well within the grace period) but held by REST.
+    assert horusmapper._claim_client_car_ownership("carR", "sid-socket") is True
+
+    assert horusmapper.client_car_owners["carR"][0] == "sid-socket"
+    assert "rest:carR" not in horusmapper.client_car_owners_by_sid
+    assert horusmapper.client_car_owners_by_sid["sid-socket"] == {"carR"}
+
+
+def test_claim_rest_yields_to_active_socket_lease():
+    assert horusmapper._claim_client_car_ownership("carS", "sid-socket") is True
+    assert horusmapper._claim_client_car_ownership("carS", "rest:carS") is False
+
+    assert horusmapper.client_car_owners["carS"][0] == "sid-socket"
+    assert "rest:carS" not in horusmapper.client_car_owners_by_sid
+
+
+def test_claim_rest_can_take_stale_socket_lease(monkeypatch):
+    assert horusmapper._claim_client_car_ownership("carT", "sid-socket") is True
+    # Age the socket owner's lease past the grace period.
+    _sid, _seen = horusmapper.client_car_owners["carT"]
+    horusmapper.client_car_owners["carT"] = (
+        _sid,
+        _seen - horusmapper.CLIENT_CAR_OWNERSHIP_GRACE_S - 1,
+    )
+    assert horusmapper._claim_client_car_ownership("carT", "rest:carT") is True
+    assert horusmapper.client_car_owners["carT"][0] == "rest:carT"
+    assert "sid-socket" not in horusmapper.client_car_owners_by_sid
+
+
+def test_socket_still_cannot_take_over_another_active_socket():
+    assert horusmapper._claim_client_car_ownership("carU", "sid-a") is True
+    assert horusmapper._claim_client_car_ownership("carU", "sid-b") is False
+    assert horusmapper.client_car_owners["carU"][0] == "sid-a"
+
+
+def test_socket_update_accepted_right_after_rest_update(app_client):
+    resp = app_client.post(
+        "/api/device_position", json=_position(lat=5.0, lon=5.0, client_id="carV")
+    )
+    assert resp.status_code == 200
+
+    owner = _sio_client(app_client)
+    try:
+        owner.emit(
+            "device_position", _position(lat=6.0, lon=6.0, client_id="carV"), namespace="/chasemapper"
+        )
+        state = horusmapper.client_car_tracks["carV"]["track"].get_latest_state()
+        assert (state["lat"], state["lon"]) == (6.0, 6.0)
+
+        # And the REST path now yields to the active socket.
+        resp = app_client.post(
+            "/api/device_position", json=_position(lat=7.0, lon=7.0, client_id="carV")
+        )
+        assert resp.status_code == 409
+    finally:
+        owner.disconnect(namespace="/chasemapper")
+
+
+# ---------------------------------------------------------------------------
+# 11. State/config read endpoints and /download_model follow the same API-key
+#     policy and per-IP rate limiting as the /api/* endpoints.
+# ---------------------------------------------------------------------------
+
+_NEWLY_GUARDED_PATHS = ["/get_config", "/get_telemetry_archive", "/get_bearings", "/download_model"]
+
+
+@pytest.fixture
+def _no_model_download(monkeypatch):
+    # create_app() skips start_services(), so give /download_model a config
+    # that takes its harmless "no download command" branch.
+    monkeypatch.setattr(horusmapper, "pred_settings", {"pred_model_download": "none"})
+
+
+def _require_auth(monkeypatch, mode="true"):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", mode)
+    monkeypatch.setenv("CHASEMAPPER_API_KEY", "s3cret-key")
+
+
+@pytest.mark.parametrize("path", _NEWLY_GUARDED_PATHS)
+def test_guarded_read_path_rejects_missing_key(app_client, monkeypatch, _no_model_download, path):
+    _require_auth(monkeypatch)
+    resp = app_client.get(path)
+    assert resp.status_code == 401
+    assert resp.get_json() == {"error": "unauthorized"}
+
+
+@pytest.mark.parametrize("path", _NEWLY_GUARDED_PATHS)
+def test_guarded_read_path_rejects_wrong_key(app_client, monkeypatch, _no_model_download, path):
+    _require_auth(monkeypatch)
+    assert app_client.get(path, headers={"X-API-Key": "nope"}).status_code == 401
+    assert app_client.get(path + "?api_key=nope").status_code == 401
+
+
+@pytest.mark.parametrize("path", _NEWLY_GUARDED_PATHS)
+def test_guarded_read_path_accepts_correct_key(app_client, monkeypatch, _no_model_download, path):
+    _require_auth(monkeypatch)
+    assert app_client.get(path, headers={"X-API-Key": "s3cret-key"}).status_code == 200
+    assert app_client.get(path + "?api_key=s3cret-key").status_code == 200
+
+
+@pytest.mark.parametrize("path", _NEWLY_GUARDED_PATHS)
+def test_guarded_read_path_auto_mode_exempts_private_ip(app_client, monkeypatch, _no_model_download, path):
+    _require_auth(monkeypatch, mode="auto")
+    monkeypatch.setattr(horusmapper, "_get_client_ip", lambda: "192.168.1.20")
+    assert app_client.get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", _NEWLY_GUARDED_PATHS)
+def test_guarded_read_path_auto_mode_requires_key_for_public_ip(app_client, monkeypatch, _no_model_download, path):
+    _require_auth(monkeypatch, mode="auto")
+    monkeypatch.setattr(horusmapper, "_get_client_ip", lambda: "8.8.8.8")
+    assert app_client.get(path).status_code == 401
+    assert app_client.get(path, headers={"X-API-Key": "s3cret-key"}).status_code == 200
+
+
+def test_server_time_and_index_stay_open_when_auth_required(app_client, monkeypatch):
+    _require_auth(monkeypatch)
+    assert app_client.get("/server_time").status_code == 200
+
+
+def test_get_config_rate_limited_per_ip(app_client, monkeypatch):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "false")
+    monkeypatch.setattr(horusmapper, "_get_client_ip", lambda: "203.0.113.5")
+
+    for _ in range(60):
+        assert app_client.get("/get_config").status_code == 200
+    resp = app_client.get("/get_config")
+    assert resp.status_code == 429
+    assert int(resp.headers["Retry-After"]) >= 1
+    # Separate bucket per path - other read endpoints are unaffected.
+    assert app_client.get("/get_bearings").status_code == 200
+
+
+def test_download_model_rate_limit_is_tight(app_client, monkeypatch, _no_model_download):
+    monkeypatch.setenv("CHASEMAPPER_TESTING", "0")
+    monkeypatch.setenv("CHASEMAPPER_REQUIRE_API_AUTH", "false")
+    monkeypatch.setattr(horusmapper, "_get_client_ip", lambda: "203.0.113.6")
+
+    for _ in range(5):
+        assert app_client.get("/download_model").status_code == 200
+    assert app_client.get("/download_model").status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# 12. Server-only secrets never leave the server via config payloads.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _config_with_secrets(monkeypatch):
+    cfg = dict(horusmapper.chasemapper_config)
+    cfg.update(
+        {
+            "aprs_api_key": "aprs-fi-secret",
+            "api_access_key": "access-secret",
+            "thunderforest_api_key": "tf-tile-key",
+            "aprs_callsigns": ["TST1"],
+        }
+    )
+    monkeypatch.setattr(horusmapper, "chasemapper_config", cfg)
+    return cfg
+
+
+def test_get_config_omits_server_only_secrets(app_client, _config_with_secrets):
+    # json.dumps() string response (served as text/html), so parse the body.
+    body = json.loads(app_client.get("/get_config").data)
+    assert "aprs_api_key" not in body
+    assert "api_access_key" not in body
+    # Browsers need tile keys to fetch tiles directly - those stay.
+    assert body["thunderforest_api_key"] == "tf-tile-key"
+    # The server's own copy is untouched.
+    assert horusmapper.chasemapper_config["aprs_api_key"] == "aprs-fi-secret"
+
+
+def test_test_state_omits_server_only_secrets(app_client, _config_with_secrets):
+    body = json.loads(app_client.get("/test/state").data)
+    assert "aprs_api_key" not in body["config"]
+    assert "api_access_key" not in body["config"]
+
+
+def test_server_settings_update_omits_server_only_secrets(app_client, monkeypatch, _config_with_secrets):
+    monkeypatch.setattr(horusmapper, "_start_aprs_tracker_for_callsigns", lambda _calls: None)
+    monkeypatch.setattr(horusmapper, "_save_aprs_prediction_overrides", lambda: None)
+    client = _sio_client(app_client)
+    try:
+        client.get_received(namespace="/chasemapper")
+        client.emit("aprs_callsign_remove", {"callsign": "TST1"}, namespace="/chasemapper")
+        updates = [
+            pkt["args"][0]
+            for pkt in client.get_received(namespace="/chasemapper")
+            if pkt["name"] == "server_settings_update"
+        ]
+        assert len(updates) == 1
+        assert "aprs_api_key" not in updates[0]
+        assert "api_access_key" not in updates[0]
+        assert updates[0]["aprs_callsigns"] == []
+    finally:
+        client.disconnect(namespace="/chasemapper")
+
+
+# ---------------------------------------------------------------------------
+# 13. The `download_model` Socket.IO event is an operator action.
+# ---------------------------------------------------------------------------
+
+
+def _model_updates_and_denials(client):
+    pkts = client.get_received(namespace="/chasemapper")
+    updates = [p["args"][0] for p in pkts if p["name"] == "predictor_model_update"]
+    denied = [p["args"][0] for p in pkts if p["name"] == "operator_action_denied"]
+    return updates, denied
+
+
+def test_download_model_event_denied_without_valid_key(app_client, monkeypatch, _no_model_download):
+    _require_auth(monkeypatch)
+    client = _sio_client(app_client, query_string="api_key=s3cret-key")
+    try:
+        assert client.is_connected(namespace="/chasemapper") is True
+        client.get_received(namespace="/chasemapper")
+        monkeypatch.setattr(horusmapper, "_request_api_key", lambda: "wrong-key")
+        client.emit("download_model", {}, namespace="/chasemapper")
+        updates, denied = _model_updates_and_denials(client)
+        assert updates == []
+        assert len(denied) == 1 and denied[0]["action"] == "download_model"
+    finally:
+        if client.is_connected(namespace="/chasemapper"):
+            client.disconnect(namespace="/chasemapper")
+
+
+def test_download_model_event_allowed_with_valid_key(app_client, monkeypatch, _no_model_download):
+    _require_auth(monkeypatch)
+    client = _sio_client(app_client, query_string="api_key=s3cret-key")
+    try:
+        client.get_received(namespace="/chasemapper")
+        client.emit("download_model", {}, namespace="/chasemapper")
+        updates, denied = _model_updates_and_denials(client)
+        assert denied == []
+        assert updates and updates[-1]["model"] == "No model download cmd."
+    finally:
+        client.disconnect(namespace="/chasemapper")
+
+
+# ---------------------------------------------------------------------------
+# 14. _keys_match: constant-time comparison with safe empty/None handling.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provided,configured,expected",
+    [
+        ("abc", "abc", True),
+        ("abc", "abd", False),
+        ("abc", "abcd", False),
+        ("", "", False),
+        (None, "", False),
+        ("", "abc", False),
+        (None, "abc", False),
+        ("abc", "", False),
+        ("abc", None, False),
+        ("ключ", "ключ", True),
+    ],
+)
+def test_keys_match(provided, configured, expected):
+    assert horusmapper._keys_match(provided, configured) is expected

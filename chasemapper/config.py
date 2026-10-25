@@ -48,6 +48,9 @@ default_config = {
     "payload_max_age": 180,
     "thunderforest_api_key": "none",
     "stadia_api_key": "none",
+    # Road-routing (OSRM) server base URL. Empty = CHASEMAPPER_OSRM_BASE_URL env
+    # var if set, else the public demo server (see horusmapper.cfg.example).
+    "osrm_base_url": "",
     "openaip_api_key": "none",
     # Predictor settings
     "pred_enabled": True,  # Enable running and display of predicted flight paths.
@@ -202,6 +205,10 @@ def parse_config_file(filename):
     chase_config["default_alt"] = _get_optional_float(config, "map", "default_alt", 0)
     chase_config["stadia_api_key"] = _get_optional_str(config, "map", "stadia_api_key", "none")
     chase_config["openaip_api_key"] = _get_optional_str(config, "map", "openaip_api_key", "none")
+    _osrm = (_get_optional_str(config, "map", "osrm_base_url", "") or "").strip()
+    if _osrm.lower() == "none":
+        _osrm = ""
+    chase_config["osrm_base_url"] = _osrm.rstrip("/")
 
     # APRS Settings (optional)
     try:

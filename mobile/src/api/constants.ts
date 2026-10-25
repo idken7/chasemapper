@@ -3,6 +3,10 @@
 export const MOBILE_STATE_TIMEOUT_MS = 3000;
 export const ROUTE_TIMEOUT_MS = 9000;
 export const LATEST_ROUTE_TIMEOUT_MS = 3000;
+// POST /api/device_position — the background-location-task fallback for
+// emitDevicePosition() (see location/backgroundLocationTask.ts). Single small
+// JSON point, same budget as LATEST_ROUTE_TIMEOUT_MS.
+export const DEVICE_POSITION_TIMEOUT_MS = 3000;
 // Full-history payload (up to 20k path points per tracked callsign) — needs more room
 // than the compact mobile_state poll.
 export const TELEMETRY_ARCHIVE_TIMEOUT_MS = 8000;
@@ -28,3 +32,9 @@ export const CIRCUIT_BREAKER_PAUSE_MS = 30000;
 // rate limit (see location/useLocationSharing.ts, wired up in Phase 5).
 export const DEVICE_POSITION_FOREGROUND_INTERVAL_MS = 4000;
 export const DEVICE_POSITION_BACKGROUND_INTERVAL_MS = 20000;
+
+// Other chasers' cars are dropped from the map once nothing has been heard from
+// them for this long - matches the desktop web app's CHASE_VEHICLE_STALE_MS
+// (static/js/sondehub.js), swept on the same 60s cadence.
+export const CHASE_VEHICLE_STALE_MS = 15 * 60 * 1000;
+export const CHASE_VEHICLE_PRUNE_INTERVAL_MS = 60 * 1000;

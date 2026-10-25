@@ -4,6 +4,10 @@ import { useSettingsStore } from '../store/settingsStore';
 import { emitDevicePosition } from '../api/socket';
 import { useConnectionStore } from '../store/connectionStore';
 import { useLocationShareStore } from '../store/locationShareStore';
+import {
+  startBackgroundLocationTracking,
+  stopBackgroundLocationTracking,
+} from './backgroundLocationTask';
 
 /**
  * Mirrors the desktop web app's "Share My Live Location" setting — while enabled,
@@ -16,6 +20,14 @@ import { useLocationShareStore } from '../store/locationShareStore';
  * transport problem. Any failure is surfaced via locationShareStore (rendered
  * in Settings) and turns the "Share my live location" toggle back off, rather
  * than leaving it silently on while nothing is actually being sent.
+ *
+ * Also starts/stops backgroundLocationTask.ts's TaskManager-backed tracking
+ * alongside the foreground watch below, so sharing keeps working once the app
+ * is backgrounded (phone locked, or switched to a separate nav app while
+ * driving) - the foreground watchPositionAsync subscription pauses then.
+ * Background permission is requested separately, after foreground is granted
+ * (required on Android 10+; a no-op re-prompt on iOS if already granted) -
+ * its denial only disables background continuity, not foreground sharing.
  */
 export function useDevicePositionSharing() {
   const shareLocation = useSettingsStore((s) => s.shareLocation);
@@ -89,4 +101,36 @@ export function useDevicePositionSharing() {
       subscriptionRef.current = null;
     };
   }, [shareLocation, isHydrated, clientId, chaserName, connectionStatus, setShareLocation, setLocationShareError]);
+
+  // Deliberately its own effect, not merged into the one above: that one is
+  // gated on connectionStatus === 'connected' and tears down when the socket
+  // drops - which is exactly what happens when the app backgrounds. The
+  // background task exists specifically to keep working through that, so it
+  // must not share that dependency/cleanup. Background permission denial (or
+  // any start failure) is silently non-fatal here - foreground sharing above
+  // is unaffected, this only means sharing pauses while backgrounded.
+  useEffect(() => {
+    if (!shareLocation || !isHydrated || !clientId) {
+      stopBackgroundLocationTracking().catch(() => {});
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const fgPermission = await Location.getForegroundPermissionsAsync();
+        if (fgPermission.status !== Location.PermissionStatus.GRANTED) return;
+        const bgPermission = await Location.requestBackgroundPermissionsAsync();
+        if (cancelled || bgPermission.status !== Location.PermissionStatus.GRANTED) return;
+        await startBackgroundLocationTracking();
+      } catch {
+        // Non-fatal - see comment above.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      stopBackgroundLocationTracking().catch(() => {});
+    };
+  }, [shareLocation, isHydrated, clientId]);
 }
