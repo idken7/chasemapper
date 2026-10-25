@@ -90,7 +90,7 @@ Chasemapper routing is not provided by Cesium APIs.
   - latest route GeoJSON + route metadata
   - ETA fields (driving route duration and payload time-to-landing)
 
-By default, route computation uses the public OSRM service. To point to your own OSRM backend, set environment variable `CHASEMAPPER_OSRM_BASE_URL`.
+By default, route computation uses the public OSRM demo server (`router.project-osrm.org`), which has no uptime guarantee and is meant for light use only. For a dependable setup, point chasemapper at your own OSRM backend with `osrm_base_url` in `horusmapper.cfg`, or the `CHASEMAPPER_OSRM_BASE_URL` environment variable.
 
 ### Endpoint Security (Auth + Rate Limiting)
 For internet-exposed deployments, route/state endpoints are protected with optional API-key auth and per-IP rate limiting. The same `CHASEMAPPER_API_KEY` / `CHASEMAPPER_REQUIRE_API_AUTH` policy also gates the Socket.IO connection itself (so a browser can't even connect without the key, when required for its IP) and two destructive, server-shared actions, so a connected-but-unauthorized client can't wipe the shared view for everyone else.
@@ -99,10 +99,17 @@ Guarded REST endpoints:
 - `POST /api/route`
 - `GET|POST /api/latest_route`
 - `GET /api/mobile_state`
+- `POST /api/device_position`
+- `GET /get_config`
+- `GET /get_telemetry_archive`
+- `GET /get_bearings`
+- `GET /download_model`
+
+Config output (`/get_config` and the `server_settings_update` Socket.IO event) never includes server-only secrets such as `aprs_api_key`. Map-tile keys are still included, because browsers need them to load tiles.
 
 Guarded Socket.IO connection and actions:
 - The Socket.IO `connect` handshake itself - a browser must supply the key as an `api_key` query-string parameter on the Socket.IO connection URL, or the connection is refused outright, when a key is required for its IP.
-- `payload_data_clear` ("Clear Payload Data") and `car_data_clear` ("Clear Chase-Car Track") - these shared, destructive actions are re-checked against the same policy on every use (not just at connect time), so a key configured/rotated after a client connects still applies without requiring a reconnect. A denied action emits an `operator_action_denied` event back to that client.
+- `payload_data_clear` ("Clear Payload Data"), `car_data_clear` ("Clear Chase-Car Track") and `download_model` (start a weather-model download) - these shared actions are re-checked against the same policy on every use (not just at connect time), so a key configured/rotated after a client connects still applies without requiring a reconnect. A denied action emits an `operator_action_denied` event back to that client.
 
 Environment variables:
 - `CHASEMAPPER_API_KEY`: API key value accepted from `X-API-Key` header (or `api_key` query parameter) for REST requests, and from the `api_key` query parameter for the Socket.IO connection.
@@ -120,11 +127,11 @@ Environment variables:
 
 Rate-limit responses return HTTP `429` with `Retry-After` and JSON body containing `retry_after_s`.
 
-**Supplying the key from the browser:** enter it in Settings > Server Access (the API Key field), which saves it to the browser's `localStorage` and reloads the page to reconnect with it. If a browser connects to a server that requires a key it doesn't have, it will instead be prompted for one with a `window.prompt()` dialog at connect time.
+**Supplying the key from the browser:** enter it in Settings > Server Access (the API Key field), which saves it to the browser's `localStorage` and reloads the page to reconnect with it. If a browser opens a page (the main map, `/bearing` or `/oclock`) on a server that requires a key it doesn't have, it is prompted for one with a `window.prompt()` dialog.
 
 Mobile integration contract (schemas, cadence, retries): see [doc/mobile-api-contract.md](doc/mobile-api-contract.md).
 
-A full SwiftUI + CarPlay iOS client (phone map/status/settings tabs and a CarPlay navigation template, both built against the endpoints above) lives in [ios-app/](ios-app/) - see [ios-app/README.md](ios-app/README.md) to build it. `mobile-prototype/ios/` predates it and contains the original minimal single-screen prototype the full app grew out of.
+The iOS/Android client is the Expo app in [mobile/](mobile/) - see [mobile/README.md](mobile/README.md) to build and run it. [ios-app/](ios-app/) is an unfinished native SwiftUI + CarPlay experiment and isn't usable yet. `mobile-prototype/ios/` contains the original minimal single-screen prototype.
 
 Automotive UI constraints and mapping prototypes (CarPlay + Android Auto): see [mobile-prototype/automotive-ui-constraints.md](mobile-prototype/automotive-ui-constraints.md).
 
@@ -135,7 +142,7 @@ Chasemapper's "Share My Live Location" feature uses the browser's geolocation AP
 
 - **You control DNS and can open a port to the server** (e.g. a home server, a VPS, a lab machine your IT team will make exceptions for): use **Option 1 (Caddy)** below. Simplest for end users - they just open a normal URL, no extra app required.
 - **The server sits on a locked-down network you don't control** (a university/company lab machine behind NAT with no port-forwarding and no ability to get a public DNS record - a common case) : use **Option 3 (Tailscale)** below. No network changes required on the lab's side at all, at the cost of every chaser needing to install the Tailscale app once.
-- **You'd rather avoid the HTTPS question entirely**: have chasers use the mobile app (see [mobile/](mobile/) or the SwiftUI+CarPlay app in [ios-app/](ios-app/)) instead of a phone browser. Native GPS access on iOS/Android isn't gated behind a "secure context" the way browser geolocation is, so it works against a plain-HTTP server with zero extra infrastructure - the tradeoff is chasers need the app installed rather than just a URL.
+- **You'd rather avoid the HTTPS question entirely**: have chasers use the mobile app (see [mobile/](mobile/)) instead of a phone browser. Native GPS access on iOS/Android isn't gated behind a "secure context" the way browser geolocation is, so it works against a plain-HTTP server on the local network (the chase car's Wi-Fi or phone hotspot) with zero extra infrastructure - the tradeoff is chasers need the app installed rather than just a URL. iOS still blocks plain HTTP to public hostnames, so a server reached over the internet needs HTTPS either way.
 
 ### Option 1: Caddy (simplest, automatic TLS)
 [Caddy](https://caddyserver.com/) obtains and renews certificates automatically and needs no special configuration to proxy WebSockets - it detects the `Upgrade` header and handles it. A minimal `Caddyfile` is enough:

@@ -1,15 +1,13 @@
 # eccodes, cusfpredict and numpy are deliberately left unpinned: they pull in
 # a scientific-computing dependency tree (shapely, xarray, cfgrib, pandas)
-# whose wheel availability varies a lot across this project's 4-platform
-# container build matrix (linux/386, amd64, arm/v7, arm64 - see
-# .github/workflows/container.yml). On linux/386 specifically, some of these
-# (e.g. shapely) have no prebuilt wheel at all and must build from source,
-# and eccodes's own eccodeslib dependency has no i686 build whatsoever at
-# recent versions - pip needs backtracking freedom across eccodes/numpy/
-# shapely versions to find a combination where everything is either
-# installable as a wheel or actually buildable from source on that
-# architecture. Pinning any one of these three to a version resolved on a
-# different architecture removed that freedom and broke the linux/386 build.
+# whose wheel availability varies across this project's container build
+# matrix (amd64, arm64, arm/v7 - see .github/workflows/container.yml). On
+# arm/v7 in particular, some of these have no prebuilt wheel and must build
+# from source, so pip needs backtracking freedom across eccodes/numpy/shapely
+# versions to find a combination that installs on every architecture.
+# Pinning any one of them to a version resolved on a different architecture
+# removes that freedom. (linux/386 used to be in the matrix too and was
+# dropped once pandas stopped building from source there.)
 eccodes
 cusfpredict
 numpy
